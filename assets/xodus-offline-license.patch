@@ -37,6 +37,19 @@ index bb0b9e7..4214df5 100644
      )
      .await;
      if let Err(err) = license {
+diff --git a/crates/xodus-cli/src/commands/streaming.rs b/crates/xodus-cli/src/commands/streaming.rs
+index 06bff1e..1148424 100644
+--- a/crates/xodus-cli/src/commands/streaming.rs
++++ b/crates/xodus-cli/src/commands/streaming.rs
+@@ -424,6 +424,8 @@ where
+         tokens,
+         remote_xvd.content_id().to_string(),
+         market.unwrap_or("neutral".to_string()),
++        // Downloads stay online-only; offline licenses are for launching installed games.
++        None,
+     )
+     .await;
+     if let Err(err) = license {
 diff --git a/crates/xodus-cli/src/license.rs b/crates/xodus-cli/src/license.rs
 index 4518c22..a19706f 100644
 --- a/crates/xodus-cli/src/license.rs

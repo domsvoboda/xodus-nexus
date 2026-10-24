@@ -352,9 +352,18 @@ test('offline licenses are device-bound, fail closed and never bypass an online 
   assert.equal(lock.patches.findIndex(p => p.file === entry.file), lock.patches.length - 1);
   const files = [...patch.matchAll(/^diff --git a\/(\S+) b\/\S+$/gm)].map(match => match[1]);
   assert.deepEqual(files.sort(), [
-    'crates/xodus-cli/src/commands/license.rs', 'crates/xodus-cli/src/commands/run.rs', 'crates/xodus-cli/src/license.rs',
-    'crates/xodus-cli/src/license_cache.rs', 'crates/xodus-cli/src/license_cache_tests.rs', 'crates/xodus-cli/src/main.rs',
+    'crates/xodus-cli/src/commands/license.rs', 'crates/xodus-cli/src/commands/run.rs', 'crates/xodus-cli/src/commands/streaming.rs',
+    'crates/xodus-cli/src/license.rs', 'crates/xodus-cli/src/license_cache.rs', 'crates/xodus-cli/src/license_cache_tests.rs',
+    'crates/xodus-cli/src/main.rs',
   ].sort());
+  // Downloads and the CIK dump keep online-only licensing: those call sites only gain a `None` cache argument.
+  for (const file of ['commands/streaming.rs', 'commands/license.rs']) {
+    const section = patch.split(/^diff --git /m).find(part => part.startsWith(`a/crates/xodus-cli/src/${file} `));
+    assert.ok(section, file);
+    const addedLines = section.split('\n').filter(line => line.startsWith('+') && !line.startsWith('+++')).map(line => line.slice(1).trim());
+    assert.deepEqual(addedLines.filter(line => !line.startsWith('//')),
+      file === 'commands/streaming.rs' ? ['None,'] : ['let license = get_license(client, tokens, content_id, market, None).await;']);
+  }
   for (const expected of ['offline_license_roundtrip_is_bound_to_content_and_account',
     'offline_license_expires_and_is_removed_without_extending_the_signed_time',
     'offline_license_online_only_is_never_stored_and_purges_a_stale_entry',
@@ -366,7 +375,7 @@ test('offline licenses are device-bound, fail closed and never bypass an online 
     'content_license_bad_blocks_return_fixed_errors_without_touching_credentials',
     'MAX_OFFLINE_SECONDS: u64 = 30 * 24 * 60 * 60', 'LicenseUsage::Online', '--license-cache']) assert.ok(patch.includes(expected), expected);
   // The cache stores Microsoft's encrypted SPLicense block only; the device key stays in the keyring.
-  assert.doesNotMatch(patch, /diff --git a\/.*(?:tokens\/|licensing\/|login\.rs|streaming\.rs|package_plan\.rs|Cargo)/);
+  assert.doesNotMatch(patch, /diff --git a\/.*(?:tokens\/|licensing\/|login\.rs|package_plan\.rs|Cargo)/);
   const added = patch.split('\n').filter(line => line.startsWith('+') && !line.startsWith('+++')).join('\n');
   assert.doesNotMatch(added, /"deviceKey"|"contentKey"|unpack\(/);
   assert.match(added, /OnlineFailure::Refused\(_\) => \{[\s\S]*?purge\(content_id\)/);
