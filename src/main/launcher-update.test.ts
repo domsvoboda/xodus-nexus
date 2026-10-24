@@ -4,14 +4,15 @@ import os from 'node:os';
 import path from 'node:path';
 import { createHash } from 'node:crypto';
 import { LauncherUpdater, launcherCandidate } from './launcher-update.js';
+import { APPIMAGE_ARCH_SUFFIX, ELF_MACHINE, currentArch } from './arch.js';
 const roots: string[] = [];
 afterEach(async () => { for (const root of roots.splice(0)) await fs.rm(root, { recursive: true, force: true }); });
 function image(marker: number): Buffer {
   const bytes = Buffer.alloc(100, marker); Buffer.from('7f454c46', 'hex').copy(bytes);
-  bytes[4] = 2; bytes[5] = 1; Buffer.from('414902', 'hex').copy(bytes, 8); bytes.writeUInt16LE(62, 18); return bytes;
+  bytes[4] = 2; bytes[5] = 1; Buffer.from('414902', 'hex').copy(bytes, 8); bytes.writeUInt16LE(ELF_MACHINE[currentArch()], 18); return bytes;
 }
 function release(version = '0.2.3') {
-  const name = `Xodus-Nexus-${version}-x86_64.AppImage`;
+  const name = `Xodus-Nexus-${version}-${APPIMAGE_ARCH_SUFFIX[currentArch()]}.AppImage`;
   return { tag_name: `v${version}`, assets: [
     { name, size: 100, browser_download_url: `https://github.com/domsvoboda/xodus-nexus/releases/download/v${version}/${name}` },
     { name: `${name}.sha512sum`, size: 200, browser_download_url: `https://github.com/domsvoboda/xodus-nexus/releases/download/v${version}/${name}.sha512sum` },

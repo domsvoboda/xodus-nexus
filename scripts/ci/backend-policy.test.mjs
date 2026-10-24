@@ -348,8 +348,8 @@ test('offline licenses are device-bound, fail closed and never bypass an online 
   assert.ok(entry);
   const patch = await fs.readFile(`assets/${entry.file}`, 'utf8');
   assert.equal(createHash('sha256').update(patch).digest('hex'), entry.sha256);
-  // Applies on top of every other backend patch, including the content-response parser it relies on.
-  assert.equal(lock.patches.findIndex(p => p.file === entry.file), lock.patches.length - 1);
+  // Applies after the content-response parser it relies on.
+  assert.ok(lock.patches.findIndex(p => p.file === entry.file) > lock.patches.findIndex(p => p.file === 'xodus-content-response.patch'));
   const files = [...patch.matchAll(/^diff --git a\/(\S+) b\/\S+$/gm)].map(match => match[1]);
   assert.deepEqual(files.sort(), [
     'crates/xodus-cli/src/commands.rs', 'crates/xodus-cli/src/commands/license.rs', 'crates/xodus-cli/src/commands/offline_pc.rs',
@@ -395,4 +395,22 @@ test('offline licenses are device-bound, fail closed and never bypass an online 
   }
   const build = await fs.readFile('scripts/build-backend.mjs', 'utf8');
   assert.match(build, /command\('cargo', \['test', '--locked', \.\.\.offline, \.\.\.features, '-p', 'xodus-cli'\]\)/);
+});
+
+test('SMBIOS probing never prompts for elevation on devices without a firmware table (arm64)', async () => {
+  const lock = JSON.parse(await fs.readFile('assets/backend-source.lock.json', 'utf8'));
+  const entry = lock.patches.find(p => p.file === 'xodus-smbios-optional.patch');
+  assert.ok(entry);
+  const patch = await fs.readFile('assets/xodus-smbios-optional.patch', 'utf8');
+  assert.equal(createHash('sha256').update(patch).digest('hex'), entry.sha256);
+  const files = [...patch.matchAll(/^diff --git a\/(\S+) b\/\S+$/gm)].map(match => match[1]);
+  assert.deepEqual(files, ['crates/xodus/src/hardware.rs']);
+  for (const expected of ['fn load_raw_smbios_from(', 'if !path.exists() {', 'this device exposes no SMBIOS table',
+    'smbios_probe_never_elevates_without_a_table_and_prefers_direct_reads']) assert.ok(patch.includes(expected), expected);
+  // The elevated read is unchanged: still pkexec on the same table, only guarded.
+  assert.match(patch, /^\+\s+let cmd = Command::new\("pkexec"\)$/m);
+  assert.doesNotMatch(patch, /^\+.*(?:sudo|setuid|\/dev\/mem)/m);
+  const build = await fs.readFile('scripts/build-backend.mjs', 'utf8');
+  assert.match(build, /command\('cargo', \['test', '--locked', \.\.\.offline, \.\.\.features, '-p', 'xodus', 'smbios_'\]\)/);
+  assert.match(build, /archSuffix = \{ x64: 'x86_64', arm64: 'aarch64' \}\[process\.arch\]/);
 });

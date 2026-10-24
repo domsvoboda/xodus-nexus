@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- Ship native arm64 builds of the launcher AppImage and the Nexus backend next to x86_64, with architecture-aware updates, downloads and installer. The game runtime remains x86_64.
+- Stop asking for an administrator password at sign-in on devices without an SMBIOS table (ARM handhelds): the backend probes the table only when it exists.
 - Play installed games offline on the account's designated offline device: the backend keeps the device-bound license Microsoft issues with a 30-day offline lease and uses it only when Microsoft licensing is unreachable. **Settings → Offline permissions** shows the designation and the remaining yearly changes and switches it with a confirmation, like the Xbox app; `xodus-cli offline-pc` does the same from the shell. Sign-out removes stored licenses.
 - Preserve Microsoft broker headers on both hosted sign-in steps. Thanks @Wyze3306 for the upstream fix adapted here.
 - Accept compact JWE tickets when requesting game content licenses without changing Xbox or Store sign-in token handling.
