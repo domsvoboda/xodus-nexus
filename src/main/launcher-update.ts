@@ -3,6 +3,7 @@ import { createHash, randomUUID } from 'node:crypto';
 import path from 'node:path';
 import type { LauncherUpdate } from '../shared/types.js';
 import { isNewerVersion } from '../shared/utils.js';
+import { APPIMAGE_ARCH_SUFFIX, currentArch, isLinuxElf64 } from './arch.js';
 
 const REPO = 'domsvoboda/xodus-nexus';
 const API = `https://api.github.com/repos/${REPO}/releases?per_page=100`;
@@ -18,7 +19,7 @@ export function launcherCandidate(releases: Release[], current: string): Launche
   stable.sort((a, b) => isNewerVersion(a.tag_name, b.tag_name) ? -1 : isNewerVersion(b.tag_name, a.tag_name) ? 1 : 0);
   for (const r of stable) {
     if (!isNewerVersion(r.tag_name, current)) continue;
-    const name = `Xodus-Nexus-${r.tag_name.slice(1)}-x86_64.AppImage`;
+    const name = `Xodus-Nexus-${r.tag_name.slice(1)}-${APPIMAGE_ARCH_SUFFIX[currentArch()]}.AppImage`;
     const image = r.assets?.find(a => a.name === name);
     const checksum = r.assets?.find(a => a.name === `${name}.sha512sum`);
     if (!image || !checksum || !assetUrl(image.browser_download_url, r.tag_name, image.name) ||
@@ -129,7 +130,7 @@ export class LauncherUpdater {
         await handle.sync();
       } finally { await handle.close(); }
       if (bytes !== candidate.image.size || hash.digest('hex') !== match[1].toLowerCase()) throw new Error('Launcher SHA-512 verification failed. Your current launcher was kept.');
-      if (header.length < 64 || header.subarray(0, 4).toString('hex') !== '7f454c46' || header[4] !== 2 || header[5] !== 1 || header.readUInt16LE(18) !== 62 || header.subarray(8, 11).toString('hex') !== '414902') throw new Error('The update is not an x86_64 AppImage.');
+      if (!isLinuxElf64(header, currentArch()) || header.subarray(8, 11).toString('hex') !== '414902') throw new Error(`The update is not a ${APPIMAGE_ARCH_SUFFIX[currentArch()]} AppImage.`);
       const now = await fs.stat(target);
       this.controller.signal.throwIfAborted();
       if (now.ino !== before.ino || now.size !== before.size || now.mtimeMs !== before.mtimeMs || await this.writableImage() !== target) throw new Error('The installed launcher changed during download. Retry the update.');

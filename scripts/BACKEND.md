@@ -116,7 +116,7 @@ the normal install path never clones moving `main` or silently compiles.
 The backend workflow builds CLI + service on Ubuntu 22.04, runs the account-free
 launch-chain tests and CLI capability checks, then packages:
 
-- `xodus-nexus-backend-<version>-linux-x86_64.tar.xz` and SHA-512
+- `xodus-nexus-backend-<version>-linux-x86_64.tar.xz` and `...-linux-aarch64.tar.xz` with SHA-512 (one job per architecture on `ubuntu-22.04` and `ubuntu-22.04-arm`, merged into one candidate)
 - matching `.manifest.json` (recipe/source identity and per-file hashes)
 - matching `-source.tar.xz` and SHA-512 (patched upstream, vendored dependencies,
   offline Cargo configuration, recipe, build instructions and retained licenses)

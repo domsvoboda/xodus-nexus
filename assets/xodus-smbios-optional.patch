@@ -1,0 +1,105 @@
+diff --git a/crates/xodus/src/hardware.rs b/crates/xodus/src/hardware.rs
+index 228f7ec..2059772 100644
+--- a/crates/xodus/src/hardware.rs
++++ b/crates/xodus/src/hardware.rs
+@@ -150,21 +150,87 @@ fn load_raw_smbios() -> io::Result<Vec<u8>> {
+     raw_smbios_from_device()
+ }
+ 
++#[cfg(target_os = "linux")]
++const SMBIOS_TABLE: &str = "/sys/firmware/dmi/entries/1-0/raw";
++
+ #[cfg(target_os = "linux")]
+ fn load_raw_smbios() -> io::Result<Vec<u8>> {
+-    let cmd = Command::new("pkexec")
+-        .args(["cat", "/sys/firmware/dmi/entries/1-0/raw"])
+-        .stdout(Stdio::piped())
+-        .spawn()?;
+-    let output = cmd.wait_with_output()?;
+-
+-    if output.status.success() {
+-        Ok(output.stdout)
+-    } else {
+-        Err(io::Error::new(
+-            io::ErrorKind::PermissionDenied,
+-            "unable to probe SMBIOS data",
+-        ))
++    load_raw_smbios_from(std::path::Path::new(SMBIOS_TABLE), |path| {
++        let cmd = Command::new("pkexec")
++            .args(["cat", &path.to_string_lossy()])
++            .stdout(Stdio::piped())
++            .spawn()?;
++        let output = cmd.wait_with_output()?;
++
++        if output.status.success() {
++            Ok(output.stdout)
++        } else {
++            Err(io::Error::new(
++                io::ErrorKind::PermissionDenied,
++                "unable to probe SMBIOS data",
++            ))
++        }
++    })
++}
++
++/// Reads the SMBIOS system table, asking for elevation only when the table
++/// exists but is not readable. Devices without firmware DMI data (most ARM
++/// systems) have no table at all; registration then continues without
++/// hardware components instead of repeating an administrator prompt.
++#[cfg(target_os = "linux")]
++fn load_raw_smbios_from(
++    path: &std::path::Path,
++    elevated_read: impl FnOnce(&std::path::Path) -> io::Result<Vec<u8>>,
++) -> io::Result<Vec<u8>> {
++    if !path.exists() {
++        return Err(io::Error::new(
++            io::ErrorKind::NotFound,
++            "this device exposes no SMBIOS table",
++        ));
++    }
++    match std::fs::read(path) {
++        Ok(bytes) if !bytes.is_empty() => Ok(bytes),
++        _ => elevated_read(path),
++    }
++}
++
++#[cfg(all(test, target_os = "linux"))]
++mod tests {
++    use super::*;
++    use std::cell::Cell;
++
++    #[test]
++    fn smbios_probe_never_elevates_without_a_table_and_prefers_direct_reads() {
++        let dir = std::env::temp_dir().join(format!("nexus-smbios-{}", std::process::id()));
++        let _ = std::fs::remove_dir_all(&dir);
++        std::fs::create_dir_all(&dir).unwrap();
++        let table = dir.join("raw");
++        let prompted = Cell::new(false);
++
++        let missing = load_raw_smbios_from(&table, |_| {
++            prompted.set(true);
++            Ok(vec![1])
++        });
++        assert_eq!(missing.unwrap_err().kind(), io::ErrorKind::NotFound);
++        assert!(!prompted.get());
++
++        std::fs::write(&table, [0x01u8, 0x1b, 0x00, 0x00]).unwrap();
++        let direct = load_raw_smbios_from(&table, |_| {
++            prompted.set(true);
++            Ok(vec![])
++        });
++        assert_eq!(direct.unwrap(), vec![0x01, 0x1b, 0x00, 0x00]);
++        assert!(!prompted.get());
++
++        std::fs::write(&table, []).unwrap();
++        let elevated = load_raw_smbios_from(&table, |_| {
++            prompted.set(true);
++            Ok(vec![9])
++        });
++        assert_eq!(elevated.unwrap(), vec![9]);
++        assert!(prompted.get());
++
++        let _ = std::fs::remove_dir_all(&dir);
+     }
+ }
+ 

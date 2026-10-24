@@ -6,6 +6,7 @@ import { createHash } from 'node:crypto';
 import { BackendManager } from './backend.js';
 import { backendLock, backendRecipeSha256, backendPackageName, validateBackendManifest, validateBackendArchive } from './backend-package.js';
 import { discoverBackend } from './backend-releases.js';
+import { BACKEND_ARCH_SUFFIX, ELF_MACHINE, currentArch } from './arch.js';
 import { run } from './process.js';
 
 vi.mock('./process.js', async importOriginal => {
@@ -31,7 +32,7 @@ vi.mock('./process.js', async importOriginal => {
 const sha = (data: Buffer, algorithm = 'sha256') => createHash(algorithm).update(data).digest('hex');
 const tag = `backend-v${backendLock.version}`;
 const url = (name: string) => `https://github.com/domsvoboda/xodus-nexus/releases/download/${tag}/${name}`;
-const elf = () => { const bytes = Buffer.alloc(64); bytes.set([0x7f, 0x45, 0x4c, 0x46, 2, 1]); bytes.writeUInt16LE(62, 18); return bytes; };
+const elf = () => { const bytes = Buffer.alloc(64); bytes.set([0x7f, 0x45, 0x4c, 0x46, 2, 1]); bytes.writeUInt16LE(ELF_MACHINE[currentArch()], 18); return bytes; };
 
 describe('prebuilt backend', () => {
   it('reports a missing loader dependency instead of hiding it behind offline status (#328)',async()=>{
@@ -135,7 +136,7 @@ describe('prebuilt backend', () => {
       expect((await run('tar', ['-cJf', path.join(build, archive), '-C', build, backendPackageName(backendLock.version)])).code).toBe(0);
       const data = await fs.readFile(path.join(build, archive));
       const manifest = { schema: 1, authUi: 'electron', version: backendLock.version, commit: backendLock.commit, compatibility: backendLock.compatibility,
-        recipeSha256: scenario === 'recipe' ? 'not-a-valid-hash' : backendRecipeSha256, platform: 'linux', arch: 'x64', archive,
+        recipeSha256: scenario === 'recipe' ? 'not-a-valid-hash' : backendRecipeSha256, platform: 'linux', arch: currentArch(), archive,
         archiveSha512: scenario === 'archive-digest' ? '0'.repeat(128) : sha(data, 'sha512'), files };
       const assets = [archive, `${backendPackageName(backendLock.version)}.manifest.json`, `${backendPackageName(backendLock.version)}.sha512sum`, `${backendPackageName(backendLock.version)}-source.tar.xz`, `${backendPackageName(backendLock.version)}-source.sha512sum`];
       let downloading = false;
@@ -202,9 +203,9 @@ describe('prebuilt backend', () => {
 
   it('discovers the newest stable backend release above the launcher minimum, ignoring older ones', async () => {
     const newest = `backend-v9.9.9`;
-    const name = (version: string, suffix: string) => `xodus-nexus-backend-${version}-linux-x86_64${suffix}`;
+    const name = (version: string, suffix: string) => `xodus-nexus-backend-${version}-linux-${BACKEND_ARCH_SUFFIX[currentArch()]}${suffix}`;
     const manifest = { schema: 1, authUi: 'electron', version: '9.9.9', commit: 'a'.repeat(40), recipeSha256: 'b'.repeat(64), compatibility: 'linux-run-fixture',
-      platform: 'linux', arch: 'x64', archive: name('9.9.9', '.tar.xz'), archiveSha512: 'c'.repeat(128),
+      platform: 'linux', arch: currentArch(), archive: name('9.9.9', '.tar.xz'), archiveSha512: 'c'.repeat(128),
       files: { 'xodus-cli': 'd'.repeat(64), 'xodus-service': 'e'.repeat(64), LICENSE: 'f'.repeat(64) } };
     const newestUrl = (asset: string) => `https://github.com/domsvoboda/xodus-nexus/releases/download/${newest}/${asset}`;
     const fetcher = (async (input: URL | RequestInfo) => {

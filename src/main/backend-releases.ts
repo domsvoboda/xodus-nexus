@@ -6,6 +6,7 @@ import {
   BACKEND_REPOSITORY, backendPackageName, backendAssetUrl, compareVersions, minimumBackendVersion,
   validateBackendManifest, validateBackendArchive, type BackendPackageManifest,
 } from './backend-package.js';
+import { BACKEND_ARCH_SUFFIX, currentArch, isLinuxElf64, nexusArch } from './arch.js';
 
 export interface BackendArtifact { tag: string; manifest: BackendPackageManifest; archiveUrl: string }
 
@@ -61,7 +62,7 @@ export async function installBackend(
   validate: (cli: string) => Promise<void>, assertIdle: () => Promise<void>,
   phase: (message: string) => void, runner: typeof run = run,
 ): Promise<string> {
-  if (process.platform !== 'linux' || process.arch !== 'x64') throw new Error('The prebuilt backend currently supports x86_64 Linux only.');
+  if (process.platform !== 'linux' || !nexusArch()) throw new Error('The prebuilt backend supports x86_64 and arm64 Linux only.');
   await assertIdle();
   const manifest = validateBackendManifest(artifact.manifest);
   const staging = path.join(managedRoot, `.download-${randomUUID()}`);
@@ -106,8 +107,8 @@ export async function installBackend(
       }
       for (const name of ['xodus-cli', 'xodus-service']) {
         const header = await fs.readFile(path.join(root, name));
-        if (header.length < 64 || header.subarray(0, 4).toString('hex') !== '7f454c46' || header[4] !== 2 || header[5] !== 1 || header.readUInt16LE(18) !== 62) {
-          throw new Error('The backend binary is not a Linux x86_64 ELF executable.');
+        if (!isLinuxElf64(header, currentArch())) {
+          throw new Error(`The backend binary is not a Linux ${BACKEND_ARCH_SUFFIX[currentArch()]} ELF executable.`);
         }
         await fs.chmod(path.join(root, name), 0o755);
         await fs.access(path.join(root, name), constants.X_OK);

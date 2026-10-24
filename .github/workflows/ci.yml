@@ -53,7 +53,7 @@ jobs:
           file build/tools/x86_64/nexus-close-window | grep -q x86-64
       - name: Build launcher candidate (never publish)
         if: github.ref == 'refs/heads/main' && !contains(github.event.head_commit.message, '[source-only]')
-        run: npx --no-install electron-builder --linux AppImage --publish never
+        run: npx --no-install electron-builder --linux AppImage --x64 --arm64 --publish never
       - name: Bind candidate to source and checksums
         if: github.ref == 'refs/heads/main' && !contains(github.event.head_commit.message, '[source-only]')
         run: node scripts/ci/artifact-manifest.mjs write launcher release

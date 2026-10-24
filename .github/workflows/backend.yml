@@ -16,7 +16,16 @@ concurrency:
 jobs:
   build:
     if: github.ref == 'refs/heads/main' && !contains(github.event.head_commit.message, '[source-only]')
-    runs-on: ubuntu-22.04
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          # Ubuntu 22.04 keeps the glibc 2.35 baseline on both architectures.
+          - runner: ubuntu-22.04
+            suffix: x86_64
+          - runner: ubuntu-22.04-arm
+            suffix: aarch64
+    runs-on: ${{ matrix.runner }}
     timeout-minutes: 60
     steps:
       - uses: actions/checkout@v4
@@ -38,7 +47,30 @@ jobs:
         env:
           XZ_OPT: '-T2'
         run: node scripts/build-backend.mjs --work "$PWD/backend-build" --output "$PWD/backend-release"
-      - name: Bind candidate to exact workflow source and bytes
+      - name: Confirm the package names this architecture
+        run: ls backend-release | grep -- "-linux-${{ matrix.suffix }}.tar.xz"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: nexus-backend-${{ matrix.suffix }}
+          path: backend-release/*
+          if-no-files-found: error
+          retention-days: 7
+
+  candidate:
+    # One candidate carries both architectures; promotion publishes them in one release.
+    needs: build
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: nexus-backend-*
+          merge-multiple: true
+          path: backend-release
+      - name: Bind both architectures to exact workflow source and bytes
         run: node scripts/ci/artifact-manifest.mjs write backend backend-release
       - uses: actions/upload-artifact@v4
         with:

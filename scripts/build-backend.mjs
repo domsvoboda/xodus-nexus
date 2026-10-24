@@ -16,7 +16,8 @@ const lockBytes = await fs.readFile(path.join(root, 'assets/backend-source.lock.
 const lock = JSON.parse(lockBytes);
 const authUi = 'electron';
 const features = ['--no-default-features'];
-if (process.platform !== 'linux' || process.arch !== 'x64') throw Error('Build the backend on Linux x86_64');
+const archSuffix = { x64: 'x86_64', arm64: 'aarch64' }[process.arch];
+if (process.platform !== 'linux' || !archSuffix) throw Error('Build the backend on Linux x86_64 or aarch64');
 const sha = (data, algorithm = 'sha256') => createHash(algorithm).update(data).digest('hex');
 if (lock.schema !== 1 || !/^\d+\.\d+\.\d+$/.test(lock.version) || !/^[a-f0-9]{40}$/.test(lock.commit)) throw Error('Invalid backend source lock');
 for (const patch of lock.patches) {
@@ -49,6 +50,7 @@ command('cargo', ['test', '--locked', ...offline, ...features, '-p', 'xodus', 'k
 command('cargo', ['test', '--locked', ...offline, ...features, '-p', 'xodus', 'keyring_session_', '--', '--test-threads=1']);
 command('cargo', ['test', '--locked', ...offline, ...features, '-p', 'xodus', 'keyring_persistence_', '--', '--test-threads=1']);
 command('cargo', ['test', '--locked', ...offline, ...features, '-p', 'xodus', 'content_license_']);
+command('cargo', ['test', '--locked', ...offline, ...features, '-p', 'xodus', 'smbios_']);
 command('cargo', ['test', '--locked', ...offline, ...features, '-p', 'xodus', 'content_ticket_']);
 command('cargo', ['test', '--locked', ...offline, ...features, '-p', 'xodus', 'ticket_diagnostic_']);
 command('cargo', ['test', '--locked', ...offline, '-p', 'xodus-service', 'store_']);
@@ -73,7 +75,7 @@ for (const flag of ['--progress-json', '--control-stdin', '--selected-content-id
   if (!streamingHelp.includes(flag)) throw Error(`Structured download capability missing: ${flag}`);
 }
 // xodus-service has no --help parser; running it would access keychain/network.
-const name = `xodus-nexus-backend-${lock.version}-linux-x86_64`;
+const name = `xodus-nexus-backend-${lock.version}-linux-${archSuffix}`;
 const bundle = path.join(work, name);
 await fs.mkdir(bundle);
 const files = {};
@@ -104,7 +106,7 @@ for (const archive of [`${name}.tar.xz`, `${name}-source.tar.xz`]) {
 }
 const manifest = {
   schema: 1, version: lock.version, commit: lock.commit, recipeSha256: sha(lockBytes), compatibility: lock.compatibility, authUi,
-  platform: 'linux', arch: 'x64', archive: `${name}.tar.xz`,
+  platform: 'linux', arch: process.arch, archive: `${name}.tar.xz`,
   archiveSha512: sha(await fs.readFile(path.join(output, `${name}.tar.xz`)), 'sha512'), files,
   rustc, glibc: command('getconf', ['GNU_LIBC_VERSION'], true).trim(),
 };

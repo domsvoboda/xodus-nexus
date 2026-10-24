@@ -20,7 +20,7 @@
     "test:runtime-tools": "node --test scripts/eac-trace-summary.test.mjs scripts/wine-exception-metadata.test.mjs scripts/assemble-shared-runtime.test.mjs scripts/build-runtime-dxvk.test.mjs scripts/verify-runtime-base.test.mjs scripts/runtime-compat/staging.test.mjs scripts/runtime-tests/build-store-probes.test.mjs scripts/runtime-tests/build-user-privilege-probe.test.mjs scripts/runtime-tests/build-gamesave-sync-probe.test.mjs scripts/runtime-tests/build-user-audio-probe.test.mjs",
     "test:ci-tools": "node --test scripts/ci/*.test.mjs",
     "build": "npm run clean && npm run i18n:check && npm run typecheck && npm run test && vite build && tsc -p tsconfig.electron.json",
-    "dist": "npm run build && electron-builder --linux AppImage --publish never",
+    "dist": "npm run build && electron-builder --linux AppImage --x64 --arm64 --publish never",
     "pack": "npm run build && electron-builder --linux dir --publish never"
   },
   "dependencies": {
