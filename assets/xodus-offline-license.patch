@@ -51,10 +51,10 @@ index 06bff1e..1148424 100644
      .await;
      if let Err(err) = license {
 diff --git a/crates/xodus-cli/src/license.rs b/crates/xodus-cli/src/license.rs
-index 4518c22..a19706f 100644
+index 4518c22..ea7b9df 100644
 --- a/crates/xodus-cli/src/license.rs
 +++ b/crates/xodus-cli/src/license.rs
-@@ -1,27 +1,170 @@
+@@ -1,27 +1,181 @@
 +use std::path::Path;
 +
 +use xodus::licensing::content::LicenseContentError;
@@ -120,6 +120,17 @@ index 4518c22..a19706f 100644
 +    license: &License,
 +    splicense: &SPLicense,
 +) {
++    // Policy metadata only: no identifiers, keys or license blocks.
++    eprintln!(
++        "Content license policy: type {:?}, usage {:?}, category {:?}, binding {}, begin {:?}, signed expiry {} (unix seconds, 0 = unspecified), polling {} s.",
++        license.license_info.license_type,
++        license.license_info.license_usage,
++        license.license_info.license_category,
++        license.binding.binding_type,
++        license.license_info.begin_date,
++        splicense.license_expiration_time,
++        splicense.polling_time,
++    );
 +    match LicenseCache::new(root).store(content_id, puid, market, license, splicense, unix_now()) {
 +        Ok(Stored::Saved) => diagnostic("content-cache-stored"),
 +        Ok(Stored::OnlineOnly) => diagnostic("content-cache-skipped"),
@@ -231,7 +242,7 @@ index 4518c22..a19706f 100644
      };
  
      let ms_device_token = xodus::api::live::exchange_device_token(
-@@ -32,14 +175,17 @@ pub async fn get_license(
+@@ -32,14 +186,17 @@ pub async fn get_license(
          Some(soap::PolicyReference::mbi_ssl()),
      )
      .await
@@ -252,7 +263,7 @@ index 4518c22..a19706f 100644
          dev_token,
          None,
          Some("Silent".to_string()),
-@@ -50,18 +196,22 @@ pub async fn get_license(
+@@ -50,18 +207,22 @@ pub async fn get_license(
          )],
      )
      .await
@@ -280,7 +291,7 @@ index 4518c22..a19706f 100644
          }
          ExchangeUserTokenOutcome::Issued(
              soap::BodyContent::RequestSecurityTokenResponseCollection(collection),
-@@ -70,16 +220,20 @@ pub async fn get_license(
+@@ -70,16 +231,20 @@ pub async fn get_license(
                  .security_tokens
                  .into_iter()
                  .next()
@@ -306,7 +317,7 @@ index 4518c22..a19706f 100644
      };
      let user_token = xodus::models::secrets::licensing_ticket(user_token);
  
-@@ -87,14 +241,14 @@ pub async fn get_license(
+@@ -87,14 +252,14 @@ pub async fn get_license(
          client,
          ms_device_token,
          user_token,
@@ -324,7 +335,7 @@ index 4518c22..a19706f 100644
  }
  
  fn license_material(tokens: &TokenManager, block: &str) -> Result<(DeviceKey, SPLicense), String> {
-@@ -121,6 +275,7 @@ fn license_material(tokens: &TokenManager, block: &str) -> Result<(DeviceKey, SP
+@@ -121,6 +286,7 @@ fn license_material(tokens: &TokenManager, block: &str) -> Result<(DeviceKey, SP
  mod tests {
      use super::*;
      use base64::{Engine, prelude::BASE64_STANDARD};
@@ -332,7 +343,7 @@ index 4518c22..a19706f 100644
      use xodus::models::secrets::Device;
      #[test]
      fn content_license_bad_blocks_return_fixed_errors_without_touching_credentials() {
-@@ -151,4 +306,111 @@ mod tests {
+@@ -151,4 +317,111 @@ mod tests {
          );
          assert_eq!(tokens.get_device_license().unwrap().hwid, "unchanged");
      }
