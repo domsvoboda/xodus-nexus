@@ -1,4 +1,5 @@
 # Xodus Nexus backend 0.2.12
 
-- Add a device-bound offline license cache to `run --license-cache`: after a successful online launch, Microsoft's encrypted license block is kept for up to 30 days, bounded by the license's own expiry, and used only when Microsoft content licensing is unreachable. Licenses Microsoft marks online-only are never kept, and an online refusal removes the stored entry.
-- Classify content-license failures as unreachable, refused or other, so sign-in and response problems are never hidden by a stored offline license.
+- Add offline play for the account's designated offline device: `run --license-cache` keeps the device-bound content license when Microsoft attaches an offline lease, for no longer than that lease (30 days, renewed on every online launch), and uses it only when Microsoft content licensing is unreachable. Devices without the designation receive online-only licenses and nothing is kept; an online refusal removes the stored entry.
+- Add `offline-pc` to show whether this device is the account's designated offline PC and, with `--set true --confirm`, to claim the designation (Microsoft allows three changes per year and one PC per account).
+- Classify content-license failures as unreachable, refused or other, so sign-in and response problems are never hidden by a stored offline license, and log the license and lease policy on every launch.

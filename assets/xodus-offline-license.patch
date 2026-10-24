@@ -1,3 +1,15 @@
+diff --git a/crates/xodus-cli/src/commands.rs b/crates/xodus-cli/src/commands.rs
+index 5a66715..727ca8a 100644
+--- a/crates/xodus-cli/src/commands.rs
++++ b/crates/xodus-cli/src/commands.rs
+@@ -5,6 +5,7 @@ pub mod extract_eappx;
+ pub mod license;
+ pub mod login;
+ pub mod logout;
++pub mod offline_pc;
+ pub mod profile;
+ pub mod game_activity;
+ pub mod achievements;
 diff --git a/crates/xodus-cli/src/commands/license.rs b/crates/xodus-cli/src/commands/license.rs
 index f0a820b..7bb7bdd 100644
 --- a/crates/xodus-cli/src/commands/license.rs
@@ -11,6 +23,137 @@ index f0a820b..7bb7bdd 100644
      if let Err(err) = license {
          eprintln!("{}", err);
          return ExitCode::FAILURE;
+diff --git a/crates/xodus-cli/src/commands/offline_pc.rs b/crates/xodus-cli/src/commands/offline_pc.rs
+new file mode 100644
+index 0000000..6b0ba6f
+--- /dev/null
++++ b/crates/xodus-cli/src/commands/offline_pc.rs
+@@ -0,0 +1,125 @@
++//! Experimental probe for the Xbox app's "offline permissions" setting.
++//!
++//! The Xbox PC app reads and changes the account's designated offline PC
++//! through the PC Game App Front Door:
++//!   GET  https://beige.xboxservices.com/pcgafd/config/offlinepc
++//!   POST https://beige.xboxservices.com/pcgafd/config/offlinepc/{true|false}
++//! authenticated with an XSTS token that carries device, title and user
++//! claims. Changing the setting is limited by Microsoft to a few times per
++//! year, so the write path requires an explicit confirmation flag.
++use std::process::ExitCode;
++
++use xodus::tokens::TokenManager;
++use base64::{Engine, prelude::BASE64_STANDARD};
++
++const ENDPOINT: &str = "https://beige.xboxservices.com/pcgafd/config/offlinepc";
++// Same client identity Xodus uses for its Xbox sign-in flows.
++const CLIENT_ID: &str = "000000004424da1f";
++const TITLE_ID: i64 = 704208617;
++const MAX_BODY: usize = 64 * 1024;
++
++pub async fn run(
++    client: &reqwest::Client,
++    tokens: &TokenManager,
++    set: Option<bool>,
++    confirm: bool,
++    relying_party: String,
++) -> ExitCode {
++    if set.is_some() && !confirm {
++        eprintln!(
++            "Refusing to change the offline PC designation without --confirm: Microsoft allows only a few changes per year and designating this device un-designates any other."
++        );
++        return ExitCode::FAILURE;
++    }
++    // Device-bound Xbox sign-in: device token + title token + user token -> XSTS.
++    let (_authenticator, sisu, device) =
++        match xodus::auth::do_sisu(client, tokens, CLIENT_ID, TITLE_ID).await {
++            Ok(result) => result,
++            Err(error) => {
++                eprintln!("Xbox device sign-in for the offline-permission request failed: {error}");
++                return ExitCode::FAILURE;
++            }
++        };
++    let xsts = if relying_party == "http://xboxlive.com" {
++        sisu.authorization_token.clone()
++    } else {
++        match xodus::auth::get_xsts_token(
++            Some(&device),
++            Some(&sisu.title_token),
++            Some(&sisu.user_token),
++            &relying_party,
++        )
++        .await
++        {
++            Ok(token) => token,
++            Err(error) => {
++                eprintln!("XSTS request for relying party {relying_party} failed: {error}");
++                return ExitCode::FAILURE;
++            }
++        }
++    };
++    let claims = xsts
++        .display_claims
++        .as_ref()
++        .map(|claims| {
++            claims
++                .xui
++                .iter()
++                .flat_map(|claim| claim.keys().cloned())
++                .collect::<Vec<_>>()
++                .join(",")
++        })
++        .unwrap_or_default();
++    eprintln!(
++        "Relying party {relying_party}: XSTS valid until {} with claim keys [{claims}]; device token valid until {}.",
++        xsts.not_after, device.not_after
++    );
++    let authorization = xsts.authorization_header_value();
++
++    let correlation = format!("{}.0", BASE64_STANDARD.encode(uuid::Uuid::new_v4().as_bytes()).trim_end_matches("="));
++    let request = match set {
++        None => client.get(ENDPOINT),
++        Some(value) => client.post(format!("{ENDPOINT}/{value}")).header("Content-Length", "0"),
++    };
++    let response = request
++        .header("Authorization", authorization)
++        .header("Accept", "application/json")
++        .header("Accept-Language", "en-US")
++        .header("X-MS-API-Version", "1.0")
++        .header("x-xbl-contract-version", "1")
++        .header("MS-CV", correlation.as_str())
++        .timeout(std::time::Duration::from_secs(30))
++        .send()
++        .await;
++    let response = match response {
++        Ok(response) => response,
++        Err(error) => {
++            eprintln!("Offline-permission request failed: {error}");
++            return ExitCode::FAILURE;
++        }
++    };
++    let status = response.status();
++    let headers: Vec<String> = response
++        .headers()
++        .iter()
++        .filter(|(name, _)| {
++            let name = name.as_str();
++            name.starts_with("x-") || name == "content-type" || name == "ms-cv" || name == "retry-after" || name == "www-authenticate"
++        })
++        .map(|(name, value)| format!("{name}: {}", value.to_str().unwrap_or("<binary>")))
++        .collect();
++    let body = match response.bytes().await {
++        Ok(bytes) => bytes,
++        Err(error) => {
++            eprintln!("Offline-permission response could not be read: {error}");
++            return ExitCode::FAILURE;
++        }
++    };
++    let shown = String::from_utf8_lossy(&body[..body.len().min(MAX_BODY)]);
++    println!("HTTP {status}");
++    for header in headers {
++        println!("{header}");
++    }
++    println!("{shown}");
++    if status.is_success() { ExitCode::SUCCESS } else { ExitCode::FAILURE }
++}
 diff --git a/crates/xodus-cli/src/commands/run.rs b/crates/xodus-cli/src/commands/run.rs
 index bb0b9e7..4214df5 100644
 --- a/crates/xodus-cli/src/commands/run.rs
@@ -51,13 +194,13 @@ index 06bff1e..1148424 100644
      .await;
      if let Err(err) = license {
 diff --git a/crates/xodus-cli/src/license.rs b/crates/xodus-cli/src/license.rs
-index 4518c22..ea7b9df 100644
+index 4518c22..a9724ca 100644
 --- a/crates/xodus-cli/src/license.rs
 +++ b/crates/xodus-cli/src/license.rs
-@@ -1,27 +1,181 @@
+@@ -1,27 +1,214 @@
 +use std::path::Path;
 +
-+use xodus::licensing::content::LicenseContentError;
++use xodus::licensing::content::{LicenseContentError, lease_policy, parse_lease};
  use xodus::licensing::splicense::{DeviceKey, SPLicense};
 +use xodus::models::devicecredential::License;
  use xodus::models::live::ExchangeUserTokenOutcome;
@@ -89,9 +232,16 @@ index 4518c22..ea7b9df 100644
 +    }
 +}
 +
++/// A content license as Microsoft issued it: the key license plus the leases
++/// that came with it.
++pub struct OnlineLicense {
++    pub key: License,
++    pub leases: Vec<License>,
++}
++
 +/// Fetches the content license online. `cache` enables device-bound offline
-+/// use: a successful license is recorded there and consulted only when
-+/// Microsoft is unreachable.
++/// use: a license that arrives with an offline lease is recorded there and
++/// consulted only when Microsoft is unreachable.
  pub async fn get_license(
      client: &reqwest::Client,
      tokens: &TokenManager,
@@ -102,9 +252,9 @@ index 4518c22..ea7b9df 100644
 +    let user = tokens.get_user().map_err(|error| error.to_string())?;
 +    match fetch_online(client, tokens, &user, content_id.clone(), market.clone()).await {
 +        Ok(license) => {
-+            let material = license_material(tokens, &license.splicense_block)?;
++            let material = license_material(tokens, &license.key.splicense_block)?;
 +            if let Some(root) = cache {
-+                record_license(root, &content_id, &user.puid, &market, &license, &material.1);
++                record_license(root, &content_id, &user.puid, &market, &license);
 +            }
 +            Ok(material)
 +        }
@@ -112,28 +262,54 @@ index 4518c22..ea7b9df 100644
 +    }
 +}
 +
-+fn record_license(
-+    root: &Path,
-+    content_id: &str,
-+    puid: &str,
-+    market: &str,
-+    license: &License,
-+    splicense: &SPLicense,
-+) {
++/// The offline lease Microsoft attached, if any: the earliest expiry among
++/// leases whose policy allows offline use, as Unix seconds.
++pub fn offline_lease_expiry(leases: &[License]) -> Option<u64> {
++    leases
++        .iter()
++        .filter_map(lease_policy)
++        .filter(|policy| policy.is_offline)
++        .filter_map(|policy| policy.expires_at.map(|expires| expires.timestamp()))
++        .filter(|seconds| *seconds > 0)
++        .map(|seconds| seconds as u64)
++        .min()
++}
++
++fn record_license(root: &Path, content_id: &str, puid: &str, market: &str, license: &OnlineLicense) {
 +    // Policy metadata only: no identifiers, keys or license blocks.
++    let leases: Vec<String> = license
++        .leases
++        .iter()
++        .map(|lease| match lease_policy(lease) {
++            Some(policy) => format!(
++                "lease offline={} expires={} poll={} enforcement={:?}",
++                policy.is_offline,
++                policy.expires_at.map(|t| t.to_rfc3339()).unwrap_or_else(|| "none".into()),
++                policy.poll_at.map(|t| t.to_rfc3339()).unwrap_or_else(|| "none".into()),
++                policy.lease_enforcement
++            ),
++            None => "lease without readable policy".to_string(),
++        })
++        .collect();
 +    eprintln!(
-+        "Content license policy: type {:?}, usage {:?}, category {:?}, binding {}, begin {:?}, signed expiry {} (unix seconds, 0 = unspecified), polling {} s.",
-+        license.license_info.license_type,
-+        license.license_info.license_usage,
-+        license.license_info.license_category,
-+        license.binding.binding_type,
-+        license.license_info.begin_date,
-+        splicense.license_expiration_time,
-+        splicense.polling_time,
++        "Content license policy: type {:?}, usage {:?}, category {:?}, binding {}, lease required {:?}; {} lease(s): {}.",
++        license.key.license_info.license_type,
++        license.key.license_info.license_usage,
++        license.key.license_info.license_category,
++        license.key.binding.binding_type,
++        license.key.binding.lease_required,
++        license.leases.len(),
++        if leases.is_empty() { "none".to_string() } else { leases.join("; ") },
 +    );
-+    match LicenseCache::new(root).store(content_id, puid, market, license, splicense, unix_now()) {
++    let offline_until = offline_lease_expiry(&license.leases);
++    match LicenseCache::new(root).store(content_id, puid, market, &license.key, offline_until, unix_now()) {
 +        Ok(Stored::Saved) => diagnostic("content-cache-stored"),
-+        Ok(Stored::OnlineOnly) => diagnostic("content-cache-skipped"),
++        Ok(Stored::OnlineOnly) => {
++            eprintln!(
++                "No offline lease was issued for this device; offline play requires it to be the account's designated offline device."
++            );
++            diagnostic("content-cache-skipped")
++        }
 +        Err(_) => diagnostic("content-cache-write-failed"),
 +    }
 +}
@@ -173,7 +349,7 @@ index 4518c22..ea7b9df 100644
 +                    license_material(tokens, &entry.splicense_block)
 +                }
 +                Ok(None) => Err(format!(
-+                    "{message} No valid offline license is stored for this game. Play it once while online to enable offline play."
++                    "{message} No valid offline license is stored for this game. Play it once while online on the account's designated offline device to enable offline play."
 +                )),
 +                Err(error) => Err(format!("{message} {error}")),
 +            }
@@ -221,7 +397,7 @@ index 4518c22..ea7b9df 100644
 +    user: &User,
 +    content_id: String,
 +    market: String,
-+) -> Result<License, OnlineFailure> {
++) -> Result<OnlineLicense, OnlineFailure> {
 +    let other = |message: String| OnlineFailure::Other(message);
      let dev_token = tokens
          .get_device_sts_token()
@@ -242,7 +418,7 @@ index 4518c22..ea7b9df 100644
      };
  
      let ms_device_token = xodus::api::live::exchange_device_token(
-@@ -32,14 +186,17 @@ pub async fn get_license(
+@@ -32,14 +219,17 @@ pub async fn get_license(
          Some(soap::PolicyReference::mbi_ssl()),
      )
      .await
@@ -263,7 +439,7 @@ index 4518c22..ea7b9df 100644
          dev_token,
          None,
          Some("Silent".to_string()),
-@@ -50,18 +207,22 @@ pub async fn get_license(
+@@ -50,18 +240,22 @@ pub async fn get_license(
          )],
      )
      .await
@@ -291,7 +467,7 @@ index 4518c22..ea7b9df 100644
          }
          ExchangeUserTokenOutcome::Issued(
              soap::BodyContent::RequestSecurityTokenResponseCollection(collection),
-@@ -70,16 +231,20 @@ pub async fn get_license(
+@@ -70,31 +264,42 @@ pub async fn get_license(
                  .security_tokens
                  .into_iter()
                  .next()
@@ -317,7 +493,8 @@ index 4518c22..ea7b9df 100644
      };
      let user_token = xodus::models::secrets::licensing_ticket(user_token);
  
-@@ -87,14 +252,14 @@ pub async fn get_license(
+-    let (_content, game_license) = xodus::licensing::content::get_license_content(
++    let (content, key) = xodus::licensing::content::get_license_content(
          client,
          ms_device_token,
          user_token,
@@ -331,11 +508,18 @@ index 4518c22..ea7b9df 100644
 +    .map_err(content_failure)?;
  
 -    license_material(tokens, &game_license.splicense_block)
-+    Ok(game_license)
++    // Leases are optional policy metadata; an unreadable lease never blocks
++    // the launch, it only means no offline permission is recorded.
++    let leases = content
++        .leases
++        .iter()
++        .filter_map(|lease| parse_lease(&lease.value).ok())
++        .collect();
++    Ok(OnlineLicense { key, leases })
  }
  
  fn license_material(tokens: &TokenManager, block: &str) -> Result<(DeviceKey, SPLicense), String> {
-@@ -121,6 +286,7 @@ fn license_material(tokens: &TokenManager, block: &str) -> Result<(DeviceKey, SP
+@@ -121,6 +326,7 @@ fn license_material(tokens: &TokenManager, block: &str) -> Result<(DeviceKey, SP
  mod tests {
      use super::*;
      use base64::{Engine, prelude::BASE64_STANDARD};
@@ -343,33 +527,52 @@ index 4518c22..ea7b9df 100644
      use xodus::models::secrets::Device;
      #[test]
      fn content_license_bad_blocks_return_fixed_errors_without_touching_credentials() {
-@@ -151,4 +317,111 @@ mod tests {
+@@ -151,4 +357,130 @@ mod tests {
          );
          assert_eq!(tokens.get_device_license().unwrap().hwid, "unchanged");
      }
 +
-+    fn cacheable(block: &str) -> License {
++    fn synthetic(block: &str, policies: Option<&str>) -> License {
 +        License {
 +            splicense_block: block.to_string(),
 +            license_info: LicenseInfo {
 +                license_type: LicenseType::Full,
-+                license_usage: Some(LicenseUsage::Offline),
-+                license_category: None,
++                license_usage: Some(LicenseUsage::Online),
++                license_category: Some("Retail".to_string()),
 +                issued_date: None,
 +                last_updated_date: None,
 +                begin_date: None,
++                expiration_date: None,
 +            },
-+            custom_policies: None,
++            custom_policies: policies.map(|json| BASE64_STANDARD.encode(json)),
 +            binding: Binding {
-+                binding_type: "Device".to_string(),
++                binding_type: "Machine".to_string(),
 +                device_id: None,
 +                product_id: None,
 +                pfm: None,
 +                user_id: None,
 +                usid: None,
-+                lease_required: None,
++                lease_required: Some("True".to_string()),
++                lease_renewal_period: Some("2880".to_string()),
++                associated_pfns: None,
 +            },
 +        }
++    }
++
++    #[test]
++    fn offline_lease_expiry_requires_an_offline_lease_and_takes_the_earliest() {
++        let offline = |expires: &str| synthetic("", Some(&format!(
++            "{{\"isOffline\":true,\"expiresAt\":\"{expires}\",\"pollAt\":\"2026-10-26T00:00:00+00:00\",\"leaseEnforcement\":\"EnforceConcurrency\"}}")));
++        let online = synthetic("", Some("{\"isOffline\":false,\"expiresAt\":\"2099-01-01T00:00:00+00:00\"}"));
++        let unreadable = synthetic("", Some("not json"));
++        assert_eq!(offline_lease_expiry(&[]), None);
++        assert_eq!(offline_lease_expiry(&[online.clone(), unreadable.clone(), synthetic("", None)]), None);
++        let early = offline("2026-11-01T00:00:00+00:00");
++        let late = offline("2026-11-23T22:11:38.7544426+00:00");
++        assert_eq!(offline_lease_expiry(&[late.clone(), online, early]), Some(1_793_491_200));
++        assert_eq!(offline_lease_expiry(&[late, unreadable]), Some(1_795_471_898));
++        // An offline lease without a usable expiry grants nothing.
++        assert_eq!(offline_lease_expiry(&[synthetic("", Some("{\"isOffline\":true}"))]), None);
 +    }
 +
 +    #[test]
@@ -381,7 +584,7 @@ index 4518c22..ea7b9df 100644
 +        let block = BASE64_STANDARD.encode([0u8; 8]);
 +        let now = 1_800_000_000;
 +        cache
-+            .store("content-a", "puid", "US", &cacheable(&block), &SPLicense::default(), now)
++            .store("content-a", "puid", "US", &synthetic(&block, None), Some(now + 20 * 24 * 60 * 60), now)
 +            .unwrap();
 +        let unreachable = || OnlineFailure::Unreachable("Could not connect.".into());
 +
@@ -426,7 +629,7 @@ index 4518c22..ea7b9df 100644
 +        let cache = LicenseCache::new(root.path());
 +        let block = BASE64_STANDARD.encode([0u8; 8]);
 +        cache
-+            .store("content-c", "puid", "US", &cacheable(&block), &SPLicense::default(), 1)
++            .store("content-c", "puid", "US", &synthetic(&block, None), Some(10), 1)
 +            .unwrap();
 +        let error = recover_offline(&tokens, Some(root.path()), "content-c", "puid",
 +            OnlineFailure::Refused("Not entitled.".into()), 2).err().unwrap();
@@ -457,30 +660,32 @@ index 4518c22..ea7b9df 100644
  }
 diff --git a/crates/xodus-cli/src/license_cache.rs b/crates/xodus-cli/src/license_cache.rs
 new file mode 100644
-index 0000000..2969a1f
+index 0000000..802bfef
 --- /dev/null
 +++ b/crates/xodus-cli/src/license_cache.rs
-@@ -0,0 +1,241 @@
+@@ -0,0 +1,231 @@
 +//! Device-bound offline license cache for installed games.
 +//!
-+//! Stores only the encrypted SPLicense block Microsoft issued for this device.
-+//! Its content keys stay wrapped by the device key that lives in the system
-+//! keyring, so the file alone decrypts nothing. Entries never outlive the
-+//! signed license expiry or a fixed offline window, are bound to one account,
-+//! and are purged whenever Microsoft refuses the content while online.
++//! Microsoft grants offline play only to the account's designated offline
++//! device: the content license then arrives with a device-bound *lease* whose
++//! policy says `isOffline` and carries an expiry (30 days, renewed on every
++//! online launch). This cache stores the encrypted SPLicense block for exactly
++//! that case and for no longer than the lease allows. The block's content keys
++//! stay wrapped by the device key in the system keyring, so the file alone
++//! decrypts nothing; entries are bound to one account and are purged whenever
++//! Microsoft refuses the content while online.
 +use std::fs;
 +use std::path::{Path, PathBuf};
 +use std::time::{SystemTime, UNIX_EPOCH};
 +
 +use serde_json::{Value, json};
-+use xodus::licensing::splicense::SPLicense;
-+use xodus::models::devicecredential::{License, LicenseUsage};
++use xodus::models::devicecredential::License;
 +
-+const SCHEMA: u64 = 1;
++const SCHEMA: u64 = 2;
 +const MAX_FILE_BYTES: u64 = 64 * 1024;
 +const MAX_BLOCK_CHARS: usize = 48 * 1024;
 +/// Upper bound on offline use after the last successful online license check,
-+/// independent of the license's own expiry.
++/// independent of the lease's own expiry.
 +pub const MAX_OFFLINE_SECONDS: u64 = 30 * 24 * 60 * 60;
 +
 +pub fn diagnostic(stage: &'static str) {
@@ -494,22 +699,17 @@ index 0000000..2969a1f
 +        .unwrap_or(0)
 +}
 +
-+/// Offline validity: the signed license expiry when present, never more than
-+/// the fixed offline window after `now`. A zero expiry means the license does
-+/// not state one and only the window applies.
-+pub fn offline_expiry(license_expiration_time: u32, now: u64) -> u64 {
-+    let window = now.saturating_add(MAX_OFFLINE_SECONDS);
-+    if license_expiration_time == 0 {
-+        window
-+    } else {
-+        window.min(u64::from(license_expiration_time))
-+    }
++/// Offline validity: the lease expiry, never more than the fixed offline
++/// window after `now`.
++pub fn offline_expiry(lease_expires_at: u64, now: u64) -> u64 {
++    now.saturating_add(MAX_OFFLINE_SECONDS).min(lease_expires_at)
 +}
 +
 +#[derive(Debug, PartialEq, Eq)]
 +pub enum Stored {
 +    Saved,
-+    /// Microsoft marked the license online-only; nothing is kept.
++    /// Microsoft attached no offline lease (this is not the account's
++    /// designated offline device); nothing is kept.
 +    OnlineOnly,
 +}
 +
@@ -556,34 +756,27 @@ index 0000000..2969a1f
 +        builder.create(&self.root)
 +    }
 +
-+    /// Records a license Microsoft just issued. Online-only licenses are not
-+    /// kept and replace any earlier entry for the same content.
++    /// Records a license Microsoft just issued. `offline_lease_expires_at` is
++    /// the expiry of the offline lease that came with it; without one nothing
++    /// is kept and any earlier entry for the same content is removed.
 +    pub fn store(
 +        &self,
 +        content_id: &str,
 +        puid: &str,
 +        market: &str,
 +        license: &License,
-+        splicense: &SPLicense,
++        offline_lease_expires_at: Option<u64>,
 +        now: u64,
 +    ) -> Result<Stored, String> {
 +        let path = self.entry_path(content_id)?;
-+        if matches!(
-+            license.license_info.license_usage,
-+            Some(LicenseUsage::Online)
-+        ) {
++        let Some(lease_expires_at) = offline_lease_expires_at else {
 +            remove_quietly(&path);
 +            return Ok(Stored::OnlineOnly);
-+        }
++        };
 +        if license.splicense_block.is_empty() || license.splicense_block.len() > MAX_BLOCK_CHARS {
 +            return Err("The content license block is not cacheable.".to_string());
 +        }
-+        let expires_at = offline_expiry(splicense.license_expiration_time, now);
-+        let usage = match license.license_info.license_usage {
-+            Some(LicenseUsage::Offline) => "offline",
-+            Some(LicenseUsage::Online) => "online",
-+            None => "unspecified",
-+        };
++        let expires_at = offline_expiry(lease_expires_at, now);
 +        let entry = json!({
 +            "schema": SCHEMA,
 +            "contentId": content_id.to_ascii_lowercase(),
@@ -591,8 +784,8 @@ index 0000000..2969a1f
 +            "market": market,
 +            "storedAt": now,
 +            "expiresAt": expires_at,
-+            "licenseExpirationTime": splicense.license_expiration_time,
-+            "licenseUsage": usage,
++            "leaseExpiresAt": lease_expires_at,
++            "bindingType": license.binding.binding_type,
 +            "splicenseBlock": license.splicense_block,
 +        });
 +        self.ensure_root().map_err(|_| cache_io_error())?;
@@ -704,55 +897,50 @@ index 0000000..2969a1f
 +mod tests;
 diff --git a/crates/xodus-cli/src/license_cache_tests.rs b/crates/xodus-cli/src/license_cache_tests.rs
 new file mode 100644
-index 0000000..e403c1c
+index 0000000..5bfeb0e
 --- /dev/null
 +++ b/crates/xodus-cli/src/license_cache_tests.rs
-@@ -0,0 +1,161 @@
+@@ -0,0 +1,155 @@
 +//! Synthetic license metadata only. No account, keyring, network or game files.
 +use super::*;
-+use xodus::models::devicecredential::{Binding, LicenseInfo, LicenseType};
++use xodus::models::devicecredential::{Binding, LicenseInfo, LicenseType, LicenseUsage};
 +
 +const DAY: u64 = 24 * 60 * 60;
 +const NOW: u64 = 1_800_000_000;
 +
-+fn license(usage: Option<LicenseUsage>, block: &str) -> License {
++fn license(block: &str) -> License {
 +    License {
 +        splicense_block: block.to_string(),
 +        license_info: LicenseInfo {
 +            license_type: LicenseType::Full,
-+            license_usage: usage,
-+            license_category: None,
++            license_usage: Some(LicenseUsage::Online),
++            license_category: Some("Retail".to_string()),
 +            issued_date: None,
 +            last_updated_date: None,
 +            begin_date: None,
++            expiration_date: None,
 +        },
 +        custom_policies: None,
 +        binding: Binding {
-+            binding_type: "Device".to_string(),
++            binding_type: "Machine".to_string(),
 +            device_id: Some("synthetic-device".to_string()),
 +            product_id: None,
 +            pfm: None,
 +            user_id: None,
 +            usid: None,
-+            lease_required: None,
++            lease_required: Some("True".to_string()),
++            lease_renewal_period: None,
++            associated_pfns: None,
 +        },
 +    }
 +}
 +
-+fn splicense(expiration: u32) -> SPLicense {
-+    SPLicense {
-+        license_expiration_time: expiration,
-+        ..SPLicense::default()
-+    }
-+}
-+
 +#[test]
-+fn offline_license_expiry_is_the_signed_time_capped_by_the_offline_window() {
-+    assert_eq!(offline_expiry(0, NOW), NOW + 30 * DAY);
-+    assert_eq!(offline_expiry((NOW + 3 * DAY) as u32, NOW), NOW + 3 * DAY);
-+    assert_eq!(offline_expiry((NOW + 400 * DAY) as u32, NOW), NOW + 30 * DAY);
-+    // A signed expiry already in the past yields an entry that never validates.
-+    assert!(offline_expiry(1, NOW) <= NOW);
++fn offline_license_expiry_is_the_lease_expiry_capped_by_the_offline_window() {
++    assert_eq!(offline_expiry(NOW + 3 * DAY, NOW), NOW + 3 * DAY);
++    assert_eq!(offline_expiry(NOW + 400 * DAY, NOW), NOW + 30 * DAY);
++    // A lease that already expired yields an entry that never validates.
++    assert!(offline_expiry(NOW - 1, NOW) <= NOW);
 +}
 +
 +#[test]
@@ -761,7 +949,7 @@ index 0000000..e403c1c
 +    let cache = LicenseCache::new(root.path());
 +    let block = "c3ludGhldGljLWJsb2Nr";
 +    let stored = cache
-+        .store("ABCDEF01-2345", "puid-a", "US", &license(Some(LicenseUsage::Offline), block), &splicense(0), NOW)
++        .store("ABCDEF01-2345", "puid-a", "US", &license(block), Some(NOW + 30 * DAY), NOW)
 +        .unwrap();
 +    assert_eq!(stored, Stored::Saved);
 +    let entry = cache.load("abcdef01-2345", "puid-a", NOW + DAY).unwrap().unwrap();
@@ -775,12 +963,11 @@ index 0000000..e403c1c
 +}
 +
 +#[test]
-+fn offline_license_expires_and_is_removed_without_extending_the_signed_time() {
++fn offline_license_expires_and_is_removed_without_extending_the_lease() {
 +    let root = tempfile::tempdir().unwrap();
 +    let cache = LicenseCache::new(root.path());
-+    let expiration = (NOW + 2 * DAY) as u32;
 +    cache
-+        .store("content-1", "puid", "US", &license(None, "YmxvY2s="), &splicense(expiration), NOW)
++        .store("content-1", "puid", "US", &license("YmxvY2s="), Some(NOW + 2 * DAY), NOW)
 +        .unwrap();
 +    assert!(cache.load("content-1", "puid", NOW + 2 * DAY - 1).unwrap().is_some());
 +    assert!(cache.load("content-1", "puid", NOW + 2 * DAY).unwrap().is_none());
@@ -789,21 +976,21 @@ index 0000000..e403c1c
 +}
 +
 +#[test]
-+fn offline_license_online_only_is_never_stored_and_purges_a_stale_entry() {
++fn offline_license_without_an_offline_lease_is_never_stored_and_purges_a_stale_entry() {
 +    let root = tempfile::tempdir().unwrap();
 +    let cache = LicenseCache::new(root.path());
 +    cache
-+        .store("content-2", "puid", "US", &license(Some(LicenseUsage::Offline), "YmxvY2s="), &splicense(0), NOW)
++        .store("content-2", "puid", "US", &license("YmxvY2s="), Some(NOW + 30 * DAY), NOW)
 +        .unwrap();
 +    assert!(root.path().join("content-2.json").exists());
 +    let stored = cache
-+        .store("content-2", "puid", "US", &license(Some(LicenseUsage::Online), "YmxvY2s="), &splicense(0), NOW)
++        .store("content-2", "puid", "US", &license("YmxvY2s="), None, NOW)
 +        .unwrap();
 +    assert_eq!(stored, Stored::OnlineOnly);
 +    assert!(!root.path().join("content-2.json").exists());
 +    assert!(cache.load("content-2", "puid", NOW).unwrap().is_none());
 +    assert!(cache
-+        .store("content-3", "puid", "US", &license(None, ""), &splicense(0), NOW)
++        .store("content-3", "puid", "US", &license(""), Some(NOW + DAY), NOW)
 +        .is_err());
 +    assert!(!root.path().join("content-3.json").exists());
 +}
@@ -814,7 +1001,7 @@ index 0000000..e403c1c
 +    let cache = LicenseCache::new(root.path());
 +    assert!(!cache.purge("content-4").unwrap());
 +    cache
-+        .store("content-4", "puid", "US", &license(None, "YmxvY2s="), &splicense(0), NOW)
++        .store("content-4", "puid", "US", &license("YmxvY2s="), Some(NOW + DAY), NOW)
 +        .unwrap();
 +    assert!(cache.purge("content-4").unwrap());
 +    assert!(!cache.purge("content-4").unwrap());
@@ -827,7 +1014,7 @@ index 0000000..e403c1c
 +    let cache = LicenseCache::new(root.path());
 +    let too_long = "x".repeat(65);
 +    for bad in ["", "../escape", "a/b", "a\\b", "with space", too_long.as_str()] {
-+        assert!(cache.store(bad, "puid", "US", &license(None, "YmxvY2s="), &splicense(0), NOW).is_err());
++        assert!(cache.store(bad, "puid", "US", &license("YmxvY2s="), Some(NOW + DAY), NOW).is_err());
 +        assert!(cache.load(bad, "puid", NOW).is_err());
 +        assert!(cache.purge(bad).is_err());
 +    }
@@ -837,14 +1024,14 @@ index 0000000..e403c1c
 +    std::fs::write(&corrupt, b"{ not json").unwrap();
 +    assert!(cache.load("content-5", "puid", NOW).unwrap().is_none());
 +    assert!(!corrupt.exists());
-+    let wrong_schema = json!({
-+        "schema": 2, "contentId": "content-6", "puid": "puid", "expiresAt": NOW + DAY, "splicenseBlock": "YmxvY2s=",
++    let old_schema = json!({
++        "schema": 1, "contentId": "content-6", "puid": "puid", "expiresAt": NOW + DAY, "splicenseBlock": "YmxvY2s=",
 +    });
-+    std::fs::write(root.path().join("content-6.json"), wrong_schema.to_string()).unwrap();
++    std::fs::write(root.path().join("content-6.json"), old_schema.to_string()).unwrap();
 +    assert!(cache.load("content-6", "puid", NOW).unwrap().is_none());
 +    assert!(!root.path().join("content-6.json").exists());
 +    let mismatched = json!({
-+        "schema": 1, "contentId": "other", "puid": "puid", "expiresAt": NOW + DAY, "splicenseBlock": "YmxvY2s=",
++        "schema": 2, "contentId": "other", "puid": "puid", "expiresAt": NOW + DAY, "splicenseBlock": "YmxvY2s=",
 +    });
 +    std::fs::write(root.path().join("content-7.json"), mismatched.to_string()).unwrap();
 +    assert!(cache.load("content-7", "puid", NOW).unwrap().is_none());
@@ -861,7 +1048,7 @@ index 0000000..e403c1c
 +    let nested = root.path().join("license-cache");
 +    let cache = LicenseCache::new(&nested);
 +    cache
-+        .store("content-9", "puid", "US", &license(None, "YmxvY2s="), &splicense(0), NOW)
++        .store("content-9", "puid", "US", &license("YmxvY2s="), Some(NOW + DAY), NOW)
 +        .unwrap();
 +    assert_eq!(std::fs::metadata(&nested).unwrap().permissions().mode() & 0o777, 0o700);
 +    assert_eq!(
@@ -870,7 +1057,7 @@ index 0000000..e403c1c
 +    );
 +}
 diff --git a/crates/xodus-cli/src/main.rs b/crates/xodus-cli/src/main.rs
-index c76096c..4595d38 100644
+index c76096c..e3ded3c 100644
 --- a/crates/xodus-cli/src/main.rs
 +++ b/crates/xodus-cli/src/main.rs
 @@ -8,6 +8,7 @@ use xodus::tokens::TokenManager;
@@ -890,7 +1077,23 @@ index c76096c..4595d38 100644
      },
      #[command(about = "Generate or decrypt base64-encoded CLEP challenge data")]
      Clep {
-@@ -410,6 +413,7 @@ async fn main() -> ExitCode {
+@@ -168,6 +171,15 @@ enum SubCommand {
+     SpLicense {
+         block: String,
+     },
++    #[command(about = "Show or change whether this device is the account's designated offline PC")]
++    OfflinePc {
++        #[arg(long, help = "Designate (true) or undesignate (false) this device; requires --confirm")]
++        set: Option<bool>,
++        #[arg(long, default_value_t = false)]
++        confirm: bool,
++        #[arg(long, default_value = "http://mp.microsoft.com/")]
++        relying_party: String,
++    },
+ }
+ 
+ #[derive(Subcommand)]
+@@ -410,6 +422,7 @@ async fn main() -> ExitCode {
              materialize_exe,
              materialize_chain,
              market,
@@ -898,7 +1101,7 @@ index c76096c..4595d38 100644
          } => {
              commands::run::run(
                  &client,
-@@ -420,6 +424,7 @@ async fn main() -> ExitCode {
+@@ -420,6 +433,7 @@ async fn main() -> ExitCode {
                  materialize_exe,
                  materialize_chain,
                  market,
@@ -906,3 +1109,147 @@ index c76096c..4595d38 100644
              )
              .await
          }
+@@ -431,6 +445,9 @@ async fn main() -> ExitCode {
+             ClepAction::Decrypt { data } => commands::clep::decrypt(data),
+         },
+         SubCommand::SpLicense { block } => commands::splicense::run(block),
++        SubCommand::OfflinePc { set, confirm, relying_party } => {
++            commands::offline_pc::run(&client, &tokens, set, confirm, relying_party).await
++        }
+     };
+ 
+     xodus::secrets::destroy_secrets();
+diff --git a/crates/xodus/src/licensing/content.rs b/crates/xodus/src/licensing/content.rs
+index 47992b8..489075b 100644
+--- a/crates/xodus/src/licensing/content.rs
++++ b/crates/xodus/src/licensing/content.rs
+@@ -12,7 +12,7 @@ use crate::models::licensing::{
+ 
+ #[path = "content_response.rs"]
+ mod response;
+-pub use response::LicenseContentError;
++pub use response::{LeasePolicy, LicenseContentError, lease_policy, parse_lease};
+ 
+ // we might need a bump in xal-rs concerning reqwest,
+ // that might block us from using the correlationvector extension
+diff --git a/crates/xodus/src/licensing/content_response.rs b/crates/xodus/src/licensing/content_response.rs
+index 06a4545..73732b0 100644
+--- a/crates/xodus/src/licensing/content_response.rs
++++ b/crates/xodus/src/licensing/content_response.rs
+@@ -201,6 +201,55 @@ fn parse(bytes: &[u8]) -> Result<(LicenseContent, License), LicenseContentError>
+     Ok((content, license))
+ }
+ 
++/// Parses one lease document from the content response (base64 XML), with
++/// the same bounds and fixed errors as the key license.
++pub fn parse_lease(value: &str) -> Result<License, LicenseContentError> {
++    if value.is_empty() || value.len() > MAX_BODY {
++        return Err(LicenseContentError::EmptyKeys);
++    }
++    let xml = BASE64_STANDARD
++        .decode(value)
++        .map_err(|_| LicenseContentError::Base64)?;
++    let xml = std::str::from_utf8(&xml).map_err(|_| LicenseContentError::Utf8)?;
++    quick_xml::de::from_str(xml).map_err(|_| LicenseContentError::Xml)
++}
++
++/// The policy Microsoft attaches to a lease (`CustomPolicies`, base64 JSON).
++/// Only the fields Nexus acts on are read; unknown fields are ignored.
++#[derive(Debug, Clone, PartialEq, Eq)]
++pub struct LeasePolicy {
++    /// Microsoft marks leases issued to the account's designated offline device.
++    pub is_offline: bool,
++    pub expires_at: Option<chrono::DateTime<chrono::Utc>>,
++    pub poll_at: Option<chrono::DateTime<chrono::Utc>>,
++    pub lease_enforcement: Option<String>,
++}
++
++pub fn lease_policy(lease: &License) -> Option<LeasePolicy> {
++    let encoded = lease.custom_policies.as_deref()?;
++    if encoded.len() > 64 * 1024 {
++        return None;
++    }
++    let json = BASE64_STANDARD.decode(encoded).ok()?;
++    let value: serde_json::Value = serde_json::from_slice(&json).ok()?;
++    let time = |key: &str| {
++        value
++            .get(key)
++            .and_then(serde_json::Value::as_str)
++            .and_then(|text| chrono::DateTime::parse_from_rfc3339(text).ok())
++            .map(|time| time.with_timezone(&chrono::Utc))
++    };
++    Some(LeasePolicy {
++        is_offline: value.get("isOffline").and_then(serde_json::Value::as_bool) == Some(true),
++        expires_at: time("expiresAt"),
++        poll_at: time("pollAt"),
++        lease_enforcement: value
++            .get("leaseEnforcement")
++            .and_then(serde_json::Value::as_str)
++            .map(str::to_string),
++    })
++}
++
+ #[cfg(test)]
+ #[path = "content_response_tests.rs"]
+ mod tests;
+diff --git a/crates/xodus/src/models/devicecredential.rs b/crates/xodus/src/models/devicecredential.rs
+index b30f005..fe6565f 100644
+--- a/crates/xodus/src/models/devicecredential.rs
++++ b/crates/xodus/src/models/devicecredential.rs
+@@ -131,7 +131,7 @@ pub struct DeviceAddResponse {
+     pub server_info: ServerInfo,
+ }
+ 
+-#[derive(Deserialize, Debug)]
++#[derive(Deserialize, Debug, Clone)]
+ #[serde(rename_all = "PascalCase")]
+ pub struct License {
+     #[serde(rename = "SPLicenseBlock")]
+@@ -141,7 +141,7 @@ pub struct License {
+     pub binding: Binding,
+ }
+ 
+-#[derive(Deserialize, Debug)]
++#[derive(Deserialize, Debug, Clone)]
+ #[serde(rename_all = "PascalCase")]
+ pub struct LicenseInfo {
+     #[serde(rename = "@Type")]
+@@ -153,9 +153,11 @@ pub struct LicenseInfo {
+     pub issued_date: Option<String>,
+     pub last_updated_date: Option<String>,
+     pub begin_date: Option<String>,
++    /// Present on lease licenses.
++    pub expiration_date: Option<String>,
+ }
+ 
+-#[derive(Deserialize, Debug)]
++#[derive(Deserialize, Debug, Clone)]
+ #[serde(rename_all = "PascalCase")]
+ pub struct Binding {
+     #[serde(rename = "@Binding_Type")]
+@@ -170,18 +172,23 @@ pub struct Binding {
+     #[serde(rename = "USID")]
+     pub usid: Option<String>,
+     pub lease_required: Option<String>,
++    /// Lease licenses: renewal period in minutes.
++    pub lease_renewal_period: Option<String>,
++    #[serde(rename = "AssociatedPFNs")]
++    pub associated_pfns: Option<String>,
+ }
+ 
+-#[derive(Deserialize, Debug)]
++#[derive(Deserialize, Debug, Clone, PartialEq, Eq)]
+ #[serde(rename_all = "PascalCase")]
+ pub enum LicenseType {
+     Device,
+     User,
+     Full,
+     KeyHolder,
++    Lease,
+ }
+ 
+-#[derive(Deserialize, Debug)]
++#[derive(Deserialize, Debug, Clone, PartialEq, Eq)]
+ #[serde(rename_all = "PascalCase")]
+ pub enum LicenseUsage {
+     Online,

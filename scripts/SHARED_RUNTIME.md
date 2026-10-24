@@ -85,14 +85,23 @@ are not implemented.
 
 ### Offline launch licenses
 
+Microsoft grants offline play only to the account's designated offline device
+(the Xbox app's **Offline permissions** setting, one PC per account, three
+changes per 365 days). For that device the content-license response carries,
+next to the Machine-bound key license, a *lease* whose `CustomPolicies` say
+`isOffline: true`, with an `expiresAt` 30 days out and a `pollAt` renewal
+point; other devices get a User-bound key without an offline lease.
+`xodus-cli offline-pc` reads that designation through the PC Game App Front
+Door (`pcgafd/config/offlinepc`, XSTS for relying party `http://mp.microsoft.com/`)
+and `--set true --confirm` claims it for the Nexus device.
+
 `xodus-cli run --license-cache <dir>` (backend 0.2.12, `xodus-offline-license.patch`)
-records the encrypted SPLicense block Microsoft issues for a successful launch,
-keyed by content ID and bound to the signed-in account's PUID. The file holds
-only what Microsoft sent: its content keys stay wrapped by the device key that
-lives in the system keyring, so the cache alone decrypts nothing and a sign-out
-removes it. An entry is valid until the license's own signed expiry, never more
-than 30 days after the last online check, and licenses Microsoft marks
-`LicenseUsage="Online"` are never stored.
+records the encrypted SPLicense block only when such an offline lease arrived,
+keyed by content ID and bound to the signed-in account's PUID, valid until the
+lease expiry and never more than 30 days after the last online check. The file
+holds only what Microsoft sent: its content keys stay wrapped by the device key
+that lives in the system keyring, so the cache alone decrypts nothing and a
+sign-out removes it. Every online launch renews the entry.
 
 The cache is consulted only when the license service is unreachable: transport
 failures, timeouts, HTTP 429 and 5xx. A refusal (HTTP 403 or a satisfaction

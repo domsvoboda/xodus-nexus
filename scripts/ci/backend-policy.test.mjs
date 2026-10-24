@@ -352,9 +352,11 @@ test('offline licenses are device-bound, fail closed and never bypass an online 
   assert.equal(lock.patches.findIndex(p => p.file === entry.file), lock.patches.length - 1);
   const files = [...patch.matchAll(/^diff --git a\/(\S+) b\/\S+$/gm)].map(match => match[1]);
   assert.deepEqual(files.sort(), [
-    'crates/xodus-cli/src/commands/license.rs', 'crates/xodus-cli/src/commands/run.rs', 'crates/xodus-cli/src/commands/streaming.rs',
+    'crates/xodus-cli/src/commands.rs', 'crates/xodus-cli/src/commands/license.rs', 'crates/xodus-cli/src/commands/offline_pc.rs',
+    'crates/xodus-cli/src/commands/run.rs', 'crates/xodus-cli/src/commands/streaming.rs',
     'crates/xodus-cli/src/license.rs', 'crates/xodus-cli/src/license_cache.rs', 'crates/xodus-cli/src/license_cache_tests.rs',
     'crates/xodus-cli/src/main.rs',
+    'crates/xodus/src/licensing/content.rs', 'crates/xodus/src/licensing/content_response.rs', 'crates/xodus/src/models/devicecredential.rs',
   ].sort());
   // Downloads and the CIK dump keep online-only licensing: those call sites only gain a `None` cache argument.
   for (const file of ['commands/streaming.rs', 'commands/license.rs']) {
@@ -365,19 +367,24 @@ test('offline licenses are device-bound, fail closed and never bypass an online 
       file === 'commands/streaming.rs' ? ['None,'] : ['let license = get_license(client, tokens, content_id, market, None).await;']);
   }
   for (const expected of ['offline_license_roundtrip_is_bound_to_content_and_account',
-    'offline_license_expires_and_is_removed_without_extending_the_signed_time',
-    'offline_license_online_only_is_never_stored_and_purges_a_stale_entry',
+    'offline_license_expires_and_is_removed_without_extending_the_lease',
+    'offline_license_without_an_offline_lease_is_never_stored_and_purges_a_stale_entry',
     'offline_license_rejects_unsafe_identifiers_and_malformed_entries',
     'offline_license_files_are_private_to_the_user',
+    'offline_lease_expiry_requires_an_offline_lease_and_takes_the_earliest',
     'offline_recovery_uses_the_stored_license_only_when_microsoft_is_unreachable',
     'offline_recovery_purges_the_stored_license_when_microsoft_refuses',
     'online_failures_are_classified_without_inferring_entitlement',
     'content_license_bad_blocks_return_fixed_errors_without_touching_credentials',
-    'MAX_OFFLINE_SECONDS: u64 = 30 * 24 * 60 * 60', 'LicenseUsage::Online', '--license-cache']) assert.ok(patch.includes(expected), expected);
+    'MAX_OFFLINE_SECONDS: u64 = 30 * 24 * 60 * 60', '"isOffline"', 'pub fn parse_lease', 'pub fn lease_policy',
+    'Refusing to change the offline PC designation without --confirm', 'pcgafd/config/offlinepc', '--license-cache']) assert.ok(patch.includes(expected), expected);
   // The cache stores Microsoft's encrypted SPLicense block only; the device key stays in the keyring.
-  assert.doesNotMatch(patch, /diff --git a\/.*(?:tokens\/|licensing\/|login\.rs|package_plan\.rs|Cargo)/);
+  assert.doesNotMatch(patch, /diff --git a\/.*(?:tokens\/|login\.rs|package_plan\.rs|Cargo|content_response_tests)/);
   const added = patch.split('\n').filter(line => line.startsWith('+') && !line.startsWith('+++')).join('\n');
   assert.doesNotMatch(added, /"deviceKey"|"contentKey"|unpack\(/);
+  // Offline permission is Microsoft's lease, never inferred from the key license or ownership.
+  assert.match(added, /let Some\(lease_expires_at\) = offline_lease_expires_at else \{[\s\S]*?return Ok\(Stored::OnlineOnly\)/);
+  assert.match(added, /\.filter\(\|policy\| policy\.is_offline\)/);
   assert.match(added, /OnlineFailure::Refused\(_\) => \{[\s\S]*?purge\(content_id\)/);
   assert.match(added, /OnlineFailure::Other\(_\) => Err\(message\)/);
   const stages = await fs.readFile('src/shared/content-license.ts', 'utf8');

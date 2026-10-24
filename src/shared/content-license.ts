@@ -25,7 +25,7 @@ export function contentLicenseFailure(log: string[]): string | undefined {
     if (record) last = licenseResolved.has(record.stage) ? undefined : record;
   }
   if (!last) return;
-  if (last.stage === 'content-cache-missing') return 'Microsoft content licensing is unreachable and no offline license is stored for this game. Connect to the internet and play it once to enable offline play.';
+  if (last.stage === 'content-cache-missing') return 'Microsoft content licensing is unreachable and no offline license is stored for this game. Offline play needs this device set as the account\'s offline device, then one launch while online.';
   if (last.stage === 'content-cache-expired') return 'Microsoft content licensing is unreachable and the stored offline license for this game has expired. Connect to the internet and play it once to renew offline play.';
   if (last.stage === 'content-cache-invalid') return 'Microsoft content licensing is unreachable and the stored offline license for this game was unreadable. Connect to the internet and play it once to renew offline play.';
   if (last.stage === 'content-cache-purged') return 'Microsoft did not grant a license for this account and package, so its offline license was removed. Check the purchased edition, subscription and Store region.';
