@@ -435,6 +435,7 @@ async function runAuth(command: 'login' | 'logout'): Promise<void> {
     operations.set(id, tracked.child);
     const result = await tracked.result;
     accountRefresh.invalidate();
+    if (command === 'logout') await removeOfflineLicenses();
     if (result.code === 0) await refreshAccount(false, true);
     authState = {
       ...authState,
@@ -465,6 +466,12 @@ async function startInstall(request: InstallRequest, updateGame?: Game): Promise
 }
 
 function contentManager(): GameContent { return new GameContent(path.dirname(store.settings.runtimeRoot)); }
+/** Device-bound offline licenses written by `xodus-cli run --license-cache`. */
+function licenseCacheDirectory(dataRoot: string): string { return path.join(dataRoot, 'license-cache'); }
+/** Offline licenses belong to the signed-in account; never keep them past a sign-out attempt. */
+async function removeOfflineLicenses(): Promise<void> {
+  await fs.rm(licenseCacheDirectory(path.dirname(store.settings.runtimeRoot)), { recursive: true, force: true }).catch(() => undefined);
+}
 async function gameContent(id: string) {
   const game = store.games.find(entry => entry.id === id);
   if (!game) throw Error('Game not found.');
@@ -844,9 +851,10 @@ async function prepareGameLaunch(id: string): Promise<void> {
   if (await unbridgedCloudSaveRuntime(wine)) {
     throw new Error('The active runtime has cloud saves without the required service bridge. Update the active runtime in Settings.');
   }
-  const args = gameLaunchArguments(inspected, wine, store.settings.market, backend.current.linuxRunPatch);
-  const operationId = `game-${id}`;
   const dataRoot = path.dirname(store.settings.runtimeRoot);
+  const args = gameLaunchArguments(inspected, wine, store.settings.market, backend.current.linuxRunPatch,
+    backend.current.capabilities.licenseCache ? licenseCacheDirectory(dataRoot) : undefined);
+  const operationId = `game-${id}`;
   const logDirectory = path.join(dataRoot, 'logs');
   const logPath = path.join(logDirectory, `${id}-latest.log`);
   await fs.mkdir(logDirectory, { recursive: true });

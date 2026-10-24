@@ -341,3 +341,42 @@ test('corresponding-source archive preserves nested target source directories', 
     assert.match(build, /copyFile\(path.join\(root, 'scripts\/backend-source-archive.mjs'\)/);
   } finally { await fs.rm(root, { recursive: true, force: true }); }
 });
+
+test('offline licenses are device-bound, fail closed and never bypass an online refusal', async () => {
+  const lock = JSON.parse(await fs.readFile('assets/backend-source.lock.json', 'utf8'));
+  const entry = lock.patches.find(p => p.file === 'xodus-offline-license.patch');
+  assert.ok(entry);
+  const patch = await fs.readFile(`assets/${entry.file}`, 'utf8');
+  assert.equal(createHash('sha256').update(patch).digest('hex'), entry.sha256);
+  // Applies on top of every other backend patch, including the content-response parser it relies on.
+  assert.equal(lock.patches.findIndex(p => p.file === entry.file), lock.patches.length - 1);
+  const files = [...patch.matchAll(/^diff --git a\/(\S+) b\/\S+$/gm)].map(match => match[1]);
+  assert.deepEqual(files.sort(), [
+    'crates/xodus-cli/src/commands/license.rs', 'crates/xodus-cli/src/commands/run.rs', 'crates/xodus-cli/src/license.rs',
+    'crates/xodus-cli/src/license_cache.rs', 'crates/xodus-cli/src/license_cache_tests.rs', 'crates/xodus-cli/src/main.rs',
+  ].sort());
+  for (const expected of ['offline_license_roundtrip_is_bound_to_content_and_account',
+    'offline_license_expires_and_is_removed_without_extending_the_signed_time',
+    'offline_license_online_only_is_never_stored_and_purges_a_stale_entry',
+    'offline_license_rejects_unsafe_identifiers_and_malformed_entries',
+    'offline_license_files_are_private_to_the_user',
+    'offline_recovery_uses_the_stored_license_only_when_microsoft_is_unreachable',
+    'offline_recovery_purges_the_stored_license_when_microsoft_refuses',
+    'online_failures_are_classified_without_inferring_entitlement',
+    'content_license_bad_blocks_return_fixed_errors_without_touching_credentials',
+    'MAX_OFFLINE_SECONDS: u64 = 30 * 24 * 60 * 60', 'LicenseUsage::Online', '--license-cache']) assert.ok(patch.includes(expected), expected);
+  // The cache stores Microsoft's encrypted SPLicense block only; the device key stays in the keyring.
+  assert.doesNotMatch(patch, /diff --git a\/.*(?:tokens\/|licensing\/|login\.rs|streaming\.rs|package_plan\.rs|Cargo)/);
+  const added = patch.split('\n').filter(line => line.startsWith('+') && !line.startsWith('+++')).join('\n');
+  assert.doesNotMatch(added, /"deviceKey"|"contentKey"|unpack\(/);
+  assert.match(added, /OnlineFailure::Refused\(_\) => \{[\s\S]*?purge\(content_id\)/);
+  assert.match(added, /OnlineFailure::Other\(_\) => Err\(message\)/);
+  const stages = await fs.readFile('src/shared/content-license.ts', 'utf8');
+  for (const stage of ['content-cache-stored', 'content-cache-skipped', 'content-cache-write-failed', 'content-cache-used',
+    'content-cache-missing', 'content-cache-expired', 'content-cache-invalid', 'content-cache-purged']) {
+    assert.ok(patch.includes(`"${stage}"`), stage);
+    assert.ok(stages.includes(`'${stage}'`), stage);
+  }
+  const build = await fs.readFile('scripts/build-backend.mjs', 'utf8');
+  assert.match(build, /command\('cargo', \['test', '--locked', \.\.\.offline, \.\.\.features, '-p', 'xodus-cli'\]\)/);
+});

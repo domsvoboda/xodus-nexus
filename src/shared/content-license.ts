@@ -3,7 +3,12 @@ export const contentLicenseStages = new Set([
   'content-timeout', 'content-request', 'content-http', 'content-size', 'content-read',
   'content-json', 'content-schema', 'content-not-entitled', 'content-empty-keys',
   'content-base64', 'content-utf8', 'content-xml', 'content-license-blob', 'content-parsed',
+  // Device-bound offline license cache (backend `run --license-cache`).
+  'content-cache-stored', 'content-cache-skipped', 'content-cache-write-failed', 'content-cache-used',
+  'content-cache-missing', 'content-cache-expired', 'content-cache-invalid', 'content-cache-purged',
 ]);
+/** Stages after which the launch holds a usable license. */
+const licenseResolved = new Set(['content-parsed', 'content-cache-used']);
 
 export function contentLicenseDiagnostic(line: string): { stage: string; status?: number } | undefined {
   if (line.length > 128 || /[\r\n]/.test(line)) return;
@@ -17,9 +22,14 @@ export function contentLicenseFailure(log: string[]): string | undefined {
   let last: ReturnType<typeof contentLicenseDiagnostic>;
   for (const line of log.slice(-256)) {
     const record = contentLicenseDiagnostic(line);
-    if (record) last = record.stage === 'content-parsed' ? undefined : record;
+    if (record) last = licenseResolved.has(record.stage) ? undefined : record;
   }
   if (!last) return;
+  if (last.stage === 'content-cache-missing') return 'Microsoft content licensing is unreachable and no offline license is stored for this game. Connect to the internet and play it once to enable offline play.';
+  if (last.stage === 'content-cache-expired') return 'Microsoft content licensing is unreachable and the stored offline license for this game has expired. Connect to the internet and play it once to renew offline play.';
+  if (last.stage === 'content-cache-invalid') return 'Microsoft content licensing is unreachable and the stored offline license for this game was unreadable. Connect to the internet and play it once to renew offline play.';
+  if (last.stage === 'content-cache-purged') return 'Microsoft did not grant a license for this account and package, so its offline license was removed. Check the purchased edition, subscription and Store region.';
+  if (['content-cache-stored', 'content-cache-skipped', 'content-cache-write-failed'].includes(last.stage)) return;
   if (last.stage === 'content-http') {
     if (last.status === 401) return 'Microsoft rejected content licensing sign-in (HTTP 401). Sign in again in Settings.';
     if (last.status === 403) return 'Microsoft denied this content-license request (HTTP 403). Check the account, purchased edition and Store region.';

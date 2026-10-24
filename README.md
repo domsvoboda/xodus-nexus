@@ -55,6 +55,7 @@ Flatpak version available through Discover. Other browsers are not supported.
 - **Manage content** installs licensed add-ons and campaign packages.
 - **Install Queue** downloads games one at a time and lets you add more while downloading or playing another game. Pause and resume are supported, including manual resume after restarting the launcher.
 - Cancelling a new installation can keep or delete its partial files. Existing games, updates and DLC keep their files.
+- Play installed games offline: after a game has started once while online, the launcher keeps a device-bound offline license for up to 30 days and uses it only when Microsoft licensing cannot be reached. The license is tied to the signed-in account and removed on Sign out; some licenses are online-only and are never kept. Requires Nexus backend 0.2.12 or later.
 - Right-click an installed game for settings, VC++ prerequisites, shortcuts or removal.
 - Removing a game can keep its files or permanently delete its installation folder without using Trash. Saves inside that folder are deleted too; saves elsewhere are not affected.
 - Game settings offer an optional **DualSense compatibility mode** if a standard DualSense is not detected. It applies only to that game and may disable advanced haptics and adaptive triggers.

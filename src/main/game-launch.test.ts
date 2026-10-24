@@ -26,6 +26,13 @@ describe('generic package launch', () => {
     expect(gameLaunchArguments(game, '/shared/wine', '', LINUX_RUN_PATCH))
       .toEqual(['run', '/package', '/shared/wine', '--exe', 'Launcher.exe', '--materialize-chain']);
   });
+  it('passes the offline license cache only when the launcher provides one', () => {
+    expect(gameLaunchArguments({ path: '/package', executable: 'Game.exe' }, '/wine', 'US', LINUX_RUN_PATCH, '/data/license-cache'))
+      .toEqual(['run', '/package', '/wine', '--exe', 'Game.exe', '--materialize-chain', '--market', 'US', '--license-cache', '/data/license-cache']);
+    for (const cache of [undefined, '']) {
+      expect(gameLaunchArguments({ path: '/package', executable: 'Game.exe' }, '/wine', '', LINUX_RUN_PATCH, cache)).not.toContain('--license-cache');
+    }
+  });
   it('fails closed on an old backend or a missing manifest entry', () => {
     expect(() => gameLaunchArguments({ path: '/package', executable: 'Game.exe' }, '/wine', '', 'old')).toThrow('Update the backend');
     expect(() => gameLaunchArguments({ path: '/package' }, '/wine', '', LINUX_RUN_PATCH)).toThrow('manifest has no launch executable');

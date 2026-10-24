@@ -13,6 +13,8 @@ export interface BackendCapabilities {
   download: boolean;
   streaming: boolean;
   streamingProgressJson?: boolean;
+  /** `run --license-cache`: device-bound offline licenses when Microsoft is unreachable. */
+  licenseCache?: boolean;
   streamingControls?: boolean;
   streamingBandwidthLimit?: boolean;
   packageSelection?: boolean;

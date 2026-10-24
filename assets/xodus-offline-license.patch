@@ -1,0 +1,884 @@
+diff --git a/crates/xodus-cli/src/commands/license.rs b/crates/xodus-cli/src/commands/license.rs
+index f0a820b..7bb7bdd 100644
+--- a/crates/xodus-cli/src/commands/license.rs
++++ b/crates/xodus-cli/src/commands/license.rs
+@@ -13,7 +13,7 @@ pub async fn run(
+     market: String,
+     ciks: String,
+ ) -> ExitCode {
+-    let license = get_license(client, tokens, content_id, market).await;
++    let license = get_license(client, tokens, content_id, market, None).await;
+     if let Err(err) = license {
+         eprintln!("{}", err);
+         return ExitCode::FAILURE;
+diff --git a/crates/xodus-cli/src/commands/run.rs b/crates/xodus-cli/src/commands/run.rs
+index bb0b9e7..4214df5 100644
+--- a/crates/xodus-cli/src/commands/run.rs
++++ b/crates/xodus-cli/src/commands/run.rs
+@@ -468,6 +468,7 @@ pub async fn run(
+     materialize_exe: bool,
+     materialize_chain: bool,
+     market: Option<String>,
++    license_cache: Option<String>,
+ ) -> ExitCode {
+     let mut lfiles: HashMap<String, SegmentFile> = HashMap::new();
+ 
+@@ -505,11 +506,13 @@ pub async fn run(
+         lfiles.extend(sfiles);
+     }
+ 
++    let license_cache = license_cache.map(PathBuf::from);
+     let license = get_license(
+         client,
+         tokens,
+         xvd.content_id().to_string(),
+         market.unwrap_or("neutral".to_string()),
++        license_cache.as_deref(),
+     )
+     .await;
+     if let Err(err) = license {
+diff --git a/crates/xodus-cli/src/license.rs b/crates/xodus-cli/src/license.rs
+index 4518c22..a19706f 100644
+--- a/crates/xodus-cli/src/license.rs
++++ b/crates/xodus-cli/src/license.rs
+@@ -1,27 +1,170 @@
++use std::path::Path;
++
++use xodus::licensing::content::LicenseContentError;
+ use xodus::licensing::splicense::{DeviceKey, SPLicense};
++use xodus::models::devicecredential::License;
+ use xodus::models::live::ExchangeUserTokenOutcome;
+-use xodus::models::secrets::Token;
++use xodus::models::secrets::{Token, User};
+ use xodus::models::soap;
+ use xodus::tokens::TokenManager;
+ 
++use crate::license_cache::{LicenseCache, Stored, diagnostic, unix_now};
++
++/// Why the online content-license request did not produce a license.
++#[derive(Debug)]
++pub enum OnlineFailure {
++    /// Microsoft could not be reached or answered with a transient service
++    /// error. A stored offline license may be used.
++    Unreachable(String),
++    /// Microsoft answered and refused this account or content. Any stored
++    /// offline license is removed.
++    Refused(String),
++    /// Credential, sign-in or response problems that offline play must not hide.
++    Other(String),
++}
++
++impl OnlineFailure {
++    pub fn message(&self) -> &str {
++        match self {
++            Self::Unreachable(message) | Self::Refused(message) | Self::Other(message) => message,
++        }
++    }
++}
++
++/// Fetches the content license online. `cache` enables device-bound offline
++/// use: a successful license is recorded there and consulted only when
++/// Microsoft is unreachable.
+ pub async fn get_license(
+     client: &reqwest::Client,
+     tokens: &TokenManager,
+     content_id: String,
+     market: String,
++    cache: Option<&Path>,
+ ) -> std::result::Result<(DeviceKey, SPLicense), String> {
++    let user = tokens.get_user().map_err(|error| error.to_string())?;
++    match fetch_online(client, tokens, &user, content_id.clone(), market.clone()).await {
++        Ok(license) => {
++            let material = license_material(tokens, &license.splicense_block)?;
++            if let Some(root) = cache {
++                record_license(root, &content_id, &user.puid, &market, &license, &material.1);
++            }
++            Ok(material)
++        }
++        Err(failure) => recover_offline(tokens, cache, &content_id, &user.puid, failure, unix_now()),
++    }
++}
++
++fn record_license(
++    root: &Path,
++    content_id: &str,
++    puid: &str,
++    market: &str,
++    license: &License,
++    splicense: &SPLicense,
++) {
++    match LicenseCache::new(root).store(content_id, puid, market, license, splicense, unix_now()) {
++        Ok(Stored::Saved) => diagnostic("content-cache-stored"),
++        Ok(Stored::OnlineOnly) => diagnostic("content-cache-skipped"),
++        Err(_) => diagnostic("content-cache-write-failed"),
++    }
++}
++
++/// Decides whether a stored offline license may stand in for the failed
++/// online request. Only an unreachable service qualifies; refusals purge.
++pub fn recover_offline(
++    tokens: &TokenManager,
++    cache: Option<&Path>,
++    content_id: &str,
++    puid: &str,
++    failure: OnlineFailure,
++    now: u64,
++) -> Result<(DeviceKey, SPLicense), String> {
++    let message = failure.message().to_string();
++    match failure {
++        OnlineFailure::Refused(_) => {
++            if let Some(root) = cache
++                && LicenseCache::new(root).purge(content_id) == Ok(true)
++            {
++                diagnostic("content-cache-purged");
++            }
++            Err(message)
++        }
++        OnlineFailure::Other(_) => Err(message),
++        OnlineFailure::Unreachable(_) => {
++            let Some(root) = cache else {
++                return Err(message);
++            };
++            match LicenseCache::new(root).load(content_id, puid, now) {
++                Ok(Some(entry)) => {
++                    diagnostic("content-cache-used");
++                    eprintln!(
++                        "Microsoft content licensing is unreachable; using the offline license stored on this device (valid for {} more day(s)).",
++                        entry.expires_at.saturating_sub(now).div_ceil(24 * 60 * 60)
++                    );
++                    license_material(tokens, &entry.splicense_block)
++                }
++                Ok(None) => Err(format!(
++                    "{message} No valid offline license is stored for this game. Play it once while online to enable offline play."
++                )),
++                Err(error) => Err(format!("{message} {error}")),
++            }
++        }
++    }
++}
++
++fn transport_failure(error: &(dyn std::error::Error + 'static)) -> bool {
++    let mut current = Some(error);
++    while let Some(error) = current {
++        if let Some(request) = error.downcast_ref::<reqwest::Error>() {
++            return request.is_connect() || request.is_timeout() || request.is_request();
++        }
++        current = error.source();
++    }
++    false
++}
++
++fn ticket_failure(error: &(dyn std::error::Error + 'static), message: &str) -> OnlineFailure {
++    if transport_failure(error) {
++        OnlineFailure::Unreachable(message.to_string())
++    } else {
++        OnlineFailure::Other(message.to_string())
++    }
++}
++
++fn content_failure(error: LicenseContentError) -> OnlineFailure {
++    let message = error.to_string();
++    match error {
++        LicenseContentError::Timeout
++        | LicenseContentError::Request
++        | LicenseContentError::Read
++        | LicenseContentError::RateLimited
++        | LicenseContentError::Server(_) => OnlineFailure::Unreachable(message),
++        LicenseContentError::Forbidden | LicenseContentError::NotEntitled => {
++            OnlineFailure::Refused(message)
++        }
++        _ => OnlineFailure::Other(message),
++    }
++}
++
++async fn fetch_online(
++    client: &reqwest::Client,
++    tokens: &TokenManager,
++    user: &User,
++    content_id: String,
++    market: String,
++) -> Result<License, OnlineFailure> {
++    let other = |message: String| OnlineFailure::Other(message);
+     let dev_token = tokens
+         .get_device_sts_token()
+-        .map_err(|error| error.to_string())?;
++        .map_err(|error| other(error.to_string()))?;
+     let Token::Legacy(dev_token) = dev_token else {
+-        return Err("Invalid STS token".to_string());
++        return Err(other("Invalid STS token".to_string()));
+     };
+-    let user = tokens.get_user().map_err(|error| error.to_string())?;
+     let user_token = tokens
+         .get_user_sts_token()
+-        .map_err(|error| error.to_string())?;
++        .map_err(|error| other(error.to_string()))?;
+     let Token::Legacy(legacy) = user_token else {
+-        return Err("Unspported user token".to_string());
++        return Err(other("Unspported user token".to_string()));
+     };
+ 
+     let ms_device_token = xodus::api::live::exchange_device_token(
+@@ -32,14 +175,17 @@ pub async fn get_license(
+         Some(soap::PolicyReference::mbi_ssl()),
+     )
+     .await
+-    .map_err(|_| {
+-        "Microsoft device-ticket request failed. Check your connection and sign-in.".to_string()
++    .map_err(|error| {
++        ticket_failure(
++            &error,
++            "Microsoft device-ticket request failed. Check your connection and sign-in.",
++        )
+     })?;
+ 
+     let user_token = xodus::api::live::exchange_user_token(
+         client,
+         legacy,
+-        user.username,
++        user.username.clone(),
+         dev_token,
+         None,
+         Some("Silent".to_string()),
+@@ -50,18 +196,22 @@ pub async fn get_license(
+         )],
+     )
+     .await
+-    .map_err(|_| {
+-        "Microsoft user-ticket request failed. Check your connection and sign-in.".to_string()
++    .map_err(|error| {
++        ticket_failure(
++            &error,
++            "Microsoft user-ticket request failed. Check your connection and sign-in.",
++        )
+     })?;
+ 
+-    let ms_device_token = Token::try_from(ms_device_token).map_err(|error| error.to_string())?;
++    let ms_device_token =
++        Token::try_from(ms_device_token).map_err(|error| other(error.to_string()))?;
+     let Token::Compact(ms_device_token) = ms_device_token else {
+-        return Err("Unsupported token".to_string());
++        return Err(other("Unsupported token".to_string()));
+     };
+ 
+     let user_token: Token = match user_token {
+         ExchangeUserTokenOutcome::Fault(_) => {
+-            return Err("Failed to get exchange MS token".to_string());
++            return Err(other("Failed to get exchange MS token".to_string()));
+         }
+         ExchangeUserTokenOutcome::Issued(
+             soap::BodyContent::RequestSecurityTokenResponseCollection(collection),
+@@ -70,16 +220,20 @@ pub async fn get_license(
+                 .security_tokens
+                 .into_iter()
+                 .next()
+-                .ok_or("Microsoft returned no content-licensing user ticket.")?;
+-            Token::try_from(token).map_err(|error| error.to_string())?
++                .ok_or_else(|| other("Microsoft returned no content-licensing user ticket.".into()))?;
++            Token::try_from(token).map_err(|error| other(error.to_string()))?
+         }
+         ExchangeUserTokenOutcome::Issued(soap::BodyContent::RequestSecurityTokenResponse(
+             token,
+-        )) => Token::try_from(*token).map_err(|error| error.to_string())?,
+-        _ => return Err("Microsoft returned an unsupported content-licensing user ticket.".into()),
++        )) => Token::try_from(*token).map_err(|error| other(error.to_string()))?,
++        _ => {
++            return Err(other(
++                "Microsoft returned an unsupported content-licensing user ticket.".into(),
++            ));
++        }
+     };
+     let Token::Compact(user_token) = user_token else {
+-        return Err("Unsupported token".to_string());
++        return Err(other("Unsupported token".to_string()));
+     };
+     let user_token = xodus::models::secrets::licensing_ticket(user_token);
+ 
+@@ -87,14 +241,14 @@ pub async fn get_license(
+         client,
+         ms_device_token,
+         user_token,
+-        user.puid,
++        user.puid.clone(),
+         content_id,
+         market,
+     )
+     .await
+-    .map_err(|err| err.to_string())?;
++    .map_err(content_failure)?;
+ 
+-    license_material(tokens, &game_license.splicense_block)
++    Ok(game_license)
+ }
+ 
+ fn license_material(tokens: &TokenManager, block: &str) -> Result<(DeviceKey, SPLicense), String> {
+@@ -121,6 +275,7 @@ fn license_material(tokens: &TokenManager, block: &str) -> Result<(DeviceKey, SP
+ mod tests {
+     use super::*;
+     use base64::{Engine, prelude::BASE64_STANDARD};
++    use xodus::models::devicecredential::{Binding, LicenseInfo, LicenseType, LicenseUsage};
+     use xodus::models::secrets::Device;
+     #[test]
+     fn content_license_bad_blocks_return_fixed_errors_without_touching_credentials() {
+@@ -151,4 +306,111 @@ mod tests {
+         );
+         assert_eq!(tokens.get_device_license().unwrap().hwid, "unchanged");
+     }
++
++    fn cacheable(block: &str) -> License {
++        License {
++            splicense_block: block.to_string(),
++            license_info: LicenseInfo {
++                license_type: LicenseType::Full,
++                license_usage: Some(LicenseUsage::Offline),
++                license_category: None,
++                issued_date: None,
++                last_updated_date: None,
++                begin_date: None,
++            },
++            custom_policies: None,
++            binding: Binding {
++                binding_type: "Device".to_string(),
++                device_id: None,
++                product_id: None,
++                pfm: None,
++                user_id: None,
++                usid: None,
++                lease_required: None,
++            },
++        }
++    }
++
++    #[test]
++    fn offline_recovery_uses_the_stored_license_only_when_microsoft_is_unreachable() {
++        let tokens = TokenManager::with_memory();
++        let root = tempfile::tempdir().unwrap();
++        let cache = LicenseCache::new(root.path());
++        // A structurally valid, empty SPLicense: header and offset only.
++        let block = BASE64_STANDARD.encode([0u8; 8]);
++        let now = 1_800_000_000;
++        cache
++            .store("content-a", "puid", "US", &cacheable(&block), &SPLicense::default(), now)
++            .unwrap();
++        let unreachable = || OnlineFailure::Unreachable("Could not connect.".into());
++
++        // The cached block is accepted and the flow proceeds to the keyring device key.
++        let error = recover_offline(&tokens, Some(root.path()), "content-a", "puid", unreachable(), now)
++            .err()
++            .unwrap();
++        assert!(!error.contains("Could not connect"), "{error}");
++        assert!(!error.contains("offline license is stored"), "{error}");
++        assert!(root.path().join("content-a.json").exists());
++
++        // No cache directory, another account or no entry keep the original failure.
++        for (cache_root, puid, content) in [
++            (None, "puid", "content-a"),
++            (Some(root.path()), "someone-else", "content-a"),
++            (Some(root.path()), "puid", "content-b"),
++        ] {
++            let error = recover_offline(&tokens, cache_root, content, puid, unreachable(), now)
++                .err()
++                .unwrap();
++            assert!(error.starts_with("Could not connect."), "{error}");
++            assert_eq!(error.contains("offline license is stored"), cache_root.is_some(), "{error}");
++        }
++
++        // Sign-in and response problems never consult the cache.
++        let error = recover_offline(&tokens, Some(root.path()), "content-a", "puid",
++            OnlineFailure::Other("Sign in again.".into()), now).err().unwrap();
++        assert_eq!(error, "Sign in again.");
++        assert!(root.path().join("content-a.json").exists());
++
++        // Expired entries fail closed and disappear.
++        let error = recover_offline(&tokens, Some(root.path()), "content-a", "puid", unreachable(),
++            now + crate::license_cache::MAX_OFFLINE_SECONDS).err().unwrap();
++        assert!(error.contains("offline license is stored"), "{error}");
++        assert!(!root.path().join("content-a.json").exists());
++    }
++
++    #[test]
++    fn offline_recovery_purges_the_stored_license_when_microsoft_refuses() {
++        let tokens = TokenManager::with_memory();
++        let root = tempfile::tempdir().unwrap();
++        let cache = LicenseCache::new(root.path());
++        let block = BASE64_STANDARD.encode([0u8; 8]);
++        cache
++            .store("content-c", "puid", "US", &cacheable(&block), &SPLicense::default(), 1)
++            .unwrap();
++        let error = recover_offline(&tokens, Some(root.path()), "content-c", "puid",
++            OnlineFailure::Refused("Not entitled.".into()), 2).err().unwrap();
++        assert_eq!(error, "Not entitled.");
++        assert!(!root.path().join("content-c.json").exists());
++        assert!(recover_offline(&tokens, None, "content-c", "puid",
++            OnlineFailure::Refused("Not entitled.".into()), 2).is_err());
++    }
++
++    #[test]
++    fn online_failures_are_classified_without_inferring_entitlement() {
++        for error in [LicenseContentError::Timeout, LicenseContentError::Request,
++            LicenseContentError::Read, LicenseContentError::RateLimited, LicenseContentError::Server(503)] {
++            assert!(matches!(content_failure(error), OnlineFailure::Unreachable(_)));
++        }
++        for error in [LicenseContentError::Forbidden, LicenseContentError::NotEntitled] {
++            assert!(matches!(content_failure(error), OnlineFailure::Refused(_)));
++        }
++        for error in [LicenseContentError::Unauthorized, LicenseContentError::Http(418),
++            LicenseContentError::Json, LicenseContentError::Schema, LicenseContentError::EmptyKeys,
++            LicenseContentError::Size, LicenseContentError::Xml] {
++            assert!(matches!(content_failure(error), OnlineFailure::Other(_)));
++        }
++        let local = std::io::Error::other("not a transport failure");
++        assert!(!transport_failure(&local));
++        assert!(matches!(ticket_failure(&local, "ticket"), OnlineFailure::Other(message) if message == "ticket"));
++    }
+ }
+diff --git a/crates/xodus-cli/src/license_cache.rs b/crates/xodus-cli/src/license_cache.rs
+new file mode 100644
+index 0000000..2969a1f
+--- /dev/null
++++ b/crates/xodus-cli/src/license_cache.rs
+@@ -0,0 +1,241 @@
++//! Device-bound offline license cache for installed games.
++//!
++//! Stores only the encrypted SPLicense block Microsoft issued for this device.
++//! Its content keys stay wrapped by the device key that lives in the system
++//! keyring, so the file alone decrypts nothing. Entries never outlive the
++//! signed license expiry or a fixed offline window, are bound to one account,
++//! and are purged whenever Microsoft refuses the content while online.
++use std::fs;
++use std::path::{Path, PathBuf};
++use std::time::{SystemTime, UNIX_EPOCH};
++
++use serde_json::{Value, json};
++use xodus::licensing::splicense::SPLicense;
++use xodus::models::devicecredential::{License, LicenseUsage};
++
++const SCHEMA: u64 = 1;
++const MAX_FILE_BYTES: u64 = 64 * 1024;
++const MAX_BLOCK_CHARS: usize = 48 * 1024;
++/// Upper bound on offline use after the last successful online license check,
++/// independent of the license's own expiry.
++pub const MAX_OFFLINE_SECONDS: u64 = 30 * 24 * 60 * 60;
++
++pub fn diagnostic(stage: &'static str) {
++    eprintln!("NEXUS_CONTENT_LICENSE_DIAGNOSTIC_V1 {stage} 0");
++}
++
++pub fn unix_now() -> u64 {
++    SystemTime::now()
++        .duration_since(UNIX_EPOCH)
++        .map(|elapsed| elapsed.as_secs())
++        .unwrap_or(0)
++}
++
++/// Offline validity: the signed license expiry when present, never more than
++/// the fixed offline window after `now`. A zero expiry means the license does
++/// not state one and only the window applies.
++pub fn offline_expiry(license_expiration_time: u32, now: u64) -> u64 {
++    let window = now.saturating_add(MAX_OFFLINE_SECONDS);
++    if license_expiration_time == 0 {
++        window
++    } else {
++        window.min(u64::from(license_expiration_time))
++    }
++}
++
++#[derive(Debug, PartialEq, Eq)]
++pub enum Stored {
++    Saved,
++    /// Microsoft marked the license online-only; nothing is kept.
++    OnlineOnly,
++}
++
++pub struct CachedLicense {
++    pub splicense_block: String,
++    pub expires_at: u64,
++}
++
++pub struct LicenseCache {
++    root: PathBuf,
++}
++
++impl LicenseCache {
++    pub fn new(root: &Path) -> Self {
++        Self {
++            root: root.to_path_buf(),
++        }
++    }
++
++    fn entry_path(&self, content_id: &str) -> Result<PathBuf, String> {
++        let valid = !content_id.is_empty()
++            && content_id.len() <= 64
++            && content_id
++                .bytes()
++                .all(|byte| byte.is_ascii_alphanumeric() || byte == b'-');
++        if !valid {
++            return Err(
++                "The content identifier is not valid for the offline license cache.".to_string(),
++            );
++        }
++        Ok(self
++            .root
++            .join(format!("{}.json", content_id.to_ascii_lowercase())))
++    }
++
++    fn ensure_root(&self) -> std::io::Result<()> {
++        let mut builder = fs::DirBuilder::new();
++        builder.recursive(true);
++        #[cfg(unix)]
++        {
++            use std::os::unix::fs::DirBuilderExt;
++            builder.mode(0o700);
++        }
++        builder.create(&self.root)
++    }
++
++    /// Records a license Microsoft just issued. Online-only licenses are not
++    /// kept and replace any earlier entry for the same content.
++    pub fn store(
++        &self,
++        content_id: &str,
++        puid: &str,
++        market: &str,
++        license: &License,
++        splicense: &SPLicense,
++        now: u64,
++    ) -> Result<Stored, String> {
++        let path = self.entry_path(content_id)?;
++        if matches!(
++            license.license_info.license_usage,
++            Some(LicenseUsage::Online)
++        ) {
++            remove_quietly(&path);
++            return Ok(Stored::OnlineOnly);
++        }
++        if license.splicense_block.is_empty() || license.splicense_block.len() > MAX_BLOCK_CHARS {
++            return Err("The content license block is not cacheable.".to_string());
++        }
++        let expires_at = offline_expiry(splicense.license_expiration_time, now);
++        let usage = match license.license_info.license_usage {
++            Some(LicenseUsage::Offline) => "offline",
++            Some(LicenseUsage::Online) => "online",
++            None => "unspecified",
++        };
++        let entry = json!({
++            "schema": SCHEMA,
++            "contentId": content_id.to_ascii_lowercase(),
++            "puid": puid,
++            "market": market,
++            "storedAt": now,
++            "expiresAt": expires_at,
++            "licenseExpirationTime": splicense.license_expiration_time,
++            "licenseUsage": usage,
++            "splicenseBlock": license.splicense_block,
++        });
++        self.ensure_root().map_err(|_| cache_io_error())?;
++        let temporary = path.with_extension("json.tmp");
++        write_private(&temporary, entry.to_string().as_bytes()).map_err(|_| cache_io_error())?;
++        if fs::rename(&temporary, &path).is_err() {
++            remove_quietly(&temporary);
++            return Err(cache_io_error());
++        }
++        Ok(Stored::Saved)
++    }
++
++    /// Returns a stored license for this account and content while it is still
++    /// valid. Expired or unreadable entries are removed.
++    pub fn load(
++        &self,
++        content_id: &str,
++        puid: &str,
++        now: u64,
++    ) -> Result<Option<CachedLicense>, String> {
++        let path = self.entry_path(content_id)?;
++        let metadata = match fs::metadata(&path) {
++            Ok(metadata) => metadata,
++            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
++                diagnostic("content-cache-missing");
++                return Ok(None);
++            }
++            Err(_) => return Err(cache_io_error()),
++        };
++        if !metadata.is_file() || metadata.len() > MAX_FILE_BYTES {
++            return Self::invalid(&path);
++        }
++        let bytes = fs::read(&path).map_err(|_| cache_io_error())?;
++        let Ok(value) = serde_json::from_slice::<Value>(&bytes) else {
++            return Self::invalid(&path);
++        };
++        let expected_content = content_id.to_ascii_lowercase();
++        let same_content =
++            value.get("contentId").and_then(Value::as_str) == Some(expected_content.as_str());
++        let block = value.get("splicenseBlock").and_then(Value::as_str);
++        let expires_at = value.get("expiresAt").and_then(Value::as_u64);
++        let (Some(block), Some(expires_at)) = (block, expires_at) else {
++            return Self::invalid(&path);
++        };
++        if value.get("schema").and_then(Value::as_u64) != Some(SCHEMA)
++            || !same_content
++            || block.is_empty()
++            || block.len() > MAX_BLOCK_CHARS
++        {
++            return Self::invalid(&path);
++        }
++        if value.get("puid").and_then(Value::as_str) != Some(puid) {
++            // Another account's entry on this device is neither usable nor ours to remove.
++            diagnostic("content-cache-missing");
++            return Ok(None);
++        }
++        if expires_at <= now {
++            remove_quietly(&path);
++            diagnostic("content-cache-expired");
++            return Ok(None);
++        }
++        Ok(Some(CachedLicense {
++            splicense_block: block.to_string(),
++            expires_at,
++        }))
++    }
++
++    /// Removes the entry after Microsoft refused the content while online.
++    pub fn purge(&self, content_id: &str) -> Result<bool, String> {
++        let path = self.entry_path(content_id)?;
++        match fs::remove_file(&path) {
++            Ok(()) => Ok(true),
++            Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(false),
++            Err(_) => Err(cache_io_error()),
++        }
++    }
++
++    fn invalid(path: &Path) -> Result<Option<CachedLicense>, String> {
++        remove_quietly(path);
++        diagnostic("content-cache-invalid");
++        Ok(None)
++    }
++}
++
++fn cache_io_error() -> String {
++    "The offline license cache could not be accessed.".to_string()
++}
++
++fn remove_quietly(path: &Path) {
++    let _ = fs::remove_file(path);
++}
++
++fn write_private(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
++    use std::io::Write;
++    let mut options = fs::OpenOptions::new();
++    options.write(true).create(true).truncate(true);
++    #[cfg(unix)]
++    {
++        use std::os::unix::fs::OpenOptionsExt;
++        options.mode(0o600);
++    }
++    let mut file = options.open(path)?;
++    file.write_all(bytes)?;
++    file.sync_all()
++}
++
++#[cfg(test)]
++#[path = "license_cache_tests.rs"]
++mod tests;
+diff --git a/crates/xodus-cli/src/license_cache_tests.rs b/crates/xodus-cli/src/license_cache_tests.rs
+new file mode 100644
+index 0000000..e403c1c
+--- /dev/null
++++ b/crates/xodus-cli/src/license_cache_tests.rs
+@@ -0,0 +1,161 @@
++//! Synthetic license metadata only. No account, keyring, network or game files.
++use super::*;
++use xodus::models::devicecredential::{Binding, LicenseInfo, LicenseType};
++
++const DAY: u64 = 24 * 60 * 60;
++const NOW: u64 = 1_800_000_000;
++
++fn license(usage: Option<LicenseUsage>, block: &str) -> License {
++    License {
++        splicense_block: block.to_string(),
++        license_info: LicenseInfo {
++            license_type: LicenseType::Full,
++            license_usage: usage,
++            license_category: None,
++            issued_date: None,
++            last_updated_date: None,
++            begin_date: None,
++        },
++        custom_policies: None,
++        binding: Binding {
++            binding_type: "Device".to_string(),
++            device_id: Some("synthetic-device".to_string()),
++            product_id: None,
++            pfm: None,
++            user_id: None,
++            usid: None,
++            lease_required: None,
++        },
++    }
++}
++
++fn splicense(expiration: u32) -> SPLicense {
++    SPLicense {
++        license_expiration_time: expiration,
++        ..SPLicense::default()
++    }
++}
++
++#[test]
++fn offline_license_expiry_is_the_signed_time_capped_by_the_offline_window() {
++    assert_eq!(offline_expiry(0, NOW), NOW + 30 * DAY);
++    assert_eq!(offline_expiry((NOW + 3 * DAY) as u32, NOW), NOW + 3 * DAY);
++    assert_eq!(offline_expiry((NOW + 400 * DAY) as u32, NOW), NOW + 30 * DAY);
++    // A signed expiry already in the past yields an entry that never validates.
++    assert!(offline_expiry(1, NOW) <= NOW);
++}
++
++#[test]
++fn offline_license_roundtrip_is_bound_to_content_and_account() {
++    let root = tempfile::tempdir().unwrap();
++    let cache = LicenseCache::new(root.path());
++    let block = "c3ludGhldGljLWJsb2Nr";
++    let stored = cache
++        .store("ABCDEF01-2345", "puid-a", "US", &license(Some(LicenseUsage::Offline), block), &splicense(0), NOW)
++        .unwrap();
++    assert_eq!(stored, Stored::Saved);
++    let entry = cache.load("abcdef01-2345", "puid-a", NOW + DAY).unwrap().unwrap();
++    assert_eq!(entry.splicense_block, block);
++    assert_eq!(entry.expires_at, NOW + 30 * DAY);
++    assert!(cache.load("abcdef01-2345", "puid-b", NOW + DAY).unwrap().is_none());
++    assert!(cache.load("other-content", "puid-a", NOW + DAY).unwrap().is_none());
++    // Another account's lookup must not destroy the owner's entry.
++    assert!(cache.load("abcdef01-2345", "puid-a", NOW + DAY).unwrap().is_some());
++    assert!(!root.path().join("abcdef01-2345.json.tmp").exists());
++}
++
++#[test]
++fn offline_license_expires_and_is_removed_without_extending_the_signed_time() {
++    let root = tempfile::tempdir().unwrap();
++    let cache = LicenseCache::new(root.path());
++    let expiration = (NOW + 2 * DAY) as u32;
++    cache
++        .store("content-1", "puid", "US", &license(None, "YmxvY2s="), &splicense(expiration), NOW)
++        .unwrap();
++    assert!(cache.load("content-1", "puid", NOW + 2 * DAY - 1).unwrap().is_some());
++    assert!(cache.load("content-1", "puid", NOW + 2 * DAY).unwrap().is_none());
++    assert!(!root.path().join("content-1.json").exists());
++    assert!(cache.load("content-1", "puid", NOW).unwrap().is_none());
++}
++
++#[test]
++fn offline_license_online_only_is_never_stored_and_purges_a_stale_entry() {
++    let root = tempfile::tempdir().unwrap();
++    let cache = LicenseCache::new(root.path());
++    cache
++        .store("content-2", "puid", "US", &license(Some(LicenseUsage::Offline), "YmxvY2s="), &splicense(0), NOW)
++        .unwrap();
++    assert!(root.path().join("content-2.json").exists());
++    let stored = cache
++        .store("content-2", "puid", "US", &license(Some(LicenseUsage::Online), "YmxvY2s="), &splicense(0), NOW)
++        .unwrap();
++    assert_eq!(stored, Stored::OnlineOnly);
++    assert!(!root.path().join("content-2.json").exists());
++    assert!(cache.load("content-2", "puid", NOW).unwrap().is_none());
++    assert!(cache
++        .store("content-3", "puid", "US", &license(None, ""), &splicense(0), NOW)
++        .is_err());
++    assert!(!root.path().join("content-3.json").exists());
++}
++
++#[test]
++fn offline_license_purge_reports_whether_an_entry_existed() {
++    let root = tempfile::tempdir().unwrap();
++    let cache = LicenseCache::new(root.path());
++    assert!(!cache.purge("content-4").unwrap());
++    cache
++        .store("content-4", "puid", "US", &license(None, "YmxvY2s="), &splicense(0), NOW)
++        .unwrap();
++    assert!(cache.purge("content-4").unwrap());
++    assert!(!cache.purge("content-4").unwrap());
++    assert!(cache.load("content-4", "puid", NOW).unwrap().is_none());
++}
++
++#[test]
++fn offline_license_rejects_unsafe_identifiers_and_malformed_entries() {
++    let root = tempfile::tempdir().unwrap();
++    let cache = LicenseCache::new(root.path());
++    let too_long = "x".repeat(65);
++    for bad in ["", "../escape", "a/b", "a\\b", "with space", too_long.as_str()] {
++        assert!(cache.store(bad, "puid", "US", &license(None, "YmxvY2s="), &splicense(0), NOW).is_err());
++        assert!(cache.load(bad, "puid", NOW).is_err());
++        assert!(cache.purge(bad).is_err());
++    }
++    assert!(!root.path().join("escape.json").exists());
++    std::fs::create_dir_all(root.path()).unwrap();
++    let corrupt = root.path().join("content-5.json");
++    std::fs::write(&corrupt, b"{ not json").unwrap();
++    assert!(cache.load("content-5", "puid", NOW).unwrap().is_none());
++    assert!(!corrupt.exists());
++    let wrong_schema = json!({
++        "schema": 2, "contentId": "content-6", "puid": "puid", "expiresAt": NOW + DAY, "splicenseBlock": "YmxvY2s=",
++    });
++    std::fs::write(root.path().join("content-6.json"), wrong_schema.to_string()).unwrap();
++    assert!(cache.load("content-6", "puid", NOW).unwrap().is_none());
++    assert!(!root.path().join("content-6.json").exists());
++    let mismatched = json!({
++        "schema": 1, "contentId": "other", "puid": "puid", "expiresAt": NOW + DAY, "splicenseBlock": "YmxvY2s=",
++    });
++    std::fs::write(root.path().join("content-7.json"), mismatched.to_string()).unwrap();
++    assert!(cache.load("content-7", "puid", NOW).unwrap().is_none());
++    std::fs::write(root.path().join("content-8.json"), vec![b'0'; (MAX_FILE_BYTES + 1) as usize]).unwrap();
++    assert!(cache.load("content-8", "puid", NOW).unwrap().is_none());
++    assert!(!root.path().join("content-8.json").exists());
++}
++
++#[cfg(unix)]
++#[test]
++fn offline_license_files_are_private_to_the_user() {
++    use std::os::unix::fs::PermissionsExt;
++    let root = tempfile::tempdir().unwrap();
++    let nested = root.path().join("license-cache");
++    let cache = LicenseCache::new(&nested);
++    cache
++        .store("content-9", "puid", "US", &license(None, "YmxvY2s="), &splicense(0), NOW)
++        .unwrap();
++    assert_eq!(std::fs::metadata(&nested).unwrap().permissions().mode() & 0o777, 0o700);
++    assert_eq!(
++        std::fs::metadata(nested.join("content-9.json")).unwrap().permissions().mode() & 0o777,
++        0o600
++    );
++}
+diff --git a/crates/xodus-cli/src/main.rs b/crates/xodus-cli/src/main.rs
+index c76096c..4595d38 100644
+--- a/crates/xodus-cli/src/main.rs
++++ b/crates/xodus-cli/src/main.rs
+@@ -8,6 +8,7 @@ use xodus::tokens::TokenManager;
+ 
+ mod commands;
+ mod license;
++mod license_cache;
+ mod package;
+ mod package_plan;
+ #[cfg(feature = "native-webview")]
+@@ -158,6 +159,8 @@ enum SubCommand {
+         materialize_chain: bool,
+         #[arg(short, long)]
+         market: Option<String>,
++        #[arg(long = "license-cache", help = "Directory for device-bound offline licenses (--license-cache) used when Microsoft is unreachable")]
++        license_cache: Option<String>,
+     },
+     #[command(about = "Generate or decrypt base64-encoded CLEP challenge data")]
+     Clep {
+@@ -410,6 +413,7 @@ async fn main() -> ExitCode {
+             materialize_exe,
+             materialize_chain,
+             market,
++            license_cache,
+         } => {
+             commands::run::run(
+                 &client,
+@@ -420,6 +424,7 @@ async fn main() -> ExitCode {
+                 materialize_exe,
+                 materialize_chain,
+                 market,
++                license_cache,
+             )
+             .await
+         }

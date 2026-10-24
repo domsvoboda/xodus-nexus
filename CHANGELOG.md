@@ -2,6 +2,7 @@
 
 ## Unreleased
 
+- Play installed games offline after one online launch: the backend keeps a device-bound offline license per game for up to 30 days and uses it only when Microsoft licensing is unreachable. Sign-out removes these licenses.
 - Preserve Microsoft broker headers on both hosted sign-in steps. Thanks @Wyze3306 for the upstream fix adapted here.
 - Accept compact JWE tickets when requesting game content licenses without changing Xbox or Store sign-in token handling.
 - Show owned games with unsupported packages in My Library with the existing Unsupported badge and installation disabled.

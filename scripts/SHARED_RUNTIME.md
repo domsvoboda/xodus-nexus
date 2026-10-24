@@ -58,8 +58,10 @@ stays in a managed directory outside the base game and is supplied through
 `XODUS_CONTENT_ROOTS` after config/Appx/dependency/layout presence checks. Partial
 downloads are not supplied. These checks do not claim full payload integrity or
 grant ownership; the runtime still verifies fresh signed Store proof. Installed
-files remain available for discovery offline, but licensing currently needs
-online access. Installation is an explicit per-package user action, not an
+files remain available for discovery offline. Base-game launch licensing can
+fall back to the device-bound offline cache described under *Offline launch
+licenses*; add-on licensing still needs online access. Installation is an
+explicit per-package user action, not an
 automatic download of every owned add-on. Only config-declared related packages
 are supported; catalog-only bundles without that relationship remain unsupported.
 PublisherContent and content mounting remain unsupported. A real-game test is
@@ -78,7 +80,28 @@ Package-license lost registrations retain the caller's queue and deliver expiry
 notifications on its Completion port. Unregister supports pending callbacks,
 waiting, and reentrant unregister/close. This is expiry notification only, not
 Microsoft's full account/network/concurrency revocation service. Offline license
-acquisition, other acquisition variants and content mounting are not implemented.
+acquisition through this API, other acquisition variants and content mounting
+are not implemented.
+
+### Offline launch licenses
+
+`xodus-cli run --license-cache <dir>` (backend 0.2.12, `xodus-offline-license.patch`)
+records the encrypted SPLicense block Microsoft issues for a successful launch,
+keyed by content ID and bound to the signed-in account's PUID. The file holds
+only what Microsoft sent: its content keys stay wrapped by the device key that
+lives in the system keyring, so the cache alone decrypts nothing and a sign-out
+removes it. An entry is valid until the license's own signed expiry, never more
+than 30 days after the last online check, and licenses Microsoft marks
+`LicenseUsage="Online"` are never stored.
+
+The cache is consulted only when the license service is unreachable: transport
+failures, timeouts, HTTP 429 and 5xx. A refusal (HTTP 403 or a satisfaction
+failure) purges the entry, and sign-in or response problems (HTTP 401, malformed
+responses) fail exactly as before. Entries are private files (0600 in a 0700
+directory), validated on read and removed when expired or unreadable. Each
+outcome is reported as a `NEXUS_CONTENT_LICENSE_DIAGNOSTIC_V1 content-cache-*`
+line; the launcher maps the final stage to the shown error. The cache does not
+change add-on licensing, downloads or the runtime's package-license handles.
 
 ### Task-queue ownership
 
