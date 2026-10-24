@@ -46,6 +46,7 @@ import { AccountLibrary } from './account-library.js';
 import { GameActivities, installedTitleId } from './game-activity.js';
 import { GameAchievementsReader } from './game-achievements.js';
 import { GameContent, type ContentPackage } from './game-content.js';
+import { backendRunner, changeOfflinePermissions, readOfflinePermissions } from './offline-permissions.js';
 import { startAuthTransport } from './auth-transport.js';
 import { authViewFactory } from './auth-window.js';
 import { browserAuthViewFactory } from './auth-browser.js';
@@ -1172,6 +1173,8 @@ function registerDemoIpc(catalogMarket: () => string): void {
   ipcMain.handle('save-diagnostic-report', (_event, content: unknown) => saveReviewedReport(content));
   ipcMain.handle('login', () => {});
   ipcMain.handle('logout', () => {});
+  ipcMain.handle('offline-permissions', () => ({ enabled: false, requestSuccess: true, remainingToggles: 2, maxToggles: 3, periodDays: 365, checkedAt: new Date().toISOString() }));
+  ipcMain.handle('set-offline-permissions', (_event, enabled: boolean) => ({ enabled: Boolean(enabled), requestSuccess: true, remainingToggles: 1, maxToggles: 3, periodDays: 365, checkedAt: new Date().toISOString() }));
   ipcMain.handle('catalog-search', (_event, query: string, cursor?: string) => catalog.search(query, catalogMarket(), cursor));
   ipcMain.handle('catalog-featured', () => catalog.featured(catalogMarket()));
   ipcMain.handle('account-library', (_event, kind: 'all' | 'owned' | 'gamepass') => demoAccountLibrary(kind, demoArtwork));
@@ -1294,6 +1297,21 @@ function registerIpc(): void {
   });
   ipcMain.handle('login', () => requestAuth('login'));
   ipcMain.handle('logout', () => requestAuth('logout'));
+  ipcMain.handle('offline-permissions', async () => {
+    const binary = requireBackend('offlinePc');
+    await prepareSystemWallet();
+    return readOfflinePermissions(backendRunner(binary));
+  });
+  ipcMain.handle('set-offline-permissions', async (_event, enabled: unknown) => {
+    // The renderer confirms with the user first; Microsoft counts every change against a yearly limit.
+    if (typeof enabled !== 'boolean') throw Error('Invalid offline-permission request.');
+    ensureIdle();
+    const binary = requireBackend('offlinePc');
+    await prepareSystemWallet();
+    const result = await changeOfflinePermissions(backendRunner(binary), enabled);
+    accountRefresh.invalidate();
+    return result;
+  });
   ipcMain.handle('catalog-search', (_event, query: string, cursor?: string) => {
     return catalog.search(query, catalogMarket(), cursor);
   });

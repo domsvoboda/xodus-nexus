@@ -19,6 +19,7 @@ import { ConfirmationProvider, useConfirmation } from './Confirmation';
 import { GameRemovalContents } from './GameRemovalContents';
 import { GameDetails } from './GameDetails';
 import { DownloadCancelDialog } from './DownloadCancelDialog';
+import { OfflinePermissionsCard } from './OfflinePermissions';
 import { KeyringSetup } from './KeyringSetup';
 import { DiagnosticReportButton } from './DiagnosticReport';
 import type { DownloadCancelOptions } from '../shared/types';
@@ -889,6 +890,8 @@ export function SettingsPage({ data, toast }: { data: AppSnapshot; toast: (value
       <div className="button-row"><button className="primary" disabled={!caps.login || data.auth.running} onClick={() => invoke('login', () => window.launcher.login(), 'Xodus sign-in completed.')}>{data.auth.running ? <LoaderCircle className="spin" /> : <LogIn />}{data.auth.stored ? 'Sign in again' : 'Sign in with Xodus'}</button><button className="secondary" disabled={!caps.logout || data.auth.running || data.auth.stored === false} title="Remove saved sign-in credentials and local device registration. Games and saves are kept." onClick={() => invoke('logout', () => window.launcher.logout(), 'Saved sign-in credentials and local device registration were removed.')}>Sign out</button><button className="secondary" disabled={!caps.account || data.auth.running} onClick={() => invoke('account', () => window.launcher.refreshAccount())}><RefreshCw />Refresh status</button></div>
       <PasskeySignInNotice />
     </section>
+
+    {caps.offlinePc ? <OfflinePermissionsCard key={`${data.auth.username}:${data.auth.stored}`} toast={toast} signedIn={data.auth.stored === true} /> : null}
 
     <section className="settings-card">
       <div className="settings-heading"><div className="settings-icon"><Terminal /></div><div><h2>Xodus backend</h2><p>{data.backend.version ? `Nexus backend ${data.backend.version}` : data.backend.available ? `Backend CLI ${data.backend.capabilities.version ?? 'unknown version'}` : 'Install the prebuilt Nexus backend'}</p></div><span className={`status-label ${data.backend.available ? 'ready' : 'off'}`}><StatusDot tone={data.backend.available ? 'green' : 'red'} />{data.backend.available ? 'VALIDATED' : 'OFFLINE'}</span></div>

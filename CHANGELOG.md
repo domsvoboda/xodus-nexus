@@ -2,7 +2,7 @@
 
 ## Unreleased
 
-- Play installed games offline on the account's designated offline device: the backend keeps the device-bound license Microsoft issues with a 30-day offline lease and uses it only when Microsoft licensing is unreachable. `xodus-cli offline-pc` shows or claims the designation. Sign-out removes stored licenses.
+- Play installed games offline on the account's designated offline device: the backend keeps the device-bound license Microsoft issues with a 30-day offline lease and uses it only when Microsoft licensing is unreachable. **Settings → Offline permissions** shows the designation and the remaining yearly changes and switches it with a confirmation, like the Xbox app; `xodus-cli offline-pc` does the same from the shell. Sign-out removes stored licenses.
 - Preserve Microsoft broker headers on both hosted sign-in steps. Thanks @Wyze3306 for the upstream fix adapted here.
 - Accept compact JWE tickets when requesting game content licenses without changing Xbox or Store sign-in token handling.
 - Show owned games with unsupported packages in My Library with the existing Unsupported badge and installation disabled.

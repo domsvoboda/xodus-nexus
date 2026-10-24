@@ -34,6 +34,7 @@ export function parseBackendHelp(help: string): BackendCapabilities {
     download: commands.includes('download'),
     streaming: commands.includes('streaming'),
     run: commands.includes('run'),
+    offlinePc: commands.includes('offline-pc'),
     version,
   };
 }

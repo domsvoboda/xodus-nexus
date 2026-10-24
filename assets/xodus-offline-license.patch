@@ -25,38 +25,50 @@ index f0a820b..7bb7bdd 100644
          return ExitCode::FAILURE;
 diff --git a/crates/xodus-cli/src/commands/offline_pc.rs b/crates/xodus-cli/src/commands/offline_pc.rs
 new file mode 100644
-index 0000000..6b0ba6f
+index 0000000..66a3591
 --- /dev/null
 +++ b/crates/xodus-cli/src/commands/offline_pc.rs
-@@ -0,0 +1,125 @@
-+//! Experimental probe for the Xbox app's "offline permissions" setting.
+@@ -0,0 +1,186 @@
++//! Shows or changes whether this device is the Microsoft account's designated
++//! offline PC, the setting the Xbox app calls "Offline permissions".
 +//!
-+//! The Xbox PC app reads and changes the account's designated offline PC
-+//! through the PC Game App Front Door:
++//! The Xbox PC app reads and changes it through the PC Game App Front Door:
 +//!   GET  https://beige.xboxservices.com/pcgafd/config/offlinepc
 +//!   POST https://beige.xboxservices.com/pcgafd/config/offlinepc/{true|false}
-+//! authenticated with an XSTS token that carries device, title and user
-+//! claims. Changing the setting is limited by Microsoft to a few times per
-+//! year, so the write path requires an explicit confirmation flag.
++//! authenticated with an XSTS token for relying party `http://mp.microsoft.com/`
++//! that carries device, title and user claims. Microsoft allows one offline PC
++//! per account and a few changes per year, so the write path requires an
++//! explicit confirmation flag.
++//!
++//! Output contract (stdout, one JSON line, schema 1):
++//! `{"schema":1,"enabled":bool,"requestSuccess":bool,"remainingToggles":n,
++//!   "maxToggles":n,"periodDays":n,"nextChangeAt":"<RFC 3339>"|null}`
++//! Diagnostics go to stderr as `NEXUS_OFFLINE_PC_V1 <stage> <status>`.
 +use std::process::ExitCode;
 +
-+use xodus::tokens::TokenManager;
 +use base64::{Engine, prelude::BASE64_STANDARD};
++use serde_json::{Value, json};
++use xodus::tokens::TokenManager;
 +
 +const ENDPOINT: &str = "https://beige.xboxservices.com/pcgafd/config/offlinepc";
++const RELYING_PARTY: &str = "http://mp.microsoft.com/";
 +// Same client identity Xodus uses for its Xbox sign-in flows.
 +const CLIENT_ID: &str = "000000004424da1f";
 +const TITLE_ID: i64 = 704208617;
 +const MAX_BODY: usize = 64 * 1024;
++
++fn diagnostic(stage: &str, status: u16) {
++    eprintln!("NEXUS_OFFLINE_PC_V1 {stage} {status}");
++}
 +
 +pub async fn run(
 +    client: &reqwest::Client,
 +    tokens: &TokenManager,
 +    set: Option<bool>,
 +    confirm: bool,
-+    relying_party: String,
 +) -> ExitCode {
 +    if set.is_some() && !confirm {
++        diagnostic("confirm-required", 0);
 +        eprintln!(
 +            "Refusing to change the offline PC designation without --confirm: Microsoft allows only a few changes per year and designating this device un-designates any other."
 +        );
@@ -66,54 +78,39 @@ index 0000000..6b0ba6f
 +    let (_authenticator, sisu, device) =
 +        match xodus::auth::do_sisu(client, tokens, CLIENT_ID, TITLE_ID).await {
 +            Ok(result) => result,
-+            Err(error) => {
-+                eprintln!("Xbox device sign-in for the offline-permission request failed: {error}");
++            Err(_) => {
++                diagnostic("device-sign-in", 0);
++                eprintln!("Xbox device sign-in for the offline-permission request failed. Check your connection and sign-in.");
 +                return ExitCode::FAILURE;
 +            }
 +        };
-+    let xsts = if relying_party == "http://xboxlive.com" {
-+        sisu.authorization_token.clone()
-+    } else {
-+        match xodus::auth::get_xsts_token(
-+            Some(&device),
-+            Some(&sisu.title_token),
-+            Some(&sisu.user_token),
-+            &relying_party,
-+        )
-+        .await
-+        {
-+            Ok(token) => token,
-+            Err(error) => {
-+                eprintln!("XSTS request for relying party {relying_party} failed: {error}");
-+                return ExitCode::FAILURE;
-+            }
++    let xsts = match xodus::auth::get_xsts_token(
++        Some(&device),
++        Some(&sisu.title_token),
++        Some(&sisu.user_token),
++        RELYING_PARTY,
++    )
++    .await
++    {
++        Ok(token) => token,
++        Err(_) => {
++            diagnostic("xsts", 0);
++            eprintln!("Xbox authorization for the offline-permission request failed. Check your connection and sign-in.");
++            return ExitCode::FAILURE;
 +        }
 +    };
-+    let claims = xsts
-+        .display_claims
-+        .as_ref()
-+        .map(|claims| {
-+            claims
-+                .xui
-+                .iter()
-+                .flat_map(|claim| claim.keys().cloned())
-+                .collect::<Vec<_>>()
-+                .join(",")
-+        })
-+        .unwrap_or_default();
-+    eprintln!(
-+        "Relying party {relying_party}: XSTS valid until {} with claim keys [{claims}]; device token valid until {}.",
-+        xsts.not_after, device.not_after
++    let correlation = format!(
++        "{}.0",
++        BASE64_STANDARD.encode(uuid::Uuid::new_v4().as_bytes()).trim_end_matches('=')
 +    );
-+    let authorization = xsts.authorization_header_value();
-+
-+    let correlation = format!("{}.0", BASE64_STANDARD.encode(uuid::Uuid::new_v4().as_bytes()).trim_end_matches("="));
 +    let request = match set {
 +        None => client.get(ENDPOINT),
-+        Some(value) => client.post(format!("{ENDPOINT}/{value}")).header("Content-Length", "0"),
++        Some(value) => client
++            .post(format!("{ENDPOINT}/{value}"))
++            .header("Content-Length", "0"),
 +    };
 +    let response = request
-+        .header("Authorization", authorization)
++        .header("Authorization", xsts.authorization_header_value())
 +        .header("Accept", "application/json")
 +        .header("Accept-Language", "en-US")
 +        .header("X-MS-API-Version", "1.0")
@@ -125,34 +122,98 @@ index 0000000..6b0ba6f
 +    let response = match response {
 +        Ok(response) => response,
 +        Err(error) => {
-+            eprintln!("Offline-permission request failed: {error}");
++            diagnostic(if error.is_timeout() { "timeout" } else { "request" }, 0);
++            eprintln!("Microsoft could not be reached for the offline-permission request. Check your connection and try again.");
 +            return ExitCode::FAILURE;
 +        }
 +    };
-+    let status = response.status();
-+    let headers: Vec<String> = response
-+        .headers()
-+        .iter()
-+        .filter(|(name, _)| {
-+            let name = name.as_str();
-+            name.starts_with("x-") || name == "content-type" || name == "ms-cv" || name == "retry-after" || name == "www-authenticate"
-+        })
-+        .map(|(name, value)| format!("{name}: {}", value.to_str().unwrap_or("<binary>")))
-+        .collect();
++    let status = response.status().as_u16();
 +    let body = match response.bytes().await {
-+        Ok(bytes) => bytes,
-+        Err(error) => {
-+            eprintln!("Offline-permission response could not be read: {error}");
++        Ok(bytes) if bytes.len() <= MAX_BODY => bytes,
++        _ => {
++            diagnostic("read", status);
++            eprintln!("The offline-permission response could not be read.");
 +            return ExitCode::FAILURE;
 +        }
 +    };
-+    let shown = String::from_utf8_lossy(&body[..body.len().min(MAX_BODY)]);
-+    println!("HTTP {status}");
-+    for header in headers {
-+        println!("{header}");
++    if !(200..300).contains(&status) {
++        diagnostic("http", status);
++        eprintln!(
++            "Microsoft refused the offline-permission request (HTTP {status}).{}",
++            if status == 401 || status == 403 { " Sign in again in Settings." } else { "" }
++        );
++        return ExitCode::FAILURE;
 +    }
-+    println!("{shown}");
-+    if status.is_success() { ExitCode::SUCCESS } else { ExitCode::FAILURE }
++    let Some(summary) = summarize(&body) else {
++        diagnostic("schema", status);
++        eprintln!("Microsoft returned an unrecognized offline-permission response.");
++        return ExitCode::FAILURE;
++    };
++    diagnostic("ok", status);
++    println!("{summary}");
++    // A change Microsoft declined (for example no toggles left) is a failure
++    // even though the status was readable.
++    if set.is_some() && summary.get("requestSuccess") != Some(&Value::Bool(true)) {
++        diagnostic("declined", status);
++        return ExitCode::FAILURE;
++    }
++    ExitCode::SUCCESS
++}
++
++/// Reduces Microsoft's response to the fields Nexus acts on. Dates before
++/// 1970 (Microsoft's "no date" sentinel is 1601-01-01) become null.
++fn summarize(body: &[u8]) -> Option<Value> {
++    let value: Value = serde_json::from_slice(body).ok()?;
++    let permissions = value.get("offlinePermissions")?;
++    let enabled = permissions.get("enabled")?.as_bool()?;
++    let request = permissions.get("requestData").cloned().unwrap_or(Value::Null);
++    let count = |key: &str| request.get(key).and_then(Value::as_u64).filter(|n| *n <= 10_000);
++    let next_change_at = request
++        .get("nextTimeToAdd")
++        .and_then(Value::as_str)
++        .and_then(|text| chrono::DateTime::parse_from_rfc3339(text).ok())
++        .filter(|time| time.timestamp() > 0)
++        .map(|time| time.with_timezone(&chrono::Utc).to_rfc3339());
++    Some(json!({
++        "schema": 1,
++        "enabled": enabled,
++        "requestSuccess": request.get("success").and_then(Value::as_bool).unwrap_or(false),
++        "remainingToggles": count("remainingTogglesForPeriod"),
++        "maxToggles": count("maxTogglesPerPeriod"),
++        "periodDays": count("periodLengthDays"),
++        "nextChangeAt": next_change_at,
++    }))
++}
++
++#[cfg(test)]
++mod tests {
++    use super::*;
++
++    #[test]
++    fn offline_pc_summary_keeps_only_allowlisted_fields_and_drops_the_sentinel_date() {
++        let body = br#"{"offlinePermissions":{"enabled":true,"requestData":{"success":true,"maxTogglesPerPeriod":3,"remainingTogglesForPeriod":1,"periodLengthDays":365,"nextTimeToAdd":"1601-01-01T00:00:00+00:00"},"extra":"ignored"}}"#;
++        let summary = summarize(body).unwrap();
++        assert_eq!(summary["schema"], 1);
++        assert_eq!(summary["enabled"], true);
++        assert_eq!(summary["requestSuccess"], true);
++        assert_eq!(summary["remainingToggles"], 1);
++        assert_eq!(summary["maxToggles"], 3);
++        assert_eq!(summary["periodDays"], 365);
++        assert!(summary["nextChangeAt"].is_null());
++        assert!(summary.get("extra").is_none());
++        let later = br#"{"offlinePermissions":{"enabled":false,"requestData":{"success":false,"maxTogglesPerPeriod":3,"remainingTogglesForPeriod":0,"periodLengthDays":365,"nextTimeToAdd":"2027-03-01T10:00:00+00:00"}}}"#;
++        let summary = summarize(later).unwrap();
++        assert_eq!(summary["requestSuccess"], false);
++        assert_eq!(summary["remainingToggles"], 0);
++        assert_eq!(summary["nextChangeAt"], "2027-03-01T10:00:00+00:00");
++        for bad in [&b"not json"[..], br#"{"offlinePermissions":{}}"#, br#"{"offlinePermissions":{"enabled":"yes"}}"#] {
++            assert!(summarize(bad).is_none());
++        }
++        let minimal = br#"{"offlinePermissions":{"enabled":true}}"#;
++        let summary = summarize(minimal).unwrap();
++        assert_eq!(summary["requestSuccess"], false);
++        assert!(summary["remainingToggles"].is_null());
++    }
 +}
 diff --git a/crates/xodus-cli/src/commands/run.rs b/crates/xodus-cli/src/commands/run.rs
 index bb0b9e7..4214df5 100644
@@ -1057,7 +1118,7 @@ index 0000000..5bfeb0e
 +    );
 +}
 diff --git a/crates/xodus-cli/src/main.rs b/crates/xodus-cli/src/main.rs
-index c76096c..e3ded3c 100644
+index c76096c..5eeb453 100644
 --- a/crates/xodus-cli/src/main.rs
 +++ b/crates/xodus-cli/src/main.rs
 @@ -8,6 +8,7 @@ use xodus::tokens::TokenManager;
@@ -1077,23 +1138,21 @@ index c76096c..e3ded3c 100644
      },
      #[command(about = "Generate or decrypt base64-encoded CLEP challenge data")]
      Clep {
-@@ -168,6 +171,15 @@ enum SubCommand {
+@@ -168,6 +171,13 @@ enum SubCommand {
      SpLicense {
          block: String,
      },
-+    #[command(about = "Show or change whether this device is the account's designated offline PC")]
++    #[command(about = "Show or change whether this device is the account's designated offline PC (JSON on stdout)")]
 +    OfflinePc {
 +        #[arg(long, help = "Designate (true) or undesignate (false) this device; requires --confirm")]
 +        set: Option<bool>,
-+        #[arg(long, default_value_t = false)]
++        #[arg(long, default_value_t = false, help = "Acknowledge that Microsoft limits changes and allows one offline PC per account")]
 +        confirm: bool,
-+        #[arg(long, default_value = "http://mp.microsoft.com/")]
-+        relying_party: String,
 +    },
  }
  
  #[derive(Subcommand)]
-@@ -410,6 +422,7 @@ async fn main() -> ExitCode {
+@@ -410,6 +420,7 @@ async fn main() -> ExitCode {
              materialize_exe,
              materialize_chain,
              market,
@@ -1101,7 +1160,7 @@ index c76096c..e3ded3c 100644
          } => {
              commands::run::run(
                  &client,
-@@ -420,6 +433,7 @@ async fn main() -> ExitCode {
+@@ -420,6 +431,7 @@ async fn main() -> ExitCode {
                  materialize_exe,
                  materialize_chain,
                  market,
@@ -1109,12 +1168,12 @@ index c76096c..e3ded3c 100644
              )
              .await
          }
-@@ -431,6 +445,9 @@ async fn main() -> ExitCode {
+@@ -431,6 +443,9 @@ async fn main() -> ExitCode {
              ClepAction::Decrypt { data } => commands::clep::decrypt(data),
          },
          SubCommand::SpLicense { block } => commands::splicense::run(block),
-+        SubCommand::OfflinePc { set, confirm, relying_party } => {
-+            commands::offline_pc::run(&client, &tokens, set, confirm, relying_party).await
++        SubCommand::OfflinePc { set, confirm } => {
++            commands::offline_pc::run(&client, &tokens, set, confirm).await
 +        }
      };
  

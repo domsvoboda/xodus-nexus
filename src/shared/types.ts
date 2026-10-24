@@ -15,6 +15,8 @@ export interface BackendCapabilities {
   streamingProgressJson?: boolean;
   /** `run --license-cache`: device-bound offline licenses when Microsoft is unreachable. */
   licenseCache?: boolean;
+  /** `offline-pc`: show or change the account's designated offline PC. */
+  offlinePc?: boolean;
   streamingControls?: boolean;
   streamingBandwidthLimit?: boolean;
   packageSelection?: boolean;
@@ -216,6 +218,19 @@ export interface KeyringStatus {
   message: string;
 }
 
+/** The Xbox app's "Offline permissions" setting for this device, as Microsoft reports it. */
+export interface OfflinePermissions {
+  enabled: boolean;
+  /** For a change: whether Microsoft applied it. */
+  requestSuccess: boolean;
+  remainingToggles?: number;
+  maxToggles?: number;
+  periodDays?: number;
+  /** When the next change becomes possible once none remain. */
+  nextChangeAt?: string;
+  checkedAt: string;
+}
+
 export interface AppSnapshot {
   backend: BackendStatus;
   runtime: RuntimeStatus;
@@ -377,6 +392,8 @@ export interface LauncherApi {
   saveDiagnosticReport(content: string): Promise<boolean>;
   login(): Promise<void>;
   logout(): Promise<void>;
+  offlinePermissions(): Promise<OfflinePermissions>;
+  setOfflinePermissions(enabled: boolean): Promise<OfflinePermissions>;
   searchCatalog(query: string, cursor?: string): Promise<CatalogSearchResult>;
   getFeaturedCatalog(): Promise<CatalogSearchResult>;
   getAccountLibrary(kind: AccountLibraryPage['kind'], cursor?: string, refresh?: boolean): Promise<AccountLibraryPage>;

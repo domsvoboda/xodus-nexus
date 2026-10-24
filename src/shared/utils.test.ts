@@ -12,6 +12,8 @@ describe('parseBackendHelp', () => {
     expect(parsed.streaming).toBe(true);
     expect(parsed.logout).toBe(true);
     expect(parsed.commands).toContain('run');
+    expect(parsed.offlinePc).toBe(false);
+    expect(parseBackendHelp(['  offline-pc  Show or change the offline PC', '  run  Run', ''].join(String.fromCharCode(10))).offlinePc).toBe(true);
   });
 });
 
