@@ -1,0 +1,60 @@
+--- a/dlls/xgameruntime/xthreading.c
++++ b/dlls/xgameruntime/xthreading.c
+@@ -287,12 +287,21 @@ static void async_release_queue( struct async_state *state )
+     if (queue) IUnknown_Release( &queue->IUnknown_iface );
+ }
+ 
++/* Native XAsync keeps the operation alive while its completion callback is
++ * queued or running: provider Cleanup requested by GetResult inside that
++ * callback runs only after it returns. Titles may close a result handle
++ * before reading data the provider context still owns (007 First Light). */
++static BOOL async_completion_pending( const struct async_state *state )
++{
++    return state->completed && state->callback && !state->completion_finished;
++}
++
+ static void async_cleanup_state( struct async_state *state, XAsyncProvider *provider )
+ {
+     BOOL cleanup = FALSE;
+     EnterCriticalSection( &state->cs );
+     state->cleanup_requested = TRUE;
+-    if (!state->active_provider && !state->cleaned)
++    if (!state->active_provider && !state->cleaned && !async_completion_pending( state ))
+     {
+         state->cleaned = 1;
+         cleanup = TRUE;
+@@ -322,7 +331,7 @@ static HRESULT async_invoke_provider( struct async_state *state, XAsyncOp op )
+     LeaveCriticalSection( &state->cs );
+     hr = state->provider( op, &state->data );
+     EnterCriticalSection( &state->cs );
+-    if (!--state->active_provider && state->cleanup_requested && !state->cleaned)
++    if (!--state->active_provider && state->cleanup_requested && !state->cleaned && !async_completion_pending( state ))
+     {
+         state->cleaned = 1;
+         cleanup = TRUE;
+@@ -524,6 +533,7 @@ static HRESULT WINAPI x_threading_XAsyncSchedule( IXThreadingImpl *iface, XAsync
+ 
+ static void CALLBACK async_completion_callback( struct async_state *state, BOOLEAN canceled )
+ {
++    BOOL cleanup_requested;
+     if (canceled) async_invoke_provider( state, XAsyncOp_Cancel );
+     EnterCriticalSection( &state->cs );
+     state->completion_thread = GetCurrentThreadId();
+@@ -532,13 +542,14 @@ static void CALLBACK async_completion_callback( struct async_state *state, BOOLE
+     EnterCriticalSection( &state->cs );
+     state->completion_thread = 0;
+     state->completion_finished = TRUE;
++    cleanup_requested = state->cleanup_requested;
+     LeaveCriticalSection( &state->cs );
+     SetEvent( state->provider_block.internal[3] );
+     /* The application may delete or reuse XAsyncBlock inside its completion
+      * callback. Only the runtime-owned state may be touched after it returns.
+-     * GetResult may already have cleaned the provider; cleaned makes this
+-     * idempotent without dereferencing the caller's freed block. */
+-    if (canceled || FAILED(state->status) || !state->data.bufferSize)
++     * GetResult cleanup was deferred until now; cleaned makes this idempotent
++     * without dereferencing the caller's freed block. */
++    if (canceled || FAILED(state->status) || !state->data.bufferSize || cleanup_requested)
+         async_cleanup_state( state, state->provider );
+     async_release_queue( state );
+ }

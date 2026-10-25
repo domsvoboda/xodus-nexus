@@ -25,10 +25,14 @@ static HRESULT WINAPI provider(XAsyncOp op, const XAsyncProviderData *data)
 static void WINAPI completed(XAsyncBlock *block)
 {
     DWORD result = 0;
+    LONG entry = cleanups;
     CHECK(IXThreadingImpl_XAsyncGetStatus(threads, block, FALSE) == outcome);
     if (consume) {
         CHECK(IXThreadingImpl_XAsyncGetResult(threads, block, NULL, sizeof(result), &result, NULL) == S_OK);
         CHECK(result == 0x12345678);
+        /* Native XAsync runs provider Cleanup only after this callback
+         * returns; titles may read result data after closing its handle. */
+        CHECK(cleanups == entry);
     }
     InterlockedIncrement(&callbacks);
     if (reuse) {

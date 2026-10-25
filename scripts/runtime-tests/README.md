@@ -29,7 +29,8 @@ The runtime does not provide a unique platform device identifier.
   provider block, and deleting the user block during immediate completion
   without premature provider cleanup (58 checks).
 - `async-completion-lifetime-probe.c`: 400 completions with block deletion,
-  result consumption and block reuse (2,805 checks). Callback changes for a
+  result consumption and block reuse (2,905 checks). Provider cleanup requested
+  by GetResult inside the completion callback must wait until it returns. Callback changes for a
   reused block are made **before** Begin, matching the native snapshot contract.
 - `async-schedule-probe.c`: uninitialized/null/detached scheduling, valid provider
   work, terminal-state rejection and original failure preservation (16 checks).

@@ -126,6 +126,11 @@ instead of dereferencing absent state. A completed failure retains its original
 HRESULT; scheduling never manufactures successful cloud/auth results. A queue
 reference protects submission against immediate completion/queue release.
 
+Provider cleanup requested by `XAsyncGetResult` while the operation's completion
+callback is queued or running waits until that callback returns, as in native
+XAsync. Titles may close a result handle and then read data it referenced:
+007 First Light closes its achievements result before reading the names.
+
 ### File-based Xbox game saves
 
 `XGameSaveFilesGetFolderWithUiAsync`, its result and remaining-quota query now
@@ -368,9 +373,9 @@ npm run test:runtime-tools
 ```
 
 Expected contract checks: queue teardown 20, queue stress 1,302, XAsync
-provider 116, completion lifetime 2,805, scheduling 16, file saves 21,
+provider 116, completion lifetime 2,905, scheduling 16, file saves 21,
 WinRT JSON 9, token dispatch/lifetime 88, Store entitlements/licenses 181, installed
-content 274, PlayFab folder/session 153 and initialization 19 (5,004 total),
+content 274, PlayFab folder/session 153 and initialization 19 (5,104 total),
 plus 64 game-process replacement checks, 40 software-Vulkan compute checks,
 and HTTP/1.1 and HTTP/2 transport, certificate-chain and response-decompression
 checks. The JSON probe exercises real activation, parsing,

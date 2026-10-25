@@ -64,6 +64,7 @@ test('assembly replaces symlink entries without altering base/old runtime', asyn
     assert.equal(await fs.readFile(path.join(f.output, 'files/share/default_pfx/drive_c/windows/system32/libvkd3d-shader-1.dll'), 'utf8'), 'new-libvkd3d-shader-1.dll');
     assert.ok(metadata.features.includes('hlsl-state-keywords-v1'));
     assert.ok(metadata.features.includes('xtaskqueue-repeat-termination-v1'));
+    assert.ok(metadata.features.includes('xasync-deferred-cleanup-v1'));
     assert.ok(metadata.features.includes('xgame-relaunch-current-user-v1'));
     assert.ok(metadata.features.includes('dxvk-constant-compare-v1'));
     for (const name of dxvkComponents) for (const relative of [`files/lib/wine/dxvk/x86_64-windows/${name}`, `files/lib/wine/x86_64-windows/${name}`, `files/share/default_pfx/drive_c/windows/system32/${name}`])
