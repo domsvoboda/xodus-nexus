@@ -25,6 +25,7 @@ struct XUser {
     IUser IUser_iface;
     char *deviceToken, *userToken, *proofKey, *titleToken;
     UINT64 xuid;
+    BOOL offline; /* an identity signed in from the offline cache never requests tokens */
 };
 static HRESULT adapter_transport_hr, adapter_init_hr;
 static DWORD adapter_status;
