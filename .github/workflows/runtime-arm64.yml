@@ -1,0 +1,55 @@
+name: Nexus runtime arm64 (experimental)
+
+on:
+  push:
+    branches: [main]
+    paths: ['scripts/arm64/**', scripts/runtime-base-arm64.lock.json, scripts/verify-runtime-base.mjs, .github/workflows/runtime-arm64.yml]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: runtime-arm64-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  components:
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - name: Install build prerequisites
+        timeout-minutes: 15
+        run: |
+          sudo apt-get -o Acquire::Retries=2 update
+          sudo apt-get -o Acquire::Retries=2 install -y --no-install-recommends \
+            build-essential gcc-mingw-w64-x86-64 g++-mingw-w64-x86-64 glslang-tools flex bison autoconf automake libtool libjson-perl wine64-tools cmake \
+            pkg-config python3 perl file curl tar xz-utils
+          # Ubuntu installs the unversioned Wine tools outside the default PATH.
+          widl_dir="$(dirname "$(find /usr/lib -name widl -type f | head -n1)")"
+          test -x "$widl_dir/widl"
+          echo "$widl_dir" >> "$GITHUB_PATH"
+      - name: Build ARM64X overlays, assemble onto the pinned CachyOS arm64 base, smoke test
+        env:
+          WORK: ${{ github.workspace }}/arm64-build
+          JOBS: '4'
+        run: bash scripts/arm64/build-components.sh 2>&1 | tee arm64-build.log
+      - name: Collect results
+        if: always()
+        run: |
+          mkdir -p results
+          cp arm64-build.log results/ || true
+          cp -r arm64-build/components-arm64 results/ 2>/dev/null || true
+          cp -r arm64-build/smoke/*.log results/ 2>/dev/null || true
+          cp arm64-build/wine-build-arm64/config.log results/wine-config.log 2>/dev/null || true
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: runtime-arm64-experiment
+          path: results/
+          if-no-files-found: warn
+          retention-days: 7
