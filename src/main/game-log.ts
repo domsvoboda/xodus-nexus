@@ -9,9 +9,9 @@ interface RepeatedLine {
 }
 
 function verboseSignature(line: string): { key: string; label: string } | null {
-  const match = line.match(/(?:^|:)(fixme|info|trace):([^:]+):(.+)$/i);
+  const match = line.match(/(?:^|:)(fixme|info|trace|warn):([^:]+):(.+)$/i);
   if (!match) return null;
-  const detail = match[3].replace(/\b(?:0x)?[0-9a-f]{8,}\b/gi, '<address>');
+  const detail = match[3].replace(/\b(?:0x[0-9a-f]+|[0-9a-f]{8,})\b/gi, '<address>');
   const key = `${match[1].toLowerCase()}:${match[2].toLowerCase()}:${detail}`;
   return { key, label: key.slice(0, 120) };
 }
@@ -21,8 +21,10 @@ export function gameLoggingEnvironment(source: NodeJS.ProcessEnv, verbose = fals
   if (verbose) environment.XODUS_NEXUS_VERBOSE_LOGS = '1';
   if (environment.XODUS_NEXUS_VERBOSE_LOGS === '1') return environment;
   environment.WINEDEBUG ??= '-fixme';
-  environment.VKD3D_DEBUG ??= 'warn';
-  environment.VKD3D_SHADER_DEBUG ??= 'warn';
+  // vkd3d-proton warns once per unknown shader DWORD/checksum, which can add
+  // hundreds of MB per session; errors still reach the log.
+  environment.VKD3D_DEBUG ??= 'err';
+  environment.VKD3D_SHADER_DEBUG ??= 'err';
   return environment;
 }
 
