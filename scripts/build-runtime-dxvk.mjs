@@ -19,10 +19,28 @@ export function validateDxvkLock(lock,base){
     if(source.path!==expectedPaths[name]||!/^https:\/\/github\.com\/[\w.-]+\/[\w.-]+\.git$/.test(source.url)||
       !/^[a-f0-9]{40}$/.test(source.commit))throw Error(`Invalid DXVK source: ${name}`);
 }
-export async function buildRuntimeDxvk(parent,output,jobs='4'){
+// PE targets: the x86_64 set uses the tree's own cross file and GCC MinGW;
+// `arm64ec` uses llvm-mingw's arm64ec wrappers, so the result loads into the
+// ARM64EC processes that x86_64 games become on the arm64 Proton base. The
+// source, patch and compiler unit tests are identical for both.
+export const dxvkTargets=['x86_64','arm64ec'];
+export function dxvkCrossFile(target){
+  if(target==='x86_64')return null;
+  if(target!=='arm64ec')throw Error(`Unsupported DXVK target: ${target}`);
+  const prefix='arm64ec-w64-mingw32';
+  return `[binaries]\nc = '${prefix}-clang'\ncpp = '${prefix}-clang++'\nar = '${prefix}-ar'\nstrip = '${prefix}-strip'\nwindres = '${prefix}-windres'\n\n`+
+    `[properties]\nneeds_exe_wrapper = true\n\n[host_machine]\nsystem = 'windows'\ncpu_family = 'aarch64'\ncpu = 'arm64ec'\nendian = 'little'\n`;
+}
+/** True when the PE's load config carries CHPE metadata (an ARM64EC image). */
+export function hasChpeMetadata(loadConfigText){
+  const line=loadConfigText.split('\n').find(l=>l.includes('CHPEMetadataPointer'));
+  return Boolean(line)&&!/:\s*0x0*\s*$/.test(line)&&!/:\s*0\s*$/.test(line);
+}
+export async function buildRuntimeDxvk(parent,output,jobs='4',target='x86_64'){
   const bytes=await fs.readFile(path.join(project,'scripts/runtime-dxvk.lock.json'));
   const lock=JSON.parse(bytes),base=JSON.parse(await fs.readFile(path.join(project,'scripts/runtime-base.lock.json'),'utf8'));
   validateDxvkLock(lock,base);
+  if(!dxvkTargets.includes(target))throw Error(`Unsupported DXVK target: ${target}`);
   if(!/^[1-9][0-9]?$/.test(String(jobs)))throw Error('Invalid DXVK build job count');
   const sha=b=>createHash('sha256').update(b).digest('hex');
   const hash=async file=>sha(await fs.readFile(file));
@@ -73,15 +91,19 @@ export async function buildRuntimeDxvk(parent,output,jobs='4'){
   if(!/SHADER CHECKS [1-9][0-9]* FAILURES 0/.test(regression))throw Error('DXVK constant-comparison regression failed');
   await fs.writeFile(path.join(root,'shader-compare.log'),regression);
   const build=path.join(root,'windows-build'),stage=path.join(root,'stage');
-  run('python3',[meson,'setup',build,source,'--cross-file',path.join(source,'build-win64.txt'),
+  let crossFile=path.join(source,'build-win64.txt');
+  if(target!=='x86_64'){crossFile=path.join(root,`build-${target}.txt`);await fs.writeFile(crossFile,dxvkCrossFile(target),{flag:'wx'});}
+  run('python3',[meson,'setup',build,source,'--cross-file',crossFile,
     '--wrap-mode=nodownload','--buildtype=release','-Db_ndebug=false',`--prefix=${stage}`,'--bindir=x64','--libdir=x64']);
   run(path.join(ninjaRoot,'ninja'),['-C',build,`-j${jobs}`,'install']);
   const components={};
   for(const name of dxvkComponents){
     const file=path.join(stage,'x64',name);
-    if(!/PE32\+ executable.*x86-64/.test(run('file',['-b',file],root,true)))throw Error(`Not an x64 DXVK component: ${name}`);
-    const imports=run('x86_64-w64-mingw32-objdump',['-p',file],root,true);
-    if(/DLL Name: (?:libstdc\+\+|libgcc|libwinpthread)/i.test(imports))throw Error(`Nonportable DXVK import: ${name}`);
+    // ARM64EC images carry the AMD64 machine type; their CHPE metadata tells them apart.
+    if(!/PE32\+ executable.*x86-64/.test(run('file',['-b',file],root,true)))throw Error(`Not a 64-bit DXVK component: ${name}`);
+    if(target==='arm64ec'&&!hasChpeMetadata(run('llvm-readobj',['--coff-load-config',file],root,true)))throw Error(`Not an ARM64EC DXVK component: ${name}`);
+    const imports=run(target==='x86_64'?'x86_64-w64-mingw32-objdump':'llvm-objdump',['-p',file],root,true);
+    if(/DLL Name: (?:libstdc\+\+|libgcc|libwinpthread|libc\+\+|libunwind)/i.test(imports))throw Error(`Nonportable DXVK import: ${name}`);
     await fs.copyFile(file,path.join(output,name),fs.constants.COPYFILE_EXCL);
     components[name]=await hash(file);
   }
@@ -90,13 +112,13 @@ export async function buildRuntimeDxvk(parent,output,jobs='4'){
     await fs.copyFile(path.join(source,from),path.join(output,to));
   for(const [from,to] of [['include/vulkan/LICENSE.md','DXVK-Vulkan-LICENSE'],['include/spirv/LICENSE','DXVK-SPIRV-LICENSE']])
     await fs.copyFile(path.join(source,from),path.join(output,to));
-  const manifest={sourceLockSha256:sha(bytes),version:lock.version,sources:lock.sources,patch:lock.patch,
+  const manifest={sourceLockSha256:sha(bytes),version:lock.version,target,sources:lock.sources,patch:lock.patch,
     verifiedCompilerSource:lock.expectedCompilerSource,components,compilerTests:upstreamTests.trim().split('\n').at(-1),regression:regression.trim()};
   await fs.writeFile(path.join(output,'dxvk-source-manifest.json'),JSON.stringify(manifest,null,2)+'\n',{flag:'wx'});
   return manifest;
 }
 if(process.argv[1]&&path.resolve(process.argv[1])===fileURLToPath(import.meta.url)){
-  if(process.argv.length!==5)throw Error('Usage: build-runtime-dxvk.mjs WORK_PARENT NEW_COMPONENTS_DIRECTORY JOBS');
+  if(process.argv.length<5||process.argv.length>6)throw Error('Usage: build-runtime-dxvk.mjs WORK_PARENT NEW_COMPONENTS_DIRECTORY JOBS [x86_64|arm64ec]');
   await fs.mkdir(path.resolve(process.argv[3]),{recursive:true});
-  await buildRuntimeDxvk(path.resolve(process.argv[2]),path.resolve(process.argv[3]),process.argv[4]);
+  await buildRuntimeDxvk(path.resolve(process.argv[2]),path.resolve(process.argv[3]),process.argv[4],process.argv[5]??'x86_64');
 }

@@ -6,8 +6,14 @@ import path from 'node:path';
 import { createHash } from 'node:crypto';
 import { execFileSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
+import { hostArch } from './runtime-layout.mjs';
 
 const root = path.dirname(fileURLToPath(import.meta.url));
+// The libraries are built for the host that runs this script (x86_64 or
+// aarch64); the assembly places them in the matching files/lib/<triplet>.
+const arch = hostArch();
+const triplet = `${arch}-linux-gnu`;
+const elfMachine = arch === 'aarch64' ? 'AArch64' : 'Advanced Micro Devices X86-64';
 const lock = JSON.parse(await fs.readFile(path.join(root, 'runtime-media.lock.json'), 'utf8'));
 const args = process.argv.slice(2);
 let work, archive, jobs = '4';
@@ -39,7 +45,7 @@ for (const entry of listing.trimEnd().split('\n')) {
 run('tar', ['-xJf', sourceArchive, '-C', work]);
 const source = path.join(work, sourceDirectory);
 const configure = [
-  '--prefix=/usr', '--libdir=/usr/lib/x86_64-linux-gnu',
+  '--prefix=/usr', `--libdir=/usr/lib/${triplet}`,
   '--disable-static', '--enable-shared', '--disable-autodetect',
   '--disable-programs', '--disable-doc', '--disable-debug', '--disable-x86asm',
   '--disable-gpl', '--disable-nonfree', '--disable-encoders', '--disable-muxers', '--disable-devices',
@@ -48,7 +54,7 @@ run('./configure', configure, source);
 run('make', [`-j${jobs}`], source);
 const stage = path.join(work, 'stage');
 run('make', [`DESTDIR=${stage}`, 'install'], source);
-const libdir = path.join(stage, 'usr/lib/x86_64-linux-gnu');
+const libdir = path.join(stage, 'usr/lib', triplet);
 const libraries = {};
 let maxGlibc = [0, 0];
 for (const [soname, filename] of Object.entries(lock.libraries)) {
@@ -56,7 +62,7 @@ for (const [soname, filename] of Object.entries(lock.libraries)) {
   if (path.basename(target) !== filename) throw new Error(`Unexpected FFmpeg SONAME target: ${soname}`);
   const header = execFileSync('readelf', ['-h', target], { encoding: 'utf8' });
   const dynamic = execFileSync('readelf', ['-d', target], { encoding: 'utf8' });
-  if (!header.includes('Advanced Micro Devices X86-64') || !dynamic.includes(`Library soname: [${soname}]`))
+  if (!header.includes(elfMachine) || !dynamic.includes(`Library soname: [${soname}]`))
     throw new Error(`Invalid FFmpeg ELF or SONAME: ${soname}`);
   const versions = execFileSync('readelf', ['--version-info', target], { encoding: 'utf8' });
   for (const match of versions.matchAll(/GLIBC_(\d+)\.(\d+)/g)) {
@@ -66,13 +72,13 @@ for (const [soname, filename] of Object.entries(lock.libraries)) {
   libraries[soname] = { filename, sha256: sha256(await fs.readFile(target)) };
 }
 await fs.writeFile(path.join(work, 'media-manifest.json'), JSON.stringify({
-  source: lock.url, sourceSha256: lock.sha256, version: lock.version,
+  source: lock.url, sourceSha256: lock.sha256, version: lock.version, arch, triplet,
   license: 'LGPL-2.1-or-later', configure, maxGlibc: maxGlibc.join('.'), libraries,
 }, null, 2) + '\n');
 const bundleEntries = [lock.archive, 'media-manifest.json', `${sourceDirectory}/COPYING.LGPLv2.1`,
   ...Object.entries(lock.libraries).flatMap(([soname, filename]) => [
-    `stage/usr/lib/x86_64-linux-gnu/${soname}`,
-    `stage/usr/lib/x86_64-linux-gnu/${filename}`,
+    `stage/usr/lib/${triplet}/${soname}`,
+    `stage/usr/lib/${triplet}/${filename}`,
   ])];
 run('tar', ['-cJf', path.join(work, 'media-bundle.tar.xz'), '-C', work, ...bundleEntries]);
 console.log(`Built pinned LGPL media libraries: ${libdir}`);

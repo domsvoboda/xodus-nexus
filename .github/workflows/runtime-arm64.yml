@@ -1,9 +1,22 @@
 name: Nexus runtime arm64 (experimental)
 
+# Builds an aarch64 Nexus runtime candidate on the pinned CachyOS arm64 Proton
+# base: ARM64X/ARM64EC overlays from the same pinned sources and patches as the
+# x86_64 runtime, an aarch64 host shim and FFmpeg libraries, and an ARM64EC
+# DXVK. The candidate is uploaded, never published.
 on:
   push:
     branches: [main]
-    paths: ['scripts/arm64/**', scripts/runtime-base-arm64.lock.json, scripts/verify-runtime-base.mjs, .github/workflows/runtime-arm64.yml]
+    paths:
+      - 'scripts/arm64/**'
+      - scripts/runtime-base-arm64.lock.json
+      - scripts/runtime-layout.mjs
+      - scripts/assemble-shared-runtime.mjs
+      - scripts/build-runtime-dxvk.mjs
+      - scripts/build-runtime-media.mjs
+      - scripts/verify-runtime-base.mjs
+      - 'scripts/runtime-compat/**'
+      - .github/workflows/runtime-arm64.yml
   workflow_dispatch:
 
 permissions:
@@ -14,9 +27,36 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
-  components:
+  media:
+    # Ubuntu 22.04 keeps the libraries within the glibc 2.35 portability ceiling.
+    runs-on: ubuntu-22.04-arm
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - name: Install media build prerequisites
+        timeout-minutes: 15
+        run: |
+          sudo apt-get -o Acquire::Retries=2 update
+          sudo apt-get -o Acquire::Retries=2 install -y --no-install-recommends build-essential curl xz-utils
+      - name: Build portable pinned LGPL FFmpeg libraries for aarch64
+        run: |
+          node scripts/build-runtime-media.mjs --work "$PWD/media-build" --jobs 4
+          node scripts/ci/check-media-glibc.mjs media-build/media-manifest.json
+          test "$(node -p 'require("./media-build/media-manifest.json").arch')" = aarch64
+      - uses: actions/upload-artifact@v4
+        with:
+          name: nexus-runtime-media-aarch64
+          path: media-build/media-bundle.tar.xz
+          if-no-files-found: error
+          retention-days: 3
+
+  build:
+    needs: media
     runs-on: ubuntu-24.04-arm
-    timeout-minutes: 120
+    timeout-minutes: 150
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
@@ -33,27 +73,53 @@ jobs:
           widl_dir="$(dirname "$(find /usr/lib -name widl -type f | head -n1)")"
           test -x "$widl_dir/widl"
           echo "$widl_dir" >> "$GITHUB_PATH"
-      - name: Build ARM64X overlays, assemble onto the pinned CachyOS arm64 base, smoke test
+      - name: Unpack portable aarch64 media build
+        uses: actions/download-artifact@v4
+        with:
+          name: nexus-runtime-media-aarch64
+          path: media
+      - name: Build overlays, assemble onto the pinned CachyOS arm64 base, smoke test, package
         # `shell: bash` enables pipefail, so a script failure is not hidden by tee.
         shell: bash
         env:
           WORK: ${{ github.workspace }}/arm64-build
           JOBS: '4'
-        run: bash scripts/arm64/build-components.sh 2>&1 | tee arm64-build.log
-      - name: Collect results
+          MEDIA_BUNDLE: ${{ github.workspace }}/media/media-bundle.tar.xz
+        run: |
+          # Same version shape as the x86_64 runtime: <wine>-<yyyymmdd>-g<sha8>.
+          export NEXUS_VERSION="11.0-$(date -u +%Y%m%d)-g${GITHUB_SHA:0:8}"
+          echo "nexus_name=xodus-nexus-runtime-$NEXUS_VERSION" >> "$GITHUB_ENV"
+          bash scripts/arm64/build-components.sh 2>&1 | tee arm64-build.log
+      - name: Bind candidate to source and checksums
+        run: node scripts/ci/artifact-manifest.mjs write runtime arm64-build/dist
+      - name: Collect diagnostics
         if: always()
         run: |
           mkdir -p results
           cp arm64-build.log results/ || true
           cp -r arm64-build/components-arm64 results/ 2>/dev/null || true
-          cp -r arm64-build/smoke/*.log results/ 2>/dev/null || true
+          cp arm64-build/components/source-manifest.json results/ 2>/dev/null || true
+          cp arm64-build/smoke/*.log results/ 2>/dev/null || true
           cp arm64-build/wine-build-arm64/config.log results/wine-config.log 2>/dev/null || true
           cp arm64-build/wine-build-arm64/configure.out results/wine-configure.out 2>/dev/null || true
           cp arm64-build/vkd3d-arm64ec/config.log results/vkd3d-config.log 2>/dev/null || true
+          cp arm64-build/dxvk-work/dxvk/windows-build/meson-logs/meson-log.txt results/dxvk-meson-log.txt 2>/dev/null || true
       - uses: actions/upload-artifact@v4
         if: always()
         with:
           name: runtime-arm64-experiment
           path: results/
           if-no-files-found: warn
+          retention-days: 7
+      - name: Upload runtime candidate (never publish)
+        uses: actions/upload-artifact@v4
+        with:
+          name: nexus-runtime-aarch64
+          path: |
+            arm64-build/dist/${{ env.nexus_name }}-aarch64.tar.xz
+            arm64-build/dist/${{ env.nexus_name }}-aarch64.sha512sum
+            arm64-build/dist/${{ env.nexus_name }}-source.tar.xz
+            arm64-build/dist/${{ env.nexus_name }}-source.sha512sum
+            arm64-build/dist/candidate.json
+          if-no-files-found: error
           retention-days: 7
