@@ -1,5 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { spawn, type ChildProcess } from 'node:child_process';
+import { once } from 'node:events';
 import { promises as fs } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
@@ -33,7 +34,9 @@ describe.skipIf(!linux)('AdoptedGame', () => {
   afterEach(() => { try { child?.kill('SIGKILL'); } catch { /* gone */ } });
 
   it('verifies the launch id in the process environment and watches a group it did not spawn', async () => {
-    child = spawn(process.execPath, ['-e', 'process.on("SIGINT",()=>process.exit(0));setInterval(()=>{},1000)'], { detached: true, stdio: 'ignore', env: { ...process.env, XODUS_NEXUS_LAUNCH_ID: 'game-abc' } });
+    // The environment exists before the script runs; wait for the handlers before signalling.
+    child = spawn(process.execPath, ['-e', 'process.on("SIGINT",()=>process.exit(0));setInterval(()=>{},1000);process.stdout.write("READY\n")'], { detached: true, stdio: ['ignore', 'pipe', 'ignore'], env: { ...process.env, XODUS_NEXUS_LAUNCH_ID: 'game-abc' } });
+    await once(child.stdout!, 'data');
     const pgid = child.pid!;
     await vi.waitFor(async () => expect(await processCarries(pgid, 'XODUS_NEXUS_LAUNCH_ID', 'game-abc')).toBe(true));
     const record = { operationId: 'game-abc', gameId: 'abc', title: 'Adopted', pgid, startedAt: 'now', env: {} };
@@ -50,7 +53,8 @@ describe.skipIf(!linux)('AdoptedGame', () => {
   });
 
   it('force-stops a group that ignores the interrupt', async () => {
-    child = spawn(process.execPath, ['-e', 'process.on("SIGINT",()=>{});process.on("SIGTERM",()=>{});setInterval(()=>{},1000)'], { detached: true, stdio: 'ignore', env: { ...process.env, XODUS_NEXUS_LAUNCH_ID: 'game-def' } });
+    child = spawn(process.execPath, ['-e', 'process.on("SIGINT",()=>{});process.on("SIGTERM",()=>{});setInterval(()=>{},1000);process.stdout.write("READY\n")'], { detached: true, stdio: ['ignore', 'pipe', 'ignore'], env: { ...process.env, XODUS_NEXUS_LAUNCH_ID: 'game-def' } });
+    await once(child.stdout!, 'data');
     const record = { operationId: 'game-def', gameId: 'def', title: 'Stubborn', pgid: child.pid!, startedAt: 'now', env: {} };
     await vi.waitFor(async () => expect(await AdoptedGame.verify(record)).toBe(true));
     const adopted = new AdoptedGame(record, 20);
