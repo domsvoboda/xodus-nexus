@@ -1,0 +1,302 @@
+Renew stored offline licenses in the background
+
+`xodus-cli license-refresh --license-cache <dir>` renews every offline
+license the signed-in account stored through `run --license-cache`, using
+the market each was issued for. An offline lease lasts at most 30 days and
+was renewed only by launching that game online, so games played offline for
+a while, or not launched at all, lost offline permission even though the
+device was online in between. Each renewal follows the launch rules: a new
+offline lease replaces the entry, a license without one or a refusal removes
+it, and an unreachable Microsoft leaves everything unchanged and ends the
+run early. stdout carries one JSON summary line (counts and the earliest new
+expiry, no identifiers); the launcher runs it after online game sessions.
+
+diff --git a/crates/xodus-cli/src/commands.rs b/crates/xodus-cli/src/commands.rs
+index 727ca8a..ef5ace6 100644
+--- a/crates/xodus-cli/src/commands.rs
++++ b/crates/xodus-cli/src/commands.rs
+@@ -3,6 +3,7 @@ pub mod download;
+ pub mod extract;
+ pub mod extract_eappx;
+ pub mod license;
++pub mod license_refresh;
+ pub mod login;
+ pub mod logout;
+ pub mod offline_pc;
+diff --git a/crates/xodus-cli/src/commands/license_refresh.rs b/crates/xodus-cli/src/commands/license_refresh.rs
+new file mode 100644
+index 0000000..ffc18e2
+--- /dev/null
++++ b/crates/xodus-cli/src/commands/license_refresh.rs
+@@ -0,0 +1,86 @@
++//! Renews the device-bound offline licenses that `run --license-cache` stored,
++//! while Microsoft is reachable. An offline lease lasts at most 30 days and
++//! was renewed only by launching that game online; the launcher runs this in
++//! the background so every cached game keeps offline permission.
++//!
++//! Output contract (stdout, one JSON line, schema 1):
++//! `{"schema":1,"checked":n,"renewed":n,"onlineOnly":n,"refused":n,"failed":n,
++//!   "unreachable":bool,"earliestExpiresAt":<Unix seconds>|null}`
++//! `earliestExpiresAt` is the soonest expiry among the renewed licenses.
++use std::path::Path;
++use std::process::ExitCode;
++
++use serde_json::{Value, json};
++use xodus::tokens::TokenManager;
++
++use crate::license::{Renewal, refresh_licenses};
++
++pub async fn run(client: &reqwest::Client, tokens: &TokenManager, license_cache: String) -> ExitCode {
++    let results = match refresh_licenses(client, tokens, Path::new(&license_cache)).await {
++        Ok(results) => results,
++        Err(error) => {
++            eprintln!("{error}");
++            return ExitCode::FAILURE;
++        }
++    };
++    let summary = summarize(&results);
++    println!("{summary}");
++    if summary["unreachable"] == true || summary["failed"] != 0 {
++        ExitCode::FAILURE
++    } else {
++        ExitCode::SUCCESS
++    }
++}
++
++fn summarize(results: &[(String, Renewal)]) -> Value {
++    let count = |wanted: fn(&Renewal) -> bool| results.iter().filter(|(_, renewal)| wanted(renewal)).count();
++    json!({
++        "schema": 1,
++        "checked": results.len(),
++        "renewed": count(|renewal| matches!(renewal, Renewal::Renewed(_))),
++        "onlineOnly": count(|renewal| *renewal == Renewal::OnlineOnly),
++        "refused": count(|renewal| *renewal == Renewal::Refused),
++        "failed": count(|renewal| *renewal == Renewal::Failed),
++        "unreachable": results.iter().any(|(_, renewal)| *renewal == Renewal::Unreachable),
++        "earliestExpiresAt": results
++            .iter()
++            .filter_map(|(_, renewal)| match renewal {
++                Renewal::Renewed(expires_at) => Some(*expires_at),
++                _ => None,
++            })
++            .min(),
++    })
++}
++
++#[cfg(test)]
++mod tests {
++    use super::*;
++
++    #[test]
++    fn license_refresh_summary_counts_outcomes_without_identifiers() {
++        let results = vec![
++            ("content-a".to_string(), Renewal::Renewed(1_900_000_000)),
++            ("content-b".to_string(), Renewal::Renewed(1_800_000_000)),
++            ("content-c".to_string(), Renewal::OnlineOnly),
++            ("content-d".to_string(), Renewal::Refused),
++            ("content-e".to_string(), Renewal::Failed),
++        ];
++        let summary = summarize(&results);
++        assert_eq!(summary["schema"], 1);
++        assert_eq!(summary["checked"], 5);
++        assert_eq!(summary["renewed"], 2);
++        assert_eq!(summary["onlineOnly"], 1);
++        assert_eq!(summary["refused"], 1);
++        assert_eq!(summary["failed"], 1);
++        assert_eq!(summary["unreachable"], false);
++        assert_eq!(summary["earliestExpiresAt"], 1_800_000_000);
++        assert!(!summary.to_string().contains("content-"));
++
++        let unreachable = summarize(&[("content-a".to_string(), Renewal::Unreachable)]);
++        assert_eq!(unreachable["unreachable"], true);
++        assert!(unreachable["earliestExpiresAt"].is_null());
++        let empty = summarize(&[]);
++        assert_eq!(empty["checked"], 0);
++        assert_eq!(empty["unreachable"], false);
++    }
++}
+diff --git a/crates/xodus-cli/src/license.rs b/crates/xodus-cli/src/license.rs
+index d1b35ed..abb165f 100644
+--- a/crates/xodus-cli/src/license.rs
++++ b/crates/xodus-cli/src/license.rs
+@@ -78,6 +78,63 @@ pub async fn get_license(
+     }
+ }
+ 
++/// What renewing one stored offline license produced.
++#[derive(Debug, PartialEq, Eq)]
++pub enum Renewal {
++    /// Microsoft issued a new offline lease; the entry is valid until then (Unix seconds).
++    Renewed(u64),
++    /// Microsoft issued the license without an offline lease, so the entry was
++    /// removed (this device is no longer the designated offline device).
++    OnlineOnly,
++    /// Microsoft could not be reached; the entry is unchanged.
++    Unreachable,
++    /// Microsoft refused this account or content; the entry was removed.
++    Refused,
++    /// Sign-in, credential or response problems; the entry is unchanged.
++    Failed,
++}
++
++/// Renews the signed-in account's stored offline licenses online, so games
++/// that were not launched while online keep offline permission. Stops at the
++/// first unreachable answer instead of waiting out every request's timeout.
++pub async fn refresh_licenses(
++    client: &reqwest::Client,
++    tokens: &TokenManager,
++    root: &Path,
++) -> std::result::Result<Vec<(String, Renewal)>, String> {
++    let user = tokens.get_user().map_err(|error| error.to_string())?;
++    let cache = LicenseCache::new(root);
++    let mut results = Vec::new();
++    for (content_id, entry) in cache.entries(&user.puid, unix_now()) {
++        let renewal = match fetch_online(client, tokens, &user, content_id.clone(), entry.market.clone()).await {
++            Ok(license) => {
++                record_license(root, &content_id, &user.puid, &entry.market, &license);
++                match cache.load(&content_id, &user.puid, unix_now()) {
++                    Ok(Some(stored)) => Renewal::Renewed(stored.expires_at),
++                    _ => Renewal::OnlineOnly,
++                }
++            }
++            Err(OnlineFailure::Unreachable(_)) => Renewal::Unreachable,
++            Err(OnlineFailure::Refused(_)) => {
++                if cache.purge(&content_id) == Ok(true) {
++                    diagnostic("content-cache-purged");
++                }
++                Renewal::Refused
++            }
++            Err(OnlineFailure::Other(message)) => {
++                eprintln!("{message}");
++                Renewal::Failed
++            }
++        };
++        let unreachable = renewal == Renewal::Unreachable;
++        results.push((content_id, renewal));
++        if unreachable {
++            break;
++        }
++    }
++    Ok(results)
++}
++
+ /// The offline lease Microsoft attached, if any: the earliest expiry among
+ /// leases whose policy allows offline use, as Unix seconds.
+ pub fn offline_lease_expiry(leases: &[License]) -> Option<u64> {
+diff --git a/crates/xodus-cli/src/license_cache.rs b/crates/xodus-cli/src/license_cache.rs
+index 802bfef..551936f 100644
+--- a/crates/xodus-cli/src/license_cache.rs
++++ b/crates/xodus-cli/src/license_cache.rs
+@@ -50,6 +50,8 @@ pub enum Stored {
+ pub struct CachedLicense {
+     pub splicense_block: String,
+     pub expires_at: u64,
++    /// The market the license was issued for; a renewal asks for the same one.
++    pub market: String,
+ }
+ 
+ pub struct LicenseCache {
+@@ -184,9 +186,42 @@ impl LicenseCache {
+         Ok(Some(CachedLicense {
+             splicense_block: block.to_string(),
+             expires_at,
++            market: value
++                .get("market")
++                .and_then(Value::as_str)
++                .filter(|market| !market.is_empty() && market.len() <= 16)
++                .unwrap_or("neutral")
++                .to_string(),
+         }))
+     }
+ 
++    /// The valid entries of this account, ordered by content identifier.
++    /// Expired or unreadable entries are removed exactly as `load` removes
++    /// them; other accounts' entries are left alone.
++    pub fn entries(&self, puid: &str, now: u64) -> Vec<(String, CachedLicense)> {
++        let Ok(directory) = fs::read_dir(&self.root) else {
++            return Vec::new();
++        };
++        let mut content_ids: Vec<String> = directory
++            .filter_map(Result::ok)
++            .filter_map(|entry| {
++                entry
++                    .file_name()
++                    .to_str()
++                    .and_then(|name| name.strip_suffix(".json"))
++                    .map(str::to_string)
++            })
++            .collect();
++        content_ids.sort();
++        content_ids
++            .into_iter()
++            .filter_map(|content_id| {
++                let entry = self.load(&content_id, puid, now).ok().flatten()?;
++                Some((content_id, entry))
++            })
++            .collect()
++    }
++
+     /// Removes the entry after Microsoft refused the content while online.
+     pub fn purge(&self, content_id: &str) -> Result<bool, String> {
+         let path = self.entry_path(content_id)?;
+diff --git a/crates/xodus-cli/src/license_cache_tests.rs b/crates/xodus-cli/src/license_cache_tests.rs
+index 5bfeb0e..c127255 100644
+--- a/crates/xodus-cli/src/license_cache_tests.rs
++++ b/crates/xodus-cli/src/license_cache_tests.rs
+@@ -137,6 +137,30 @@ fn offline_license_rejects_unsafe_identifiers_and_malformed_entries() {
+     assert!(!root.path().join("content-8.json").exists());
+ }
+ 
++#[test]
++fn offline_license_entries_list_only_this_accounts_valid_licenses_with_their_market() {
++    let root = tempfile::tempdir().unwrap();
++    let cache = LicenseCache::new(root.path());
++    assert!(cache.entries("puid", NOW).is_empty(), "a missing cache directory lists nothing");
++    cache.store("content-b", "puid", "DE", &license("YmxvY2s="), Some(NOW + 9 * DAY), NOW).unwrap();
++    cache.store("content-a", "puid", "US", &license("YmxvY2s="), Some(NOW + 20 * DAY), NOW).unwrap();
++    cache.store("content-c", "other", "US", &license("YmxvY2s="), Some(NOW + 20 * DAY), NOW).unwrap();
++    cache.store("content-d", "puid", "US", &license("YmxvY2s="), Some(NOW + DAY), NOW).unwrap();
++    std::fs::write(root.path().join("content-e.json.tmp"), b"partial").unwrap();
++    std::fs::write(root.path().join("notes.txt"), b"ignored").unwrap();
++
++    let listed = cache.entries("puid", NOW + 2 * DAY);
++    let summary: Vec<(&str, &str, u64)> = listed
++        .iter()
++        .map(|(id, entry)| (id.as_str(), entry.market.as_str(), entry.expires_at))
++        .collect();
++    assert_eq!(summary, vec![("content-a", "US", NOW + 20 * DAY), ("content-b", "DE", NOW + 9 * DAY)]);
++    // The expired entry was removed; the other account's entry and unrelated files stay.
++    assert!(!root.path().join("content-d.json").exists());
++    assert!(root.path().join("content-c.json").exists());
++    assert!(root.path().join("content-e.json.tmp").exists());
++}
++
+ #[cfg(unix)]
+ #[test]
+ fn offline_license_files_are_private_to_the_user() {
+diff --git a/crates/xodus-cli/src/main.rs b/crates/xodus-cli/src/main.rs
+index 110a08c..c2e3b57 100644
+--- a/crates/xodus-cli/src/main.rs
++++ b/crates/xodus-cli/src/main.rs
+@@ -178,6 +178,11 @@ enum SubCommand {
+     SpLicense {
+         block: String,
+     },
++    #[command(about = "Renew the stored device-bound offline licenses while Microsoft is reachable (JSON on stdout)")]
++    LicenseRefresh {
++        #[arg(long = "license-cache", help = "Directory of the offline license cache that run --license-cache writes")]
++        license_cache: String,
++    },
+     #[command(about = "Show or change whether this device is the account's designated offline PC (JSON on stdout)")]
+     OfflinePc {
+         #[arg(long, help = "Designate (true) or undesignate (false) this device; requires --confirm")]
+@@ -480,6 +485,9 @@ async fn main() -> ExitCode {
+         SubCommand::OfflinePc { set, confirm } => {
+             commands::offline_pc::run(&client, &tokens, set, confirm).await
+         }
++        SubCommand::LicenseRefresh { license_cache } => {
++            commands::license_refresh::run(&client, &tokens, license_cache).await
++        }
+     };
+ 
+     xodus::secrets::destroy_secrets();

@@ -1,0 +1,3 @@
+# Xodus Nexus backend 0.2.15
+
+- Add `license-refresh --license-cache <dir>`: renews every offline license the signed-in account stored through `run --license-cache`, for the market each was issued for. An offline lease lasts at most 30 days and was renewed only by launching that game online, so games played offline for a while, or not launched at all, lost offline permission even though the device was online in between. A new offline lease replaces the entry, a license without one or a refusal removes it, and an unreachable Microsoft leaves everything unchanged. stdout carries one JSON summary line (counts and the earliest new expiry, no identifiers). The launcher runs it after online game sessions, at most once a day.

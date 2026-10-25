@@ -15,6 +15,7 @@ import { prepareGameWrapper, type GameWrapper } from './game-wrapper.js';
 import { canonicalInstallPath, installPathsOverlap } from './install-queue.js';
 import { GameContent } from './game-content.js';
 import type { AcquiredService, ServiceSessions } from './service-sessions.js';
+import { refreshOfflineLicenses } from './license-refresh.js';
 
 /** Device-bound offline licenses written by `xodus-cli run --license-cache`. */
 export function licenseCacheDirectory(dataRoot: string): string { return path.join(dataRoot, 'license-cache'); }
@@ -279,6 +280,11 @@ export class GameSession {
           gameLog.flush();
           launchLog.end();
         } finally { changed(true); }
+        // After an online session, renew the other games' offline leases too
+        // (this launch already renewed its own); at most once a day.
+        if (!offlineLaunch && backend.capabilities.licenseCache && backend.capabilities.licenseRefresh) {
+          void refreshOfflineLicenses(binary, licenseCacheDirectory(dataRoot), (line) => console.log(line));
+        }
       });
       const active: ActiveGame = { operationId, gameId: id, operation, process: tracked, service, stopPrefix: protonRunner?.stopPrefix, outputFile, result: tracked.result, finished };
       this.active = active;

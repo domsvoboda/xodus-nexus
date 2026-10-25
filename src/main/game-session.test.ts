@@ -19,6 +19,7 @@ const h = vi.hoisted(() => ({
   unbridged: false,
   proton: undefined as undefined | { command: string; compatibilityDataPath: string; stopPrefix: { command: string; args: string[] } },
   localeSync: vi.fn(async () => {}),
+  licenseRefresh: vi.fn(async () => undefined),
 }));
 
 vi.mock('./store.js', () => ({ inspectGameDirectory: async (directory: string) => ({ id: 'g', path: directory, title: 'Sample', installState: 'ready', executable: 'Game.exe', ...h.inspected }) }));
@@ -35,6 +36,7 @@ vi.mock('./xodus-service.js', () => ({
 vi.mock('./vc-runtime.js', () => ({ installedVcRuntimeVersion: async () => '14.40.0.0', VC_REDIST_VERSION: '14.40.0.0', versionAtLeast: () => true }));
 vi.mock('./game-wrapper.js', () => ({ prepareGameWrapper: async (wine: string) => ({ command: wine, cleanup: h.wrapperCleanup }) }));
 vi.mock('./game-content.js', () => ({ GameContent: class { async roots() { return []; } } }));
+vi.mock('./license-refresh.js', () => ({ refreshOfflineLicenses: (...args: unknown[]) => h.licenseRefresh(...args as []) }));
 vi.mock('./install-queue.js', () => ({ canonicalInstallPath: async (p: string) => p, installPathsOverlap: (a: string, b: string) => a === b }));
 vi.mock('./game-process.js', () => ({
   spawnGameProcess: async (command: string, args: string[], options: { env: NodeJS.ProcessEnv; cwd?: string }) => {
@@ -85,7 +87,7 @@ beforeEach(async () => {
   await fs.writeFile(path.join(root, 'wine'), '#!/bin/sh\n', { mode: 0o755 });
   changes = []; released = 0; persisted = []; walletCalls = 0;
   h.spawnCalls = []; h.inspected = {}; h.cloud = false; h.unbridged = false; h.proton = undefined;
-  h.stop.mockClear(); h.forceStop.mockClear(); h.cleanup.mockClear(); h.wrapperCleanup.mockClear(); h.serviceRelease.mockClear(); h.localeSync.mockClear();
+  h.stop.mockClear(); h.forceStop.mockClear(); h.cleanup.mockClear(); h.wrapperCleanup.mockClear(); h.serviceRelease.mockClear(); h.localeSync.mockClear(); h.licenseRefresh.mockClear();
   h.acquire.mockReset();
   h.acquire.mockImplementation(async () => ({ socketPath: '/run/x/xodus.sock', bridgePort: 4321, bridgeKey: 'k'.repeat(64), stop: async () => {}, release: h.serviceRelease }));
 });
@@ -127,6 +129,25 @@ describe('GameSession', () => {
     expect(log).toContain('Game: Sample');
     expect(log).toContain('cloud saves: enabled');
     expect(log).toContain('exited with code 0');
+  });
+
+  it('renews the stored offline licenses after an online session only when the backend can', async () => {
+    const refreshing = { ...backend, capabilities: { ...backend.capabilities, licenseRefresh: true } } as BackendStatus;
+    const online = await new GameSession(deps({ backend: () => refreshing })).launch('g');
+    expect(h.licenseRefresh).not.toHaveBeenCalled();
+    h.finish!({ code: 0, output: '' });
+    await online.finished;
+    await vi.waitFor(() => expect(h.licenseRefresh).toHaveBeenCalledTimes(1));
+    expect(h.licenseRefresh.mock.calls[0]).toEqual([backend.binaryPath, licenseCacheDirectory(path.join(root, 'data')), expect.any(Function)]);
+
+    const offline = await new GameSession(deps({ backend: () => refreshing, connectivity: { check: async () => ({ state: 'offline' }) } })).launch('g');
+    h.finish!({ code: 0, output: '' });
+    await offline.finished;
+    const older = await new GameSession(deps()).launch('g');
+    h.finish!({ code: 0, output: '' });
+    await older.finished;
+    await new Promise(resolve => setTimeout(resolve, 10));
+    expect(h.licenseRefresh).toHaveBeenCalledTimes(1);
   });
 
   it('launches offline with the forced-offline runtime flag when Microsoft is unreachable', async () => {

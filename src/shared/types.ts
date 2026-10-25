@@ -15,6 +15,8 @@ export interface BackendCapabilities {
   streamingProgressJson?: boolean;
   /** `run --license-cache`: device-bound offline licenses when Microsoft is unreachable. */
   licenseCache?: boolean;
+  /** `license-refresh`: renew the stored offline licenses while Microsoft is reachable. */
+  licenseRefresh?: boolean;
   /** `offline-pc`: show or change the account's designated offline PC. */
   offlinePc?: boolean;
   /** `run --offline`: skip Microsoft entirely and launch on the stored offline license. */

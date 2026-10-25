@@ -441,8 +441,6 @@ test('launcher-requested offline launches skip Microsoft and survive an expired 
   const patch = await fs.readFile(`assets/${entry.file}`, 'utf8');
   assert.equal(createHash('sha256').update(patch).digest('hex'), entry.sha256);
   assert.ok(lock.patches.findIndex(p => p.file === entry.file) > lock.patches.findIndex(p => p.file === 'xodus-offline-fast-path.patch'));
-  assert.equal(lock.version, '0.2.14');
-  assert.equal(lock.patchId, 'linux-run-v45');
   const files = [...patch.matchAll(/^diff --git a\/(\S+) b\/\S+$/gm)].map(match => match[1]);
   assert.deepEqual(files.sort(), ['crates/xodus-cli/src/commands/license.rs', 'crates/xodus-cli/src/commands/run.rs', 'crates/xodus-cli/src/commands/streaming.rs', 'crates/xodus-cli/src/license.rs', 'crates/xodus-cli/src/main.rs']);
   // The flag exists only together with a license cache and is the launcher's verdict, not a guess made here.
@@ -464,4 +462,28 @@ test('launcher-requested offline launches skip Microsoft and survive an expired 
   assert.match(patch, /^\+\s*\.connect_timeout\(std::time::Duration::from_millis\(1\)\)/m);
   assert.doesNotMatch(patch, /^\+.*\.timeout\(/m);
   await fs.access('.github/release-notes/backend-0.2.14.md');
+});
+
+test('stored offline licenses renew in the background without identifiers in the output', async () => {
+  const lock = JSON.parse(await fs.readFile('assets/backend-source.lock.json', 'utf8'));
+  const entry = lock.patches.find(p => p.file === 'xodus-license-refresh.patch');
+  assert.ok(entry);
+  const patch = await fs.readFile(`assets/${entry.file}`, 'utf8');
+  assert.equal(createHash('sha256').update(patch).digest('hex'), entry.sha256);
+  assert.ok(lock.patches.findIndex(p => p.file === entry.file) > lock.patches.findIndex(p => p.file === 'xodus-offline-launch.patch'));
+  assert.equal(lock.version, '0.2.15');
+  assert.equal(lock.patchId, 'linux-run-v46');
+  const files = [...patch.matchAll(/^diff --git a\/(\S+) b\/\S+$/gm)].map(match => match[1]);
+  assert.deepEqual(files.sort(), ['crates/xodus-cli/src/commands.rs', 'crates/xodus-cli/src/commands/license_refresh.rs', 'crates/xodus-cli/src/license.rs', 'crates/xodus-cli/src/license_cache.rs', 'crates/xodus-cli/src/license_cache_tests.rs', 'crates/xodus-cli/src/main.rs']);
+  assert.match(patch, /^\+\s*LicenseRefresh \{$/m);
+  assert.match(patch, /#\[arg\(long = "license-cache"/);
+  // Renewals follow the launch rules: the issued market, refusal purges, unreachable stops early.
+  assert.match(patch, /fetch_online\(client, tokens, &user, content_id\.clone\(\), entry\.market\.clone\(\)\)/);
+  assert.match(patch, /record_license\(root, &content_id, &user\.puid, &entry\.market, &license\)/);
+  assert.match(patch, /Err\(OnlineFailure::Refused\(_\)\) => \{\s*\n\+\s*if cache\.purge\(&content_id\)/);
+  assert.match(patch, /if unreachable \{\s*\n\+\s*break;/);
+  assert.match(patch, /license_refresh_summary_counts_outcomes_without_identifiers/);
+  assert.match(patch, /offline_license_entries_list_only_this_accounts_valid_licenses_with_their_market/);
+  assert.doesNotMatch(patch, /^\+.*\.timeout\(/m);
+  await fs.access('.github/release-notes/backend-0.2.15.md');
 });

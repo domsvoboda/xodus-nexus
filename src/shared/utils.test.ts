@@ -14,6 +14,8 @@ describe('parseBackendHelp', () => {
     expect(parsed.commands).toContain('run');
     expect(parsed.offlinePc).toBe(false);
     expect(parseBackendHelp(['  offline-pc  Show or change the offline PC', '  run  Run', ''].join(String.fromCharCode(10))).offlinePc).toBe(true);
+    expect(parsed.licenseRefresh).toBe(false);
+    expect(parseBackendHelp(['  license          Get a license', '  license-refresh  Renew the stored offline licenses', ''].join(String.fromCharCode(10))).licenseRefresh).toBe(true);
   });
 });
 
