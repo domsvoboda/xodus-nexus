@@ -6,7 +6,9 @@ import { StateStore } from '../main/store.js';
 import { BackendManager } from '../main/backend.js';
 import { RuntimeManager } from '../main/runtime.js';
 import { ConnectivityMonitor } from '../main/connectivity.js';
-import { KeyringSupport } from '../main/keyring.js';
+import { KeyringSupport, type KeyringActions } from '../main/keyring.js';
+import { startSessionKeyring } from '../main/keyring-session.js';
+import { WalletUnlocker } from '../main/keyring-unlock.js';
 import { GameSession, type ActiveGame } from '../main/game-session.js';
 import { WarmServiceSessions } from '../main/service-sessions.js';
 import { readAccount } from '../main/account-refresh.js';
@@ -56,6 +58,7 @@ export class GameController {
   readonly services: WarmServiceSessions;
   private readonly session: GameSession;
   private readonly stateFile: SessionStateFile;
+  private readonly walletUnlocker = new WalletUnlocker();
   private clientEnvironment: NodeJS.ProcessEnv = {};
   private preparing = false;
   private running: Running | undefined;
@@ -116,6 +119,7 @@ export class GameController {
     if (this.maintenance) clearInterval(this.maintenance);
     if (this.orphanTimer) clearTimeout(this.orphanTimer);
     this.connectivity.stop();
+    await this.walletUnlocker.stop();
     const running = this.running;
     if (running) {
       await this.close('the background service is stopping');
@@ -160,9 +164,11 @@ export class GameController {
       }
       if (!this.backend.current.available) throw new DaemonError('backend-unavailable', 'The Xodus backend is unavailable. Open Nexus to install or repair it.');
       if (!this.runtime.current.winePath) await this.runtime.refresh();
-      await this.refreshAccount();
       // The close helper finds the game's windows by this id (see recovery.ts and graceful.ts).
       this.clientEnvironment = { ...request.env, XODUS_NEXUS_LAUNCH_ID: `game-${request.gameId}` };
+      // The account read needs the wallet, so bring it up first.
+      await this.checkWallet();
+      await this.refreshAccount();
       this.inspected = undefined;
       const active = await this.session.launch(request.gameId);
       this.running = { kind: 'launched', active };
@@ -337,10 +343,31 @@ export class GameController {
     return status.binaryPath;
   }
 
+  /**
+   * Starts or unlocks the session wallet the way the launcher does, so a Steam
+   * launch stays on the daemon path; only a wallet that still is not ready
+   * (a password prompt that needs the launcher window) hands over to Electron.
+   */
   private async checkWallet(): Promise<void> {
-    const status = await new KeyringSupport(this.clientEnvironment).check();
+    const keyring = new KeyringSupport(this.clientEnvironment, undefined, process.platform, undefined, this.walletActions());
+    let status = await keyring.check();
     if (!status.gameMode || status.state === 'ready' || status.state === 'unavailable') return;
+    this.options.log(`The system wallet is ${status.state}; starting it for this session.`);
+    status = await keyring.start();
+    if (status.state === 'ready') { this.options.log('The system wallet is ready.'); return; }
     throw new DaemonError('wallet-locked', `The system wallet is not ready (${status.state}). Open Nexus once to unlock it.`);
+  }
+
+  private walletActions(): KeyringActions {
+    const commands = () => this.backend.current.capabilities.commands;
+    const binary = () => this.backend.current.binaryPath;
+    return {
+      startProvider: (provider, environment, owned) => startSessionKeyring(provider, environment, owned,
+        commands().includes('keyring-session-stop') ? binary() : undefined),
+      canUnlock: () => Boolean(binary()) && commands().includes('keyring-unlock'),
+      // No launcher window to parent the provider's dialog; an empty-password wallet needs none.
+      unlock: () => { const path = binary(); return path ? this.walletUnlocker.unlock(path) : Promise.resolve('unavailable'); },
+    };
   }
 
   /** The launch re-inspected the install; Electron persists what changed. */
