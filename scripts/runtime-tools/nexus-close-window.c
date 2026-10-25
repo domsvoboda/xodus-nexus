@@ -15,9 +15,18 @@
  * user are inspected.
  *
  *   nexus-close-window --launch-id <id> [--timeout-ms N] [--dry-run]
+ *   nexus-close-window --launch-id <id> --mark-steam-game <appid> [--watch-ms N]
  *
- * Exit status: 0 at least one window matched, 1 none matched, 2 on usage or
- * X errors (no display, root window unreadable).
+ * The second form never closes anything: it stamps the matching windows with
+ * the STEAM_GAME property (the Steam app id), which is how gamescope learns
+ * which app a window belongs to. Steam's own reaper makes that happen for
+ * games it spawned; a game the Nexus daemon spawned needs it done by hand,
+ * or Game Mode never shows it. With --watch-ms it keeps rescanning (0 =
+ * until killed) so windows created later are stamped too.
+ *
+ * Exit status: 0 at least one window matched (always 0 after a mark/watch
+ * run), 1 none matched, 2 on usage or X errors (no display, root window
+ * unreadable).
  *
  * Build: cc -std=c99 -Wall -Wextra -Werror -O2 -o nexus-close-window \
  *          nexus-close-window.c -lX11
@@ -49,6 +58,11 @@ static size_t needle_len;
 
 static int x_error_count;
 
+/* --mark-steam-game: the app id to stamp, or -1 to close windows instead. */
+static long mark_app_id = -1;
+/* --watch-ms: rescan for this long in mark mode (0 = until killed, -1 = once). */
+static long watch_ms = -1;
+
 static int on_x_error(Display *display, XErrorEvent *error)
 {
     (void)display;
@@ -61,7 +75,8 @@ static int on_x_error(Display *display, XErrorEvent *error)
 
 static void usage(FILE *out)
 {
-    fputs("usage: nexus-close-window --launch-id <id> [--timeout-ms N] [--dry-run]\n", out);
+    fputs("usage: nexus-close-window --launch-id <id> [--timeout-ms N] [--dry-run]\n"
+          "       nexus-close-window --launch-id <id> --mark-steam-game <appid> [--watch-ms N]\n", out);
 }
 
 /* ---- /proc helpers ----------------------------------------------------- */
@@ -294,10 +309,26 @@ static void send_delete_window(Display *display, Window window, Atom wm_protocol
     XFlush(display);
 }
 
+/* Stamp STEAM_GAME on a window unless it already carries this app id. */
+static int mark_steam_game(Display *display, Window window, Atom steam_game)
+{
+    long *data = NULL;
+    unsigned long n = 0;
+    long value = mark_app_id;
+    if (get_long_property(display, window, steam_game, XA_CARDINAL, &data, &n) == 0) {
+        long current = data[0];
+        XFree(data);
+        if (current == mark_app_id) return 0;
+    }
+    XChangeProperty(display, window, steam_game, XA_CARDINAL, 32, PropModeReplace,
+                    (unsigned char *)&value, 1);
+    return 1;
+}
+
 /* One pass over the current windows. Returns the number of matches, or -1
  * when the root window could not be read (an X error). */
 static long scan_once(Display *display, Window root, Atom net_client_list, Atom net_wm_pid,
-                      Atom wm_protocols, Atom wm_delete_window, int dry_run, Window *windows)
+                      Atom wm_protocols, Atom wm_delete_window, Atom steam_game, int dry_run, Window *windows)
 {
     struct pid_cache cache;
     unsigned long count = 0, i;
@@ -312,6 +343,9 @@ static long scan_once(Display *display, Window root, Atom net_client_list, Atom 
         if (!cached_process_matches(&cache, pid)) continue;
         if (dry_run) {
             printf("match 0x%lx pid %ld\n", (unsigned long)windows[i], pid);
+        } else if (mark_app_id >= 0) {
+            if (mark_steam_game(display, windows[i], steam_game))
+                printf("marked 0x%lx pid %ld\n", (unsigned long)windows[i], pid);
         } else {
             send_delete_window(display, windows[i], wm_protocols, wm_delete_window);
             printf("closed 0x%lx pid %ld\n", (unsigned long)windows[i], pid);
@@ -341,6 +375,18 @@ static void sleep_ms(long ms)
     while (nanosleep(&ts, &ts) != 0 && errno == EINTR) {}
 }
 
+/* A Steam app id: an unsigned 32-bit decimal. */
+static int parse_app_id(const char *text, long *out)
+{
+    char *end = NULL;
+    unsigned long value;
+    errno = 0;
+    value = strtoul(text, &end, 10);
+    if (errno != 0 || end == text || *end != ' ' || *text == '-' || value > 0xffffffffUL) return -1;
+    *out = (long)value;
+    return 0;
+}
+
 static int parse_timeout(const char *text, long *out)
 {
     char *end = NULL;
@@ -361,7 +407,7 @@ int main(int argc, char **argv)
     size_t id_len;
     Display *display;
     Window root;
-    Atom net_client_list, net_wm_pid, wm_protocols, wm_delete_window;
+    Atom net_client_list, net_wm_pid, wm_protocols, wm_delete_window, steam_game;
     static Window windows[MAX_WINDOWS];
     struct timespec start;
 
@@ -371,6 +417,16 @@ int main(int argc, char **argv)
         } else if (strcmp(argv[i], "--timeout-ms") == 0 && i + 1 < argc) {
             if (parse_timeout(argv[++i], &timeout_ms) != 0) {
                 fputs("nexus-close-window: --timeout-ms expects a non-negative integer\n", stderr);
+                return 2;
+            }
+        } else if (strcmp(argv[i], "--mark-steam-game") == 0 && i + 1 < argc) {
+            if (parse_app_id(argv[++i], &mark_app_id) != 0) {
+                fputs("nexus-close-window: --mark-steam-game expects a Steam app id\n", stderr);
+                return 2;
+            }
+        } else if (strcmp(argv[i], "--watch-ms") == 0 && i + 1 < argc) {
+            if (parse_timeout(argv[++i], &watch_ms) != 0) {
+                fputs("nexus-close-window: --watch-ms expects a non-negative integer\n", stderr);
                 return 2;
             }
         } else if (strcmp(argv[i], "--dry-run") == 0) {
@@ -383,7 +439,7 @@ int main(int argc, char **argv)
             return 2;
         }
     }
-    if (!launch_id) {
+    if (!launch_id || (watch_ms >= 0 && mark_app_id < 0)) {
         usage(stderr);
         return 2;
     }
@@ -417,16 +473,24 @@ int main(int argc, char **argv)
     net_wm_pid = XInternAtom(display, "_NET_WM_PID", False);
     wm_protocols = XInternAtom(display, "WM_PROTOCOLS", False);
     wm_delete_window = XInternAtom(display, "WM_DELETE_WINDOW", False);
+    steam_game = XInternAtom(display, "STEAM_GAME", False);
 
     clock_gettime(CLOCK_MONOTONIC, &start);
     status = 1;
     for (;;) {
         long matched = scan_once(display, root, net_client_list, net_wm_pid,
-                                 wm_protocols, wm_delete_window, dry_run, windows);
+                                 wm_protocols, wm_delete_window, steam_game, dry_run, windows);
         if (matched < 0) {
             fputs("nexus-close-window: cannot read the root window\n", stderr);
             status = 2;
             break;
+        }
+        if (mark_app_id >= 0 && !dry_run) {
+            /* Marking: keep going for the watch window; new windows appear late. */
+            status = 0;
+            if (watch_ms < 0 || (watch_ms > 0 && elapsed_ms(&start) >= watch_ms)) break;
+            sleep_ms(RESCAN_INTERVAL_MS * 2);
+            continue;
         }
         if (matched > 0) {
             status = 0;

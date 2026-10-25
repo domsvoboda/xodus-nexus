@@ -10,7 +10,7 @@ import { KeyringSupport } from '../main/keyring.js';
 import { GameSession, type ActiveGame } from '../main/game-session.js';
 import { WarmServiceSessions } from '../main/service-sessions.js';
 import { readAccount } from '../main/account-refresh.js';
-import { closeGracefully, type Closable } from './graceful.js';
+import { closeGracefully, keepSteamFocus, type Closable } from './graceful.js';
 import { AdoptedGame, adoptService, SessionStateFile, type SessionRecord } from './recovery.js';
 
 export class DaemonError extends Error {
@@ -168,6 +168,8 @@ export class GameController {
       this.running = { kind: 'launched', active };
       this.inspected = this.captureInspection(active.gameId);
       await this.persist();
+      const stopFocus = keepSteamFocus(this.options.closeHelper, active.operationId, this.clientEnvironment, this.options.log);
+      void active.result.catch(() => undefined).finally(stopFocus);
       void active.result.catch(() => undefined).then(async () => {
         const code = await active.result.then(result => result.code, () => null);
         for (const listener of this.exitListeners) listener(active.operationId, code, active.operation.status === 'failed' ? 'failed' : 'complete');

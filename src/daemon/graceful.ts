@@ -1,4 +1,4 @@
-import { execFile } from 'node:child_process';
+import { execFile, spawn, type ChildProcess } from 'node:child_process';
 import { constants, promises as fs } from 'node:fs';
 import path from 'node:path';
 
@@ -39,6 +39,26 @@ export async function bundledCloseHelper(execPath = process.execPath, arch = pro
     catch { /* Not bundled in this build. */ }
   }
   return undefined;
+}
+
+/**
+ * gamescope shows and focuses a window only once it knows which Steam app it
+ * belongs to. For a game Steam's own reaper spawned it works that out itself;
+ * for one the daemon spawned it does not, so the helper keeps stamping the
+ * game's windows with STEAM_GAME = the shortcut's app id while the game runs.
+ * Returns a stop function; a no-op when the launch did not come from Steam.
+ */
+export function keepSteamFocus(helper: string | undefined, launchId: string, env: NodeJS.ProcessEnv, log: (line: string) => void): () => void {
+  const appId = env.SteamAppId;
+  if (!helper || !appId || !/^[0-9]{1,10}$/.test(appId) || !env.DISPLAY) return () => {};
+  let child: ChildProcess | undefined;
+  try {
+    child = spawn(helper, ['--launch-id', launchId, '--mark-steam-game', appId, '--watch-ms', '0'], { env, stdio: 'ignore' });
+    child.on('error', error => log(`Focus marker failed: ${error.message}`));
+    child.on('exit', code => { if (code !== null && code !== 0) log(`Focus marker exited with code ${code}.`); });
+  } catch (error) { log(`Focus marker failed: ${(error as Error).message}`); return () => {}; }
+  log(`Marking the game's windows as Steam app ${appId} so gamescope focuses them.`);
+  return () => { if (child && child.exitCode === null && child.signalCode === null) child.kill('SIGTERM'); };
 }
 
 function settled(promise: Promise<unknown>, ms: number): Promise<boolean> {
