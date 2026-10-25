@@ -25,7 +25,7 @@ static LONG checks, failures;
 #define CANNOT_CONNECT HRESULT_FROM_WIN32(12029)
 
 static const char identity_text[] =
-    "schema=1\nxuid=2535400000000001\nageGroup=3\nsavedAt=%I64u\n"
+    "schema=1\nxuid=2535400000000001\nageGroup=3\nsavedAt=%llu\n"
     "gamertag=NexusProbe\nmodernGamertag=Nexus Probe\nmodernGamertagSuffix=1234\nuniqueModernGamertag=Nexus Probe#1234\n";
 static const char endpoints_text[] =
     "{\"EndPoints\":[{\"Protocol\":\"https\",\"Host\":\"*.xboxlive.com\",\"HostType\":\"wildcard\","
