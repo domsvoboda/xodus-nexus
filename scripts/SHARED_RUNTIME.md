@@ -119,10 +119,15 @@ Microsoft for the endpoint tables, the RPS tickets, device authentication
 and SISU, so without a network it failed with the WinHTTP connect error and
 titles that wait for a signed-in user (Hollow Knight: Silksong among them)
 sat on a black screen. Windows keeps the last signed-in identity on the
-device for exactly this case. The runtime now does the same per prefix: after
-a complete network sign-in it stores the XUID, the gamertag variants, the age
-group and the two endpoint tables under
-`%LOCALAPPDATA%\Xodus Nexus\offline-identity`, never a token, ticket or key.
+device for exactly this case. The runtime now does the same per prefix and
+account: after a complete network sign-in it stores the XUID, the gamertag
+variants, the age group and the two endpoint tables under
+`%LOCALAPPDATA%\Xodus Nexus\offline-identity\<account key>`, never a token,
+ticket or key. The account key is the opaque `XODUS_ACCOUNT_HASH` the
+launcher sets for every launch (a SHA-256 prefix of the signed-in account,
+`src/main/offline-identity.ts`); without it nothing is stored or read, one
+account never sees another's identity, and the launcher deletes every
+prefix's caches on sign-out together with the offline licenses.
 When every sign-in attempt fails with a connectivity error (name resolution,
 connect, timeout) the cached identity completes `XUserAddAsync`, token and
 signature requests fail with that same connect error, and

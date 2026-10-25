@@ -100,6 +100,10 @@ int main(void)
     CreateDirectoryW(cache, NULL);
     wcscat(cache, L"\\offline-identity");
     CreateDirectoryW(cache, NULL);
+    /* The launcher names the account; the cache lives in a directory of that key. */
+    wcscat(cache, L"\\0123456789abcdef0123456789abcdef");
+    CreateDirectoryW(cache, NULL);
+    SetEnvironmentVariableW(L"XODUS_ACCOUNT_HASH", L"0123456789abcdef0123456789abcdef");
     {
         static const WCHAR *const names[] = { L"identity.txt", L"endpoints-default.json", L"endpoints-current.json" };
         WCHAR stale[MAX_PATH];
@@ -158,6 +162,16 @@ int main(void)
               hint.connectivityLevel == XNetworkingConnectivityLevelHint_LocalAccess && hint.networkInitialized);
         IXUserImpl6_XUserCloseHandle(users, user);
     }
+
+    /* Another account on the same device never sees this account's identity,
+     * and without an account key nothing is read at all. */
+    SetEnvironmentVariableW(L"XODUS_ACCOUNT_HASH", L"fedcba9876543210fedcba9876543210");
+    hr = add_user(queue, &user);
+    CHECK("other-account-no-cache", hr == CANNOT_CONNECT && !user);
+    SetEnvironmentVariableW(L"XODUS_ACCOUNT_HASH", NULL);
+    hr = add_user(queue, &user);
+    CHECK("no-account-key-no-cache", hr == CANNOT_CONNECT && !user);
+    SetEnvironmentVariableW(L"XODUS_ACCOUNT_HASH", L"0123456789abcdef0123456789abcdef");
 
     /* The cache never holds secrets: only the identity lines written above. */
     {

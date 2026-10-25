@@ -16,6 +16,7 @@ import { run, spawnTracked } from './process.js';
 import { inspectGameDirectory, StateStore } from './store.js';
 import { RuntimeManager } from './runtime.js';
 import { prepareProtonRunner, syncPrefixUserLocale, syncUnrealCultureGameIni } from './proton.js';
+import { accountCacheKey, removeOfflineIdentityCaches } from './offline-identity.js';
 import { detectProtonLayout, protonRootOf } from './proton-layout.js';
 import { CatalogService } from './catalog.js';
 import { cloudSaveRuntime, selectedWinePath, startXodusService, storeContentRuntime, unbridgedCloudSaveRuntime, type XodusServiceSession } from './xodus-service.js';
@@ -472,7 +473,10 @@ function contentManager(): GameContent { return new GameContent(path.dirname(sto
 function licenseCacheDirectory(dataRoot: string): string { return path.join(dataRoot, 'license-cache'); }
 /** Offline licenses belong to the signed-in account; never keep them past a sign-out attempt. */
 async function removeOfflineLicenses(): Promise<void> {
-  await fs.rm(licenseCacheDirectory(path.dirname(store.settings.runtimeRoot)), { recursive: true, force: true }).catch(() => undefined);
+  const dataRoot = path.dirname(store.settings.runtimeRoot);
+  await fs.rm(licenseCacheDirectory(dataRoot), { recursive: true, force: true }).catch(() => undefined);
+  // The runtime's per-prefix offline identities belong to the signed-out account.
+  await removeOfflineIdentityCaches(dataRoot).catch(() => 0);
 }
 async function gameContent(id: string) {
   const game = store.games.find(entry => entry.id === id);
@@ -934,6 +938,8 @@ async function prepareGameLaunch(id: string): Promise<void> {
       environment.XODUS_SAVE_SYNC = 'auto';
       addGameLog('Xbox cloud save preview is enabled. Saves may download from and upload to the account cloud.');
     }
+    // Names the account for the runtime's offline identity cache (an opaque key, never the username).
+    if (authState.stored === true && authState.username) environment.XODUS_ACCOUNT_HASH = accountCacheKey(authState.username);
     if (protonRunner) addGameLog(`Proton prefix: ${protonRunner.compatibilityDataPath}/pfx`);
     else await fs.mkdir(legacyPrefixRoot, { recursive: true });
     const tracked = await spawnGameProcess(binary, args, {

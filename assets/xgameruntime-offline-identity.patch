@@ -34,7 +34,7 @@ index 48cb705..2aa2a48 100644
      connectivityHint->ianaInterfaceType = 6;
      connectivityHint->networkInitialized = TRUE;
 diff --git a/dlls/xgameruntime/xuser.c b/dlls/xgameruntime/xuser.c
-index 7306406..b3081fd 100644
+index 7306406..0bebc69 100644
 --- a/dlls/xgameruntime/xuser.c
 +++ b/dlls/xgameruntime/xuser.c
 @@ -118,6 +118,8 @@ struct XUser
@@ -46,7 +46,7 @@ index 7306406..b3081fd 100644
  };
  
  /* Private opt-in diagnostics: numeric metadata only, never credentials or URLs.
-@@ -796,17 +798,216 @@ static HRESULT WINAPI user_Initialize( IUser *iface, const XUserAddOptions optio
+@@ -796,17 +798,237 @@ static HRESULT WINAPI user_Initialize( IUser *iface, const XUserAddOptions optio
  /* The endpoint/device/SISU handshake can take minutes on a cold token cache.
   * Titles time out sign-in while XUserAddAsync sits in DoWork for that long,
   * so it runs on a background thread; consumers wait through user_wait_init. */
@@ -59,10 +59,13 @@ index 7306406..b3081fd 100644
 + * prefix: after a complete network sign-in the identity the title can observe
 + * (XUID, gamertags, age group) and the endpoint tables are stored under
 + * %LOCALAPPDATA%\Xodus Nexus\offline-identity. No token, ticket or key is ever
-+ * written. The cache is read only when the sign-in failed because Microsoft
-+ * could not be reached, and it expires after 30 days, the span of an offline
-+ * content license. XODUS_FORCE_OFFLINE=1 makes the network sign-in fail as if
-+ * unreachable, for diagnostics and the contract probe. */
++ * written. The launcher names the signed-in account with an opaque
++ * XODUS_ACCOUNT_HASH; the cache lives in a directory of that name, so one
++ * account never reuses another's identity, and without the key nothing is
++ * stored or read. The cache is read only when the sign-in failed because
++ * Microsoft could not be reached, and it expires after 30 days, the span of an
++ * offline content license. XODUS_FORCE_OFFLINE=1 makes the network sign-in
++ * fail as if unreachable, for diagnostics and the contract probe. */
 +
 +#define OFFLINE_IDENTITY_SCHEMA 1
 +#define OFFLINE_IDENTITY_MAX_AGE (30ull * 24 * 3600 * 10000000ull) /* 100 ns ticks */
@@ -89,16 +92,34 @@ index 7306406..b3081fd 100644
 +    return length == 1 && value[0] == '1';
 +}
 +
++/* The launcher's opaque account key: 8 to 64 lowercase hex digits. */
++static BOOL offline_identity_account( WCHAR *account, SIZE_T length )
++{
++    DWORD used = GetEnvironmentVariableW( L"XODUS_ACCOUNT_HASH", account, length );
++    DWORD i;
++
++    if (used < 8 || used > 64 || used >= length) return FALSE;
++    for (i = 0; i < used; i++)
++        if (!((account[i] >= '0' && account[i] <= '9') || (account[i] >= 'a' && account[i] <= 'f'))) return FALSE;
++    return TRUE;
++}
++
 +static BOOL offline_identity_file( WCHAR *path, SIZE_T length, const WCHAR *name )
 +{
 +    static const WCHAR vendor[] = L"\\Xodus Nexus", directory[] = L"\\offline-identity";
-+    DWORD base = GetEnvironmentVariableW( L"LOCALAPPDATA", path, length );
++    WCHAR account[65];
++    DWORD base;
 +
++    if (!offline_identity_account( account, ARRAY_SIZE(account) )) return FALSE;
++    base = GetEnvironmentVariableW( L"LOCALAPPDATA", path, length );
 +    if (!base || base >= length) return FALSE;
-+    if (base + ARRAY_SIZE(vendor) + ARRAY_SIZE(directory) + wcslen( name ) + 2 > length) return FALSE;
++    if (base + ARRAY_SIZE(vendor) + ARRAY_SIZE(directory) + wcslen( account ) + wcslen( name ) + 3 > length) return FALSE;
 +    wcscat( path, vendor );
 +    CreateDirectoryW( path, NULL );
 +    wcscat( path, directory );
++    CreateDirectoryW( path, NULL );
++    wcscat( path, L"\\" );
++    wcscat( path, account );
 +    CreateDirectoryW( path, NULL );
 +    wcscat( path, L"\\" );
 +    wcscat( path, name );
@@ -266,7 +287,7 @@ index 7306406..b3081fd 100644
      if (FAILED(hr = get_rps_tickets( options & XUserAddOptions_AddDefaultUserAllowingUI, &userTicket, &deviceTicket ))) goto cleanup;
      if (FAILED(hr = device_auth( impl, deviceTicket, &deviceToken ))) goto cleanup;
      free( impl->deviceToken );
-@@ -818,6 +1019,7 @@ static HRESULT user_initialize_network( XUserHandle user, XUserAddOptions option
+@@ -818,6 +1040,7 @@ static HRESULT user_initialize_network( XUserHandle user, XUserAddOptions option
      if (FAILED(hr = sisu_auth( impl, userTicket, deviceToken, &auth ))) goto cleanup;
      if (FAILED(hr = http_request( L"GET", L"https://title.mgt.xboxlive.com/titles/current/endpoints", NULL, auth, ACCEPT_JSON, &currentBuffer, &size ))) goto cleanup;
      if (FAILED(hr = load_endpoints( impl, currentBuffer, size ))) goto cleanup;
@@ -274,7 +295,7 @@ index 7306406..b3081fd 100644
  
  cleanup:
      if (currentBuffer) free( currentBuffer );
-@@ -854,10 +1056,24 @@ static DWORD WINAPI user_network_init_thread( void *arg )
+@@ -854,10 +1077,24 @@ static DWORD WINAPI user_network_init_thread( void *arg )
      {
          hr = user_initialize_network( user, options );
          if (SUCCEEDED(hr)) break;
@@ -299,7 +320,7 @@ index 7306406..b3081fd 100644
      if (SUCCEEDED(com)) CoUninitialize();
      EnterCriticalSection( &user->deviceAuthSection );
      user->initResult = hr;
-@@ -2673,6 +2889,10 @@ static HRESULT xsts_authorize_privilege( XUserHandle user, const char *relyingPa
+@@ -2673,6 +2910,10 @@ static HRESULT xsts_authorize_privilege( XUserHandle user, const char *relyingPa
  
      if (granted) *granted = FALSE;
  
