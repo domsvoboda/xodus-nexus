@@ -124,6 +124,29 @@ bad = [n for n, r in report.items() if r['machine'] not in ('ARM64', 'ARM64EC')]
 if bad: raise SystemExit(f'unexpected machine types: {bad}')
 PY
 
+# ---- components directory with the x86_64 contract -----------------------
+# Host shim (aarch64), x86_64 compatibility PEs, ARM64EC DXVK, licences and a
+# source-manifest.json that assemble-shared-runtime.mjs accepts.
+COMPONENTS="$WORK/components"
+if [ ! -f "$COMPONENTS/source-manifest.json" ]; then
+  rm -rf "$COMPONENTS" "$WORK/dxvk-work"
+  mkdir -p "$WORK/dxvk-work"
+  node "$PROJECT/scripts/arm64/collect-components.mjs" --shared "$WORK/shared" --pe "$OUT" \
+    --work "$WORK/dxvk-work" --output "$COMPONENTS" --jobs "$JOBS"
+fi
+
+# ---- media: pinned LGPL FFmpeg libraries built for aarch64 ------------------
+# MEDIA_BUNDLE points at the media-bundle.tar.xz from build-runtime-media.mjs
+# on an aarch64 host (CI builds it on ubuntu-22.04-arm for the glibc ceiling).
+MEDIA_ARGS=()
+if [ -n "${MEDIA_BUNDLE:-}" ]; then
+  rm -rf "$WORK/media"; mkdir -p "$WORK/media"
+  tar -xJf "$MEDIA_BUNDLE" -C "$WORK/media"
+  node "$PROJECT/scripts/ci/check-media-glibc.mjs" "$WORK/media/media-manifest.json"
+  test "$(node -p "require('$WORK/media/media-manifest.json').arch")" = aarch64
+  MEDIA_ARGS=(--media "$WORK/media")
+fi
+
 # ---- base: pinned CachyOS arm64 Proton -------------------------------------
 BASE_DIR="$WORK/base"
 ARCHIVE="$(lock archive)"; DIRECTORY="$(lock directory)"; TAG="$(lock tag)"; REPO="$(lock repository)"
@@ -138,31 +161,23 @@ if [ ! -d "$BASE_DIR/$DIRECTORY" ]; then
 fi
 node "$PROJECT/scripts/verify-runtime-base.mjs" "$BASE_DIR/$DIRECTORY" "$LOCK"
 
-# ---- experimental assembly: overlay into the arm64 PE directories ----------
+
+# ---- assembly: the same script as x86_64, following the arm64 layout --------
 RUNTIME="$WORK/runtime-arm64"
 rm -rf "$RUNTIME"
-cp -a --reflink=auto "$BASE_DIR/$DIRECTORY" "$RUNTIME"
-HOST_PE="$(lock layout.hostPeArch)"; PFX="$(lock layout.defaultPrefix)"
-for dll in xgameruntime.dll winhttp.dll mscoree.dll windows.web.dll twinapi.appcore.dll d3dcompiler_47.dll libnghttp2.dll; do
-  install -D -m 644 "$OUT/$dll" "$RUNTIME/files/lib/wine/$HOST_PE/$dll"
-  install -D -m 644 "$OUT/$dll" "$RUNTIME/$PFX/drive_c/windows/system32/$dll"
-done
-# The arm64 base ships no vkd3d PE directory for aarch64; create it.
-install -D -m 644 "$OUT/libvkd3d-shader-1.dll" "$RUNTIME/files/lib/vkd3d/$HOST_PE/libvkd3d-shader-1.dll"
-install -D -m 644 "$OUT/libvkd3d-shader-1.dll" "$RUNTIME/$PFX/drive_c/windows/system32/libvkd3d-shader-1.dll"
-cp "$OUT/arm64-components.json" "$RUNTIME/XODUS_NEXUS_ARM64_EXPERIMENT.json"
+node "$PROJECT/scripts/assemble-shared-runtime.mjs" --base "$BASE_DIR/$DIRECTORY" --components "$COMPONENTS" \
+  "${MEDIA_ARGS[@]}" --output "$RUNTIME"
+node -e "const m=require('$RUNTIME/XODUS_NEXUS_PATCH.json'); if(m.arch!=='aarch64'||m.hostPeArch!=='aarch64-windows'||!m.componentsByArch['aarch64-windows']['d3dcompiler_47.dll'])process.exit(1)"
 
-# ---- smoke test: arm64 Wine runs an x86_64 PE through its bundled FEX ------
+# ---- smoke test: the assembled runtime runs an arm64 and an x86_64 PE -------
+# The loader is now the Nexus shim, which execs wine.nexus-original beside it.
 SMOKE="$WORK/smoke"
 rm -rf "$SMOKE"
 mkdir -p "$SMOKE"
 x86_64-w64-mingw32-gcc -O2 -o "$SMOKE/hello-x64.exe" "$PROJECT/scripts/arm64/hello.c"
 aarch64-w64-mingw32-clang -O2 -o "$SMOKE/hello-arm64.exe" "$PROJECT/scripts/arm64/hello.c"
-# A fresh prefix: the shipped default prefix links into the base tree with
-# relative symlinks that do not survive a copy, so let Wine create one from
-# WINEDLLPATH (which already carries the overlays).
 export WINEPREFIX="$SMOKE/pfx" WINEDEBUG=-all WINEDLLPATH="$RUNTIME/files/lib/vkd3d:$RUNTIME/files/lib/wine"
-export LD_LIBRARY_PATH="$RUNTIME/files/lib/aarch64-linux-gnu" PATH="$RUNTIME/$(lock layout.bin):$PATH"
+export LD_LIBRARY_PATH="$RUNTIME/$(lock layout.hostLibraries)" PATH="$RUNTIME/$(lock layout.bin):$PATH"
 export FEX_APP_CONFIG_LOCATION="$RUNTIME/files/share/fex-emu/" FEX_DISKCACHE=1
 wine --version
 timeout 600 wine wineboot --init > "$SMOKE/wineboot.log" 2>&1 || echo "wineboot exit $?"
@@ -172,4 +187,28 @@ tail -5 "$SMOKE/hello-arm64.log"
 timeout 300 wine "$SMOKE/hello-x64.exe" > "$SMOKE/hello-x64.log" 2>&1 || { echo "x64 hello exit $?"; cat "$SMOKE/hello-x64.log"; exit 1; }
 tail -5 "$SMOKE/hello-x64.log"
 timeout 120 wineserver -w || true
+# The assembled default prefix must carry the overlaid DXVK and d3dcompiler.
+for dll in dxgi.dll d3d11.dll d3dcompiler_47.dll xgameruntime.dll; do
+  cmp "$COMPONENTS/$dll" "$RUNTIME/$(lock layout.defaultPrefix)/drive_c/windows/system32/$dll"
+done
+
+# ---- package: candidate archive, checksum and corresponding source ---------
+# Never published from here; the workflow uploads it as a candidate artifact.
+if [ -n "${NEXUS_VERSION:-}" ]; then
+  NEXUS_NAME="xodus-nexus-runtime-$NEXUS_VERSION"
+  DIST="$WORK/dist"
+  rm -rf "$DIST"; mkdir -p "$DIST"
+  node -e "const fs=require('fs');const f='$RUNTIME/XODUS_NEXUS_PATCH.json';const m=JSON.parse(fs.readFileSync(f));m.baseProtonRelease='$TAG';m.baseSnapshot='$ARCHIVE';m.patchState=process.env.GITHUB_SHA||'local';fs.writeFileSync(f,JSON.stringify(m,null,2)+'\n')"
+  mv "$RUNTIME" "$WORK/$NEXUS_NAME"
+  (cd "$WORK" && XZ_OPT="${XZ_OPT:--T2}" tar -cJf "$DIST/$NEXUS_NAME-aarch64.tar.xz" "$NEXUS_NAME")
+  (cd "$DIST" && sha512sum "$NEXUS_NAME-aarch64.tar.xz" > "$NEXUS_NAME-aarch64.sha512sum")
+  SOURCE_PATHS=(shared/wine-src shared/nghttp2-src shared/vkd3d-src shared/vulkan-headers shared/spirv-headers dxvk-work/dxvk/dxvk-src dxvk-work/dxvk/dxvk-tools)
+  if [ -d "$WORK/media" ]; then SOURCE_PATHS+=("media/$(node -p "require('$PROJECT/scripts/runtime-media.lock.json').archive")" media/media-manifest.json); fi
+  (cd "$WORK" && XZ_OPT="${XZ_OPT:--T2}" tar --exclude=.git -cJf "$DIST/$NEXUS_NAME-source.tar.xz" "${SOURCE_PATHS[@]}" \
+    -C "$PROJECT" LICENSE assets scripts/runtime-patches.lock.json scripts/runtime-media.lock.json scripts/runtime-base-arm64.lock.json \
+    scripts/runtime-dxvk.lock.json scripts/verify-runtime-base.mjs scripts/runtime-layout.mjs scripts/runtime-compat scripts/arm64 \
+    scripts/build-shared-runtime.mjs scripts/build-runtime-dxvk.mjs scripts/build-runtime-media.mjs \
+    scripts/assemble-shared-runtime.mjs scripts/SHARED_RUNTIME.md)
+  ls -la "$DIST"
+fi
 echo ARM64-RUNTIME-EXPERIMENT-DONE
