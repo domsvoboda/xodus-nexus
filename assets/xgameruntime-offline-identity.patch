@@ -34,18 +34,19 @@ index 48cb705..2aa2a48 100644
      connectivityHint->ianaInterfaceType = 6;
      connectivityHint->networkInitialized = TRUE;
 diff --git a/dlls/xgameruntime/xuser.c b/dlls/xgameruntime/xuser.c
-index 7306406..d59cc06 100644
+index 7306406..b3081fd 100644
 --- a/dlls/xgameruntime/xuser.c
 +++ b/dlls/xgameruntime/xuser.c
-@@ -107,6 +107,7 @@ struct XUser
-     CONDITION_VARIABLE initCv;
-     LONG initDone;
-     HRESULT initResult;
+@@ -118,6 +118,8 @@ struct XUser
+     char modernGamertag[97];
+     char modernGamertagSuffix[15];
+     char uniqueModernGamertag[101];
++    /* Last: probes hand the runtime stand-in users that mirror the fields above. */
 +    BOOL offline;
-     UINT64 xuid;
-     XUserAgeGroup age_group;
-     UINT32 policiesLen;
-@@ -796,17 +797,216 @@ static HRESULT WINAPI user_Initialize( IUser *iface, const XUserAddOptions optio
+ };
+ 
+ /* Private opt-in diagnostics: numeric metadata only, never credentials or URLs.
+@@ -796,17 +798,216 @@ static HRESULT WINAPI user_Initialize( IUser *iface, const XUserAddOptions optio
  /* The endpoint/device/SISU handshake can take minutes on a cold token cache.
   * Titles time out sign-in while XUserAddAsync sits in DoWork for that long,
   * so it runs on a background thread; consumers wait through user_wait_init. */
@@ -265,7 +266,7 @@ index 7306406..d59cc06 100644
      if (FAILED(hr = get_rps_tickets( options & XUserAddOptions_AddDefaultUserAllowingUI, &userTicket, &deviceTicket ))) goto cleanup;
      if (FAILED(hr = device_auth( impl, deviceTicket, &deviceToken ))) goto cleanup;
      free( impl->deviceToken );
-@@ -818,6 +1018,7 @@ static HRESULT user_initialize_network( XUserHandle user, XUserAddOptions option
+@@ -818,6 +1019,7 @@ static HRESULT user_initialize_network( XUserHandle user, XUserAddOptions option
      if (FAILED(hr = sisu_auth( impl, userTicket, deviceToken, &auth ))) goto cleanup;
      if (FAILED(hr = http_request( L"GET", L"https://title.mgt.xboxlive.com/titles/current/endpoints", NULL, auth, ACCEPT_JSON, &currentBuffer, &size ))) goto cleanup;
      if (FAILED(hr = load_endpoints( impl, currentBuffer, size ))) goto cleanup;
@@ -273,7 +274,7 @@ index 7306406..d59cc06 100644
  
  cleanup:
      if (currentBuffer) free( currentBuffer );
-@@ -854,10 +1055,24 @@ static DWORD WINAPI user_network_init_thread( void *arg )
+@@ -854,10 +1056,24 @@ static DWORD WINAPI user_network_init_thread( void *arg )
      {
          hr = user_initialize_network( user, options );
          if (SUCCEEDED(hr)) break;
@@ -298,7 +299,7 @@ index 7306406..d59cc06 100644
      if (SUCCEEDED(com)) CoUninitialize();
      EnterCriticalSection( &user->deviceAuthSection );
      user->initResult = hr;
-@@ -2673,6 +2888,10 @@ static HRESULT xsts_authorize_privilege( XUserHandle user, const char *relyingPa
+@@ -2673,6 +2889,10 @@ static HRESULT xsts_authorize_privilege( XUserHandle user, const char *relyingPa
  
      if (granted) *granted = FALSE;
  
