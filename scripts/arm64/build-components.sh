@@ -60,9 +60,13 @@ if [ ! -f "$SHADER_BUILD/.libs/libvkd3d-shader-1.dll" ]; then
   if [ -d "$SHADER_SRC/.git" ]; then mv "$SHADER_SRC/.git" "$WORK/vkd3d-git-metadata"; fi
   (cd "$SHADER_SRC" && autoreconf -fiv)
   mkdir -p "$SHADER_BUILD"
-  (cd "$SHADER_BUILD" && env SONAME_LIBVULKAN=vulkan-1 CC=arm64ec-w64-mingw32-clang \
+  # config.sub does not know arm64ec, so configure for the aarch64 mingw host
+  # and point every tool at the arm64ec llvm-mingw wrappers instead.
+  (cd "$SHADER_BUILD" && env SONAME_LIBVULKAN=vulkan-1 CC=arm64ec-w64-mingw32-clang AR=arm64ec-w64-mingw32-ar \
+    RANLIB=arm64ec-w64-mingw32-ranlib STRIP=arm64ec-w64-mingw32-strip WIDL=arm64ec-w64-mingw32-widl \
+    DLLTOOL=arm64ec-w64-mingw32-dlltool \
     CPPFLAGS="-I$VULKAN_HEADERS/include -I$SPIRV_HEADERS/include" CFLAGS="-O2 -fno-lto" \
-    "$SHADER_SRC/configure" --host=arm64ec-w64-mingw32 --enable-shared --disable-static --disable-tests \
+    "$SHADER_SRC/configure" --host=aarch64-w64-mingw32 --enable-shared --disable-static --disable-tests \
     --disable-demos --without-opengl --without-xcb --without-ncurses --without-spirv-tools --prefix="$SHADER_STAGE")
   make -C "$SHADER_BUILD" -j"$JOBS"
 fi
@@ -70,12 +74,14 @@ fi
 # ---- Wine: ARM64X overlay DLLs --------------------------------------------
 BUILD="$WORK/wine-build-arm64"
 if [ ! -f "$BUILD/Makefile" ]; then
-  (cd "$SRC/dlls/winevulkan" && python3 make_vulkan -x vk.xml -X video.xml)
-  (cd "$SRC" && perl tools/make_specfiles && autoreconf -fiv)
   mkdir -p "$BUILD"
-  # arm64ec PE modules are built with clang; aarch64 hybrids land in aarch64-windows.
+  # The pinned tree ships its generated files (configure, winevulkan, spec
+  # files) like the x86_64 build, which runs configure directly too. With both
+  # archs enabled the arm64ec objects are linked into ARM64X hybrids that land
+  # in aarch64-windows.
   (cd "$BUILD" && "$SRC/configure" --enable-archs=aarch64,arm64ec --without-x --without-wayland --disable-tests \
-    --without-freetype --without-gnutls 2>&1 | tail -40)
+    --without-freetype --without-gnutls > configure.out 2>&1 || { tail -60 configure.out; exit 1; })
+  tail -20 "$BUILD/configure.out"
 fi
 TARGETS=(dlls/xgameruntime/aarch64-windows/xgameruntime.dll dlls/winhttp/aarch64-windows/winhttp.dll
   dlls/mscoree/aarch64-windows/mscoree.dll dlls/windows.web/aarch64-windows/windows.web.dll
@@ -131,16 +137,22 @@ cp "$OUT/arm64-components.json" "$RUNTIME/XODUS_NEXUS_ARM64_EXPERIMENT.json"
 
 # ---- smoke test: arm64 Wine runs an x86_64 PE through its bundled FEX ------
 SMOKE="$WORK/smoke"
-mkdir -p "$SMOKE/pfx"
-cp -a "$RUNTIME/$PFX/." "$SMOKE/pfx/"
+rm -rf "$SMOKE"
+mkdir -p "$SMOKE"
 x86_64-w64-mingw32-gcc -O2 -o "$SMOKE/hello-x64.exe" "$PROJECT/scripts/arm64/hello.c"
 aarch64-w64-mingw32-clang -O2 -o "$SMOKE/hello-arm64.exe" "$PROJECT/scripts/arm64/hello.c"
+# A fresh prefix: the shipped default prefix links into the base tree with
+# relative symlinks that do not survive a copy, so let Wine create one from
+# WINEDLLPATH (which already carries the overlays).
 export WINEPREFIX="$SMOKE/pfx" WINEDEBUG=-all WINEDLLPATH="$RUNTIME/files/lib/vkd3d:$RUNTIME/files/lib/wine"
 export LD_LIBRARY_PATH="$RUNTIME/files/lib/aarch64-linux-gnu" PATH="$RUNTIME/$(lock layout.bin):$PATH"
 export FEX_APP_CONFIG_LOCATION="$RUNTIME/files/share/fex-emu/" FEX_DISKCACHE=1
+wine --version
+timeout 600 wine wineboot --init > "$SMOKE/wineboot.log" 2>&1 || echo "wineboot exit $?"
+tail -5 "$SMOKE/wineboot.log"
 timeout 300 wine "$SMOKE/hello-arm64.exe" > "$SMOKE/hello-arm64.log" 2>&1 || echo "arm64 hello exit $?"
-cat "$SMOKE/hello-arm64.log" | tail -5
+tail -5 "$SMOKE/hello-arm64.log"
 timeout 300 wine "$SMOKE/hello-x64.exe" > "$SMOKE/hello-x64.log" 2>&1 || echo "x64 hello exit $?"
-cat "$SMOKE/hello-x64.log" | tail -5
+tail -5 "$SMOKE/hello-x64.log"
 timeout 120 wineserver -w || true
 echo ARM64-RUNTIME-EXPERIMENT-DONE
