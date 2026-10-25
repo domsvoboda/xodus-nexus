@@ -20,7 +20,12 @@ module.exports = async function afterPack(context) {
   for (const part of ['main', 'shared', 'daemon', 'client']) {
     await fs.cp(path.join(__dirname, '..', 'dist-electron', part), path.join(nodeRoot, 'dist-electron', part), { recursive: true, filter: source => !/\.(map|cts)$/.test(source) });
   }
-  await fs.writeFile(path.join(nodeRoot, 'package.json'), JSON.stringify({ type: 'module', private: true }) + '\n');
+  // Main modules read assets relative to themselves (backend-package.ts reads the
+  // backend lock at import), and the daemon reports the launcher version from
+  // the nearest package.json.
+  await fs.cp(path.join(__dirname, '..', 'assets'), path.join(nodeRoot, 'assets'), { recursive: true, filter: source => !/[\\/]assets[\\/]fonts(?:[\\/]|$)/.test(source) });
+  const { version } = JSON.parse(await fs.readFile(path.join(__dirname, '..', 'package.json'), 'utf8'));
+  await fs.writeFile(path.join(nodeRoot, 'package.json'), JSON.stringify({ type: 'module', private: true, version }) + '\n');
   // Native helpers CI compiled into build/tools/<arch>/ (nexus-close-window). A
   // local pack without them still works: the daemon falls back to signals.
   const tools = path.join(__dirname, '..', 'build', 'tools');
