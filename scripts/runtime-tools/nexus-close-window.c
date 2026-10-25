@@ -25,6 +25,8 @@
  * until killed) so windows created later are stamped too. A watch also ends
  * when the process that started it (the daemon) goes away, so a daemon crash
  * never leaves a stray marker behind; the restarted daemon starts a new one.
+ * SIGTERM/SIGINT (the daemon closing the game) removes STEAM_GAME again before
+ * exiting, so gamescope shows Steam while the game finishes in the background.
  *
  * Exit status: 0 at least one window matched (always 0 after a mark/watch
  * run), 1 none matched, 2 on usage or X errors (no display, root window
@@ -40,6 +42,7 @@
 
 #include <errno.h>
 #include <fcntl.h>
+#include <signal.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -64,6 +67,15 @@ static int x_error_count;
 static long mark_app_id = -1;
 /* --watch-ms: rescan for this long in mark mode (0 = until killed, -1 = once). */
 static long watch_ms = -1;
+/* Set by SIGTERM/SIGINT during a watch; the final pass then removes STEAM_GAME. */
+static volatile sig_atomic_t stop_requested;
+static int unmark;
+
+static void on_stop(int sig)
+{
+    (void)sig;
+    stop_requested = 1;
+}
 
 static int on_x_error(Display *display, XErrorEvent *error)
 {
@@ -311,7 +323,8 @@ static void send_delete_window(Display *display, Window window, Atom wm_protocol
     XFlush(display);
 }
 
-/* Stamp STEAM_GAME on a window unless it already carries this app id. */
+/* Stamp STEAM_GAME on a window unless it already carries this app id; in the
+ * final pass of a stopped watch, remove the stamp this helper put there. */
 static int mark_steam_game(Display *display, Window window, Atom steam_game)
 {
     long *data = NULL;
@@ -320,8 +333,14 @@ static int mark_steam_game(Display *display, Window window, Atom steam_game)
     if (get_long_property(display, window, steam_game, XA_CARDINAL, &data, &n) == 0) {
         long current = data[0];
         XFree(data);
+        if (unmark) {
+            if (current != mark_app_id) return 0;
+            XDeleteProperty(display, window, steam_game);
+            return 1;
+        }
         if (current == mark_app_id) return 0;
     }
+    if (unmark) return 0;
     XChangeProperty(display, window, steam_game, XA_CARDINAL, 32, PropModeReplace,
                     (unsigned char *)&value, 1);
     return 1;
@@ -347,7 +366,7 @@ static long scan_once(Display *display, Window root, Atom net_client_list, Atom 
             printf("match 0x%lx pid %ld\n", (unsigned long)windows[i], pid);
         } else if (mark_app_id >= 0) {
             if (mark_steam_game(display, windows[i], steam_game))
-                printf("marked 0x%lx pid %ld\n", (unsigned long)windows[i], pid);
+                printf("%s 0x%lx pid %ld\n", unmark ? "unmarked" : "marked", (unsigned long)windows[i], pid);
         } else {
             send_delete_window(display, windows[i], wm_protocols, wm_delete_window);
             printf("closed 0x%lx pid %ld\n", (unsigned long)windows[i], pid);
@@ -374,7 +393,7 @@ static void sleep_ms(long ms)
     struct timespec ts;
     ts.tv_sec = ms / 1000;
     ts.tv_nsec = (ms % 1000) * 1000000L;
-    while (nanosleep(&ts, &ts) != 0 && errno == EINTR) {}
+    while (nanosleep(&ts, &ts) != 0 && errno == EINTR && !stop_requested) {}
 }
 
 /* A Steam app id: an unsigned 32-bit decimal. */
@@ -478,6 +497,15 @@ int main(int argc, char **argv)
     wm_delete_window = XInternAtom(display, "WM_DELETE_WINDOW", False);
     steam_game = XInternAtom(display, "STEAM_GAME", False);
 
+    if (mark_app_id >= 0 && watch_ms >= 0) {
+        struct sigaction action;
+        memset(&action, 0, sizeof action);
+        action.sa_handler = on_stop;
+        sigemptyset(&action.sa_mask);
+        sigaction(SIGTERM, &action, NULL);
+        sigaction(SIGINT, &action, NULL);
+    }
+
     clock_gettime(CLOCK_MONOTONIC, &start);
     status = 1;
     for (;;) {
@@ -491,6 +519,12 @@ int main(int argc, char **argv)
         if (mark_app_id >= 0 && !dry_run) {
             /* Marking: keep going for the watch window; new windows appear late. */
             status = 0;
+            if (stop_requested && !unmark) {
+                /* The daemon is closing the game: hand the screen back to Steam now. */
+                unmark = 1;
+                continue;
+            }
+            if (unmark) break;
             if (watch_ms < 0 || (watch_ms > 0 && elapsed_ms(&start) >= watch_ms)) break;
             /* Reparented: the daemon that owns this watch died. */
             if (getppid() != parent) break;

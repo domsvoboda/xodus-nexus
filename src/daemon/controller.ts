@@ -44,7 +44,10 @@ export function interfaceOnline(): boolean {
   return Object.values(os.networkInterfaces()).some(entries => entries?.some(entry => !entry.internal));
 }
 
-type Running = { kind: 'launched'; active: ActiveGame } | { kind: 'adopted'; game: AdoptedGame; finished: Promise<void> };
+/** How long a launch waits for the previous game to finish closing; above graceful.ts's close and stop waits. */
+const CLOSE_QUEUE_MS = 45_000;
+
+type Running ={ kind: 'launched'; active: ActiveGame } | { kind: 'adopted'; game: AdoptedGame; finished: Promise<void> };
 
 /**
  * The daemon's one game at a time: the launch core with daemon adapters (the
@@ -74,6 +77,8 @@ export class GameController {
   private accountReadAt = 0;
   private accountError: string | undefined;
   private orphanTimer: ReturnType<typeof setTimeout> | undefined;
+  /** Ends the running game's STEAM_GAME marker, which also hands the screen back to Steam. */
+  private stopFocus: (() => void) | undefined;
   private maintenance: ReturnType<typeof setInterval> | undefined;
   private readonly stateListeners = new Set<(state: DaemonState) => void>();
   private readonly logListeners = new Set<(operationId: string, line: string) => void>();
@@ -154,6 +159,14 @@ export class GameController {
   onExit(listener: (operationId: string, code: number | null, status: 'complete' | 'failed') => void): () => void { this.exitListeners.add(listener); return () => this.exitListeners.delete(listener); }
 
   async launch(request: LaunchRequest, ownerId?: string): Promise<{ operationId: string }> {
+    // Exit game hands the screen back while the last game still closes (and
+    // uploads its saves); a launch right after waits for that instead of failing.
+    const closingRun = this.closing ? this.running : undefined;
+    if (closingRun) {
+      this.options.log('Waiting for the last game to finish closing before launching.');
+      await Promise.race([closingRun.kind === 'launched' ? closingRun.active.finished : closingRun.finished,
+        new Promise<void>(resolve => setTimeout(resolve, CLOSE_QUEUE_MS))]);
+    }
     if (this.busy) throw new DaemonError('busy', 'Another game is already starting or running.');
     this.preparing = true;
     this.ownerId = ownerId;
@@ -179,6 +192,7 @@ export class GameController {
       this.inspected = this.captureInspection(active.gameId);
       await this.persist();
       const stopFocus = keepSteamFocus(this.options.closeHelper, active.operationId, this.clientEnvironment, this.options.log);
+      this.stopFocus = stopFocus;
       void active.result.catch(() => undefined).finally(stopFocus);
       void active.result.catch(() => undefined).then(async () => {
         const code = await active.result.then(result => result.code, () => null);
@@ -234,6 +248,9 @@ export class GameController {
     operation.phase = 'Closing the game…';
     this.publish();
     this.options.log(`Closing ${operation.title}: ${reason}.`);
+    // Steam already shows the game as exited: give the screen back now and let
+    // the game finish (and upload its saves) in the background.
+    this.stopFocus?.();
     const outcome = await closeGracefully(game, operation.id, {
       helper: this.options.closeHelper, env: running.kind === 'launched' ? this.clientEnvironment : running.game.record.env,
       log: line => { this.options.log(line); for (const listener of this.logListeners) listener(operation.id, line); },
@@ -243,6 +260,7 @@ export class GameController {
 
   private finished(ownerId: string | undefined): void {
     this.running = undefined;
+    this.stopFocus = undefined;
     this.closing = false;
     if (this.ownerId === ownerId) this.ownerId = undefined;
     void this.persist();
@@ -262,6 +280,7 @@ export class GameController {
         const game = new AdoptedGame(record.game);
         // The previous daemon's focus marker exited with it; keep gamescope on the game.
         const stopFocus = keepSteamFocus(this.options.closeHelper, record.game.operationId, record.game.env, this.options.log);
+        this.stopFocus = stopFocus;
         void game.result.catch(() => undefined).finally(stopFocus);
         const stopOutput = this.followOutput(record.game);
         const finished = game.result.then(async () => {
