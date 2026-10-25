@@ -250,7 +250,7 @@ export class GameController {
     const game: Closable = running.kind === 'launched' ? running.active.process : running.game;
     const operation = running.kind === 'launched' ? running.active.operation : running.game.operation;
     operation.status = 'stopping';
-    operation.phase = 'Closing the game…';
+    operation.phase = 'Closing the game and finishing its cloud saves…';
     this.publish();
     this.options.log(`Closing ${operation.title}: ${reason}.`);
     // Steam already shows the game as exited: give the screen back now and let
