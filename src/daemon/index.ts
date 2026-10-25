@@ -48,7 +48,8 @@ async function listen(server: Server, socketPath: string): Promise<string> {
   await privateDirectory(path.dirname(socketPath));
   // Started by hand while the socket unit holds this path: never unlink a live
   // listener, or activation breaks until the socket unit is restarted.
-  if (await socketReady(socketPath)) throw new AlreadyListening(socketPath);
+  if (await socketReady(socketPath)) { process.stderr.write(`Another Nexus daemon already listens on ${socketPath}; nothing to do.
+`); process.exit(0); }
   await fs.rm(socketPath, { force: true });
   await new Promise<void>((resolve, reject) => { server.once('error', reject); server.listen(socketPath, () => { server.removeListener('error', reject); resolve(); }); });
   await fs.chmod(socketPath, 0o600);
