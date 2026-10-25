@@ -28,7 +28,11 @@ export function dxvkCrossFile(target){
   if(target==='x86_64')return null;
   if(target!=='arm64ec')throw Error(`Unsupported DXVK target: ${target}`);
   const prefix='arm64ec-w64-mingw32';
+  // libc++ does not pull <new> in through <memory>/<utility> the way libstdc++
+  // does, and the pinned dxbc-spirv small_vector uses std::launder without
+  // including it; pre-include it rather than patching the pinned source.
   return `[binaries]\nc = '${prefix}-clang'\ncpp = '${prefix}-clang++'\nar = '${prefix}-ar'\nstrip = '${prefix}-strip'\nwindres = '${prefix}-windres'\n\n`+
+    `[built-in options]\ncpp_args = ['-include', 'new']\n\n`+
     `[properties]\nneeds_exe_wrapper = true\n\n[host_machine]\nsystem = 'windows'\ncpu_family = 'aarch64'\ncpu = 'arm64ec'\nendian = 'little'\n`;
 }
 /** True when the PE's load config carries CHPE metadata (an ARM64EC image). */
