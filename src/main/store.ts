@@ -24,6 +24,7 @@ const defaultSettings: Settings = {
   externalXodusRoot: '',
   runtimeRoot: path.join(defaultDataRoot, 'runtimes'),
   verboseLogs: false,
+  backgroundDaemon: false,
 };
 
 export class StateStore {

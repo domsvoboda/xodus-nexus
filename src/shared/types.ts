@@ -183,6 +183,8 @@ export interface Settings {
   runtimeRoot: string;
   verboseLogs: boolean;
   firstRunCompleted?: boolean;
+  /** Run the game daemon as a systemd user service so Steam shortcuts start fast and saves finish syncing. */
+  backgroundDaemon?: boolean;
 }
 
 export interface LauncherUpdate {
@@ -253,6 +255,15 @@ export interface AppSnapshot {
   gameOperation?: GameOperation;
   gameUpdates?: Record<string, GameUpdate>;
   downloadProgressSupported?: boolean;
+  daemon?: DaemonStatus;
+}
+
+export interface DaemonStatus {
+  /** systemd user units can be written on this system. */
+  supported: boolean;
+  installed: boolean;
+  reason?: string;
+  error?: string;
 }
 
 export interface InstallRequest {

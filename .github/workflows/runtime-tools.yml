@@ -1,0 +1,101 @@
+name: Nexus runtime tools
+
+# Builds the small Linux helpers the Nexus daemon runs next to the game
+# (scripts/runtime-tools/*.c) for x86_64 and aarch64, smoke tests the x86_64
+# build under Xvfb, and runs the source policy tests.
+
+on:
+  push:
+    branches: [main, develop]
+    paths:
+      - 'scripts/runtime-tools/**'
+      - .github/workflows/runtime-tools.yml
+  pull_request:
+    paths:
+      - 'scripts/runtime-tools/**'
+      - .github/workflows/runtime-tools.yml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: runtime-tools-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  policy:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - name: Source policy tests
+        run: node --test scripts/runtime-tools/nexus-close-window.test.mjs
+
+  x86_64:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - name: Install build and smoke test prerequisites
+        timeout-minutes: 15
+        run: |
+          sudo "$(command -v node)" scripts/ci/ubuntu-mirror.mjs
+          sudo apt-get -o Acquire::Retries=2 -o Acquire::http::Timeout=30 -o Acquire::https::Timeout=30 update
+          sudo apt-get -o Acquire::Retries=2 -o Acquire::http::Timeout=30 -o Acquire::https::Timeout=30 install -y --no-install-recommends \
+            build-essential libx11-dev xvfb xauth xterm xfonts-base file
+      - name: Build nexus-close-window (x86_64)
+        run: |
+          mkdir -p out/x86_64
+          cc -std=c99 -Wall -Wextra -Werror -O2 -o out/x86_64/nexus-close-window scripts/runtime-tools/nexus-close-window.c -lX11
+          file out/x86_64/nexus-close-window | grep -q 'x86-64'
+      - name: Smoke test under Xvfb
+        timeout-minutes: 5
+        run: xvfb-run -a bash scripts/runtime-tools/nexus-close-window-smoke.sh "$PWD/out/x86_64/nexus-close-window"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: nexus-close-window-x86_64
+          path: out/x86_64/nexus-close-window
+          if-no-files-found: error
+          retention-days: 14
+
+  arm64:
+    # The aarch64 build runs inside an arm64 Ubuntu container under QEMU
+    # rather than through multiarch apt on the runner: enabling arm64 on the
+    # GitHub image means rewriting its amd64-only mirror sources to
+    # ports.ubuntu.com and pinning architectures per source, which has broken
+    # on image updates before. A native arm64 container gets libx11-dev from
+    # its own default mirrors with no host changes, and compiling one small C
+    # file under QEMU takes well under a minute.
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: docker/setup-qemu-action@v3
+        with:
+          platforms: arm64
+      - name: Build nexus-close-window (aarch64) in an arm64 container
+        run: |
+          mkdir -p out/arm64
+          docker run --rm --platform linux/arm64 \
+            -v "$PWD:/src" -w /src \
+            arm64v8/ubuntu:24.04 bash -euo pipefail -c '
+              export DEBIAN_FRONTEND=noninteractive
+              apt-get -o Acquire::Retries=3 update
+              apt-get -o Acquire::Retries=3 install -y --no-install-recommends build-essential libx11-dev file
+              cc -std=c99 -Wall -Wextra -Werror -O2 -o out/arm64/nexus-close-window scripts/runtime-tools/nexus-close-window.c -lX11
+              file out/arm64/nexus-close-window
+              file out/arm64/nexus-close-window | grep -q aarch64
+              chown "$(stat -c %u:%g /src)" out/arm64/nexus-close-window
+            '
+      - uses: actions/upload-artifact@v4
+        with:
+          name: nexus-close-window-arm64
+          path: out/arm64/nexus-close-window
+          if-no-files-found: error
+          retention-days: 14

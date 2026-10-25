@@ -15,21 +15,18 @@ import { BackendManager } from './backend.js';
 import { run, spawnTracked } from './process.js';
 import { inspectGameDirectory, StateStore } from './store.js';
 import { RuntimeManager } from './runtime.js';
-import { prepareProtonRunner, syncPrefixUserLocale, syncUnrealCultureGameIni } from './proton.js';
-import { accountCacheKey, removeOfflineIdentityCaches } from './offline-identity.js';
+import { prepareProtonRunner } from './proton.js';
+import { removeOfflineIdentityCaches } from './offline-identity.js';
 import { detectProtonLayout, protonRootOf } from './proton-layout.js';
 import { CatalogService } from './catalog.js';
-import { cloudSaveRuntime, selectedWinePath, startXodusService, storeContentRuntime, unbridgedCloudSaveRuntime, type XodusServiceSession } from './xodus-service.js';
-import { GameLogReducer, gameLoggingEnvironment, gameWindowEnvironment } from './game-log.js';
+import { cloudSaveRuntime, selectedWinePath, startXodusService, storeContentRuntime, type XodusServiceSession } from './xodus-service.js';
+import { gameLoggingEnvironment } from './game-log.js';
 import { downloadVerifiedVcRedist, installedVcRuntimeVersion, VC_REDIST_VERSION, versionAtLeast } from './vc-runtime.js';
 import { assertGameRemovalAvailable, validateGameDeleteTarget } from './game-removal.js';
 import { deleteGameDirectory } from './game-delete.js';
-import { spawnGameProcess, type GameProcess } from './game-process.js';
-import { gameLocaleEnvironment, manifestLocales, manifestTitleId, supportedGameLocale } from './game-locale.js';
-import { antiCheatEnvironment } from './anti-cheat.js';
-import { gameLaunchArguments, preparedGameWine } from './game-launch.js';
+import type { GameProcess } from './game-process.js';
+import { supportedGameLocale } from './game-locale.js';
 import { ConnectivityMonitor } from './connectivity.js';
-import { prepareGameWrapper, type GameWrapper } from './game-wrapper.js';
 import { normalizeLaunchTools } from '../shared/launch-tools.js';
 import { LauncherUpdater } from './launcher-update.js';
 import { copyDiagnosticFile, diagnosticLogFile, readDiagnosticTail } from './diagnostic-log.js';
@@ -42,6 +39,10 @@ import { InstallQueue, assertActivityCompatible, assertInstallDestination, canon
 import { GameDisplayBlocker } from './game-display.js';
 import { GameShortcuts, shortcutArguments, shortcutInstanceData, shortcutInstanceRequest, type ShortcutDestination } from './game-shortcuts.js';
 import { ShortcutLaunch } from './shortcut-launch.js';
+import { GameSession, gameLocales, gameTitleId, licenseCacheDirectory, type ActiveGame } from './game-session.js';
+import { EphemeralServiceSessions } from './service-sessions.js';
+import { DaemonUnits } from './daemon-units.js';
+import { profileIdOf } from '../shared/profile-id.js';
 import { loadShortcutIcon } from './shortcut-icon.js';
 import { AccountProfile } from './account-profile.js';
 import { AccountRefresh, readAccount } from './account-refresh.js';
@@ -134,6 +135,12 @@ let gameUpdateController: AbortController | undefined;
 let gameUpdateJob: Promise<void> | undefined;
 let snapshotTimer: ReturnType<typeof setTimeout> | undefined;
 let shortcuts: GameShortcuts;
+// Background game daemon (systemd user units). The launcher only installs and
+// removes the units; Steam's thin client talks to the daemon directly.
+let daemonUnits: DaemonUnits | undefined;
+let daemonLauncher: string | undefined;
+let daemonInstalled = false;
+let daemonError: string | undefined;
 let accountProfile: AccountProfile;
 let preparingLaunch = false;
 let preparingInstall = false;
@@ -195,6 +202,34 @@ function receiveLaunchRequest(id?: string): void {
   void shortcutLaunch.request(id).catch(shortcutError).finally(finishShortcutSession);
 }
 
+function daemonStatus(): AppSnapshot['daemon'] {
+  if (process.platform !== 'linux') return { supported: false, installed: false, reason: 'The background service is available on Linux only.' };
+  if (!daemonUnits) return { supported: false, installed: false, reason: 'The background service needs a systemd user session (XDG_RUNTIME_DIR).' };
+  if (!daemonLauncher) return { supported: false, installed: false, reason: 'The background service needs an installed launcher or AppImage with a persistent path.' };
+  return { supported: true, installed: daemonInstalled, error: daemonError };
+}
+
+/** Writes or removes the per-profile units to match `enabled`; an install also refreshes the launcher path after an update. */
+async function syncDaemonUnits(enabled: boolean): Promise<void> {
+  if (!daemonUnits) throw Error('The background service needs a systemd user session.');
+  const profileId = profileIdOf(app.getPath('userData'));
+  try {
+    if (enabled) {
+      if (!daemonLauncher) throw Error('The background service needs an installed launcher or AppImage with a persistent path.');
+      await daemonUnits.install({ profileId, launcher: await fs.realpath(daemonLauncher), userData: app.getPath('userData') });
+      daemonInstalled = true;
+    } else {
+      await daemonUnits.remove(profileId);
+      daemonInstalled = false;
+    }
+    daemonError = undefined;
+  } catch (error) {
+    daemonError = (error as Error).message;
+    daemonInstalled = await daemonUnits.installed(profileId).catch(() => false);
+    throw error;
+  } finally { emitSnapshot(); }
+}
+
 function snapshot(): AppSnapshot {
   if (demoMode) return demoSnapshot({ launcher: app.getVersion(), backend: backendLock.version,
     backendCommit: backendLock.commit, backendCompatibility: backendLock.compatibility }, demoArtwork);
@@ -211,6 +246,7 @@ function snapshot(): AppSnapshot {
     gameUpdates: structuredClone(gameUpdates),
     downloadProgressSupported: Boolean(backend.current.capabilities.streamingProgressJson),
     gameOperation: gameOperation ? structuredClone(gameOperation) : undefined,
+    daemon: daemonStatus(),
   };
 }
 
@@ -472,8 +508,6 @@ async function startInstall(request: InstallRequest, updateGame?: Game): Promise
 }
 
 function contentManager(): GameContent { return new GameContent(path.dirname(store.settings.runtimeRoot)); }
-/** Device-bound offline licenses written by `xodus-cli run --license-cache`. */
-function licenseCacheDirectory(dataRoot: string): string { return path.join(dataRoot, 'license-cache'); }
 /** Offline licenses belong to the signed-in account; never keep them past a sign-out attempt. */
 async function removeOfflineLicenses(): Promise<void> {
   const dataRoot = path.dirname(store.settings.runtimeRoot);
@@ -814,214 +848,46 @@ async function gameLaunchOptions(id: string): Promise<GameLaunchOptions> {
   };
 }
 
-async function gameLocales(game: Game): Promise<string[]> {
-  const xml = await fs.readFile(path.join(game.path, 'MicrosoftGame.config'), 'utf8').catch(() => '');
-  return manifestLocales(xml);
-}
-
-async function gameTitleId(game: Game): Promise<string | undefined> {
-  const xml = await fs.readFile(path.join(game.path, 'MicrosoftGame.config'), 'utf8').catch(() => '');
-  return manifestTitleId(xml);
-}
+const gameSession = new GameSession({
+  store: { get games() { return store.games; }, get downloads() { return store.downloads; }, get settings() { return store.settings; } },
+  backend: () => backend.current,
+  runtime: () => runtime.current,
+  requireBackend: (command) => requireBackend(command),
+  get paths() { return { userData: app.getPath('userData'), home: app.getPath('home') }; },
+  environment: () => process.env,
+  get connectivity() { return connectivity; },
+  account: () => authState,
+  ensureWallet: () => prepareSystemWallet(),
+  displayGuard: () => gameDisplay.acquire(),
+  services: new EphemeralServiceSessions(),
+  persistGame: (id, patch) => store.patchGame(id, patch),
+  onChange: (operation, operationId, immediate) => {
+    if (operation) gameOperation = operation;
+    else if (gameOperation?.id === operationId) gameOperation = undefined;
+    if (immediate) emitSnapshot(); else scheduleSnapshot();
+  },
+});
 
 async function launchGame(id: string): Promise<void> {
   ensureIdle('launch');
   preparingLaunch = true;
-  try { await prepareGameLaunch(id); }
+  let active: ActiveGame;
+  try { active = await gameSession.launch(id); }
   finally { preparingLaunch = false; }
-}
-
-async function prepareGameLaunch(id: string): Promise<void> {
-  const game = store.games.find((entry) => entry.id === id);
-  if (!game) throw new Error('Game not found.');
-  const target = await canonicalInstallPath(game.path);
-  for (const task of store.downloads.filter(task => ['running', 'queued', 'paused'].includes(task.status))) {
-    if (task.gameId === id || installPathsOverlap(target, await canonicalInstallPath(task.destination))) throw Error('Finish or cancel this game\'s installation before playing it.');
-  }
-  const inspected = await inspectGameDirectory(game.path);
-  await store.patchGame(id, {
-    installState: inspected.installState,
-    installMessage: inspected.installMessage,
-    executable: inspected.executable,
-    antiCheat: inspected.antiCheat,
-    vcRedistEncrypted: inspected.vcRedistEncrypted,
-    coverDataUrl: inspected.coverDataUrl,
-    storeId: inspected.storeId ?? game.storeId,
+  operations.set(active.operationId, active.process.child);
+  gameProcesses.set(active.operationId, active.process);
+  if (active.service) serviceSessions.set(active.operationId, active.service);
+  // The session's own cleanup is already queued on `result`; this runs after it starts.
+  void active.result.catch(() => undefined).finally(async () => {
+    finalizingGame = true;
+    try {
+      operations.delete(active.operationId);
+      gameProcesses.delete(active.operationId);
+      serviceSessions.delete(active.operationId);
+      await active.finished;
+      if (gameOperation?.id === active.operationId && gameOperation.status === 'failed' && shortcutOnly) await shortcutError(new Error(gameOperation.error ?? 'The game exited with an error.'));
+    } finally { finalizingGame = false; finishShortcutSession(); }
   });
-  emitSnapshot();
-  const binary = requireBackend('run');
-  if (inspected.installState !== 'ready') throw new Error(inspected.installMessage ?? 'The installation is not ready for Xodus run.');
-  const locale = supportedGameLocale(game.locale ?? '', await gameLocales(game));
-  const titleId = await gameTitleId(game);
-  const wine = selectedWinePath(store.settings.winePath, store.settings.runtimeRoot, runtime.current.winePath);
-  if (!wine) throw new Error('Select a Wine/Xodus Proton binary in Settings.');
-  try { await fs.access(wine, constants.X_OK); }
-  catch { throw new Error(`The selected Wine runtime is unavailable: ${wine}. Select or reinstall Xodus Runtime in Settings.`); }
-  const cloudRuntime = await cloudSaveRuntime(wine);
-  if (await unbridgedCloudSaveRuntime(wine)) {
-    throw new Error('The active runtime has cloud saves without the required service bridge. Update the active runtime in Settings.');
-  }
-  const dataRoot = path.dirname(store.settings.runtimeRoot);
-  // Decide "offline" here, once, from a fresh probe: the backend then skips
-  // its ticket, license and PlayFab requests and the runtime signs in from
-  // its cached identity, instead of each waiting for its own connect timeout.
-  const reachability: ConnectivityStatus = connectivity ? await connectivity.check() : { state: 'unknown' };
-  const offlineLaunch = reachability.state === 'offline';
-  const args = gameLaunchArguments(inspected, wine, store.settings.market, backend.current.linuxRunPatch,
-    backend.current.capabilities.licenseCache ? licenseCacheDirectory(dataRoot) : undefined,
-    offlineLaunch && Boolean(backend.current.capabilities.offlineLaunch));
-  const operationId = `game-${id}`;
-  const logDirectory = path.join(dataRoot, 'logs');
-  const logPath = path.join(logDirectory, `${id}-latest.log`);
-  await fs.mkdir(logDirectory, { recursive: true });
-  const launchLog = createWriteStream(logPath, { flags: 'w', encoding: 'utf8' });
-  launchLog.on('error', (error) => console.error(`Unable to write launch log ${logPath}:`, error));
-  const writeLaunchLog = (line: string) => launchLog.write(`[${new Date().toISOString()}] ${line}\n`);
-  gameOperation = {
-    id: operationId,
-    gameId: id,
-    title: game.title,
-    kind: 'launch',
-    status: 'preparing',
-    phase: 'Preparing Proton and Xodus…',
-    log: [],
-    logPath,
-    startedAt: new Date().toISOString(),
-  };
-  const appendGameLog = (line: string) => {
-    writeLaunchLog(line);
-    if (!gameOperation || gameOperation.id !== operationId) return;
-    gameOperation.log.push(line);
-    if (gameOperation.log.length > 250) gameOperation.log.splice(0, gameOperation.log.length - 250);
-    gameOperation.phase = line.length > 180 ? `${line.slice(0, 177)}…` : line;
-    scheduleSnapshot();
-  };
-  const verboseLogs = process.env.XODUS_NEXUS_VERBOSE_LOGS === '1' || store.settings.verboseLogs;
-  const gameLog = new GameLogReducer(appendGameLog, verboseLogs);
-  const addGameLog = (line: string) => gameLog.push(line);
-  writeLaunchLog(`Game: ${game.title}`);
-  writeLaunchLog(`Mode: package manifest; cloud saves: ${cloudRuntime ? 'enabled' : 'not available in active runtime'}; verbose logs: ${verboseLogs ? 'on' : 'off'}`);
-  writeLaunchLog(`Backend: ${binary}`);
-  writeLaunchLog(`Wine: ${wine}`);
-  writeLaunchLog(`Connectivity: ${reachability.state}${reachability.reason ? ` (${reachability.reason})` : ''}; offline launch: ${offlineLaunch ? 'yes' : 'no'}`);
-  emitSnapshot();
-  let serviceSession: XodusServiceSession | undefined;
-  let launchWrapper: GameWrapper | undefined;
-  let releaseDisplay = () => {};
-  try {
-    if (game.launchTools?.dualSenseCompatibility) writeLaunchLog('DualSense compatibility mode enabled for this game (054c:0ce6).');
-    await prepareSystemWallet();
-    const legacyPrefixRoot = path.join(dataRoot, 'prefixes', game.id);
-    const compatibilityDataPath = path.join(dataRoot, 'compatdata', game.id);
-    const steamRoot = path.join(app.getPath('home'), '.steam', 'root');
-    launchWrapper = await prepareGameWrapper(wine, game.launchTools, path.join(dataRoot, 'launch-wrappers'), process.env, game.path);
-    const protonRunner = await prepareProtonRunner(wine, compatibilityDataPath, steamRoot, launchWrapper.command);
-    const wineCommand = protonRunner?.command ?? wine;
-    args[2] = preparedGameWine(protonRunner, launchWrapper.command);
-    if (inspected.vcRedistEncrypted) {
-      if (!protonRunner) throw new Error('This encrypted VC++ prerequisite requires a Proton prefix. Select Xodus Runtime in Settings.');
-      const installed = await installedVcRuntimeVersion(path.join(compatibilityDataPath, 'pfx'));
-      if (!installed || !versionAtLeast(installed, VC_REDIST_VERSION)) {
-        throw new Error(`VC++ runtime ${installed ?? 'not found'} is too old for this encrypted installer. Right-click the game and choose Install / update VC++, then press Play.`);
-      }
-      addGameLog(`VC++ runtime ${installed} verified; launching the original package executable from a temporary decrypted launch view.`);
-    }
-    const environment = antiCheatEnvironment(gameLocaleEnvironment(gameWindowEnvironment(gameLoggingEnvironment(protonRunner
-      ? { ...process.env }
-      : { ...process.env, WINEPREFIX: legacyPrefixRoot, WINEARCH: 'win64' }, verboseLogs)), locale));
-    const contentRoots = await contentManager().roots(game).catch(error => {
-      addGameLog(`Managed content discovery unavailable: ${(error as Error).message}`);
-      return [] as string[];
-    });
-    if (contentRoots.length) environment.XODUS_CONTENT_ROOTS = [environment.XODUS_CONTENT_ROOTS, ...contentRoots.map(root => 'Z:' + root.replaceAll('/', '\\'))].filter(Boolean).join(';');
-    if (offlineLaunch) {
-      // The runtime treats the network as unreachable at once and completes
-      // the Xbox sign-in from its cached identity (xuser-offline-identity-v1).
-      environment.XODUS_FORCE_OFFLINE = '1';
-      addGameLog(`Microsoft is unreachable (${reachability.reason ?? 'no answer'}); launching offline with the stored license and the cached Xbox identity.`);
-    }
-    if (locale) {
-      addGameLog(`Selected package language: ${locale}.`);
-      await syncPrefixUserLocale(wineCommand, protonRunner ? path.join(compatibilityDataPath, 'pfx') : legacyPrefixRoot, locale, environment, addGameLog);
-    }
-    await syncUnrealCultureGameIni(protonRunner ? path.join(compatibilityDataPath, 'pfx') : legacyPrefixRoot, game.path, titleId, locale, addGameLog);
-    if (cloudRuntime) {
-      serviceSession = await startXodusService(binary, app.getPath('userData'), addGameLog);
-      serviceSessions.set(operationId, serviceSession);
-      environment.XODUS_SOCKET = serviceSession.socketPath;
-      environment.XODUS_BRIDGE_PORT = String(serviceSession.bridgePort);
-      environment.XODUS_BRIDGE_KEY = serviceSession.bridgeKey;
-      environment.XODUS_SAVE_SYNC = 'auto';
-      addGameLog('Xbox cloud save preview is enabled. Saves may download from and upload to the account cloud.');
-    }
-    // Names the account for the runtime's offline identity cache (an opaque key, never the username).
-    if (authState.stored === true && authState.username) environment.XODUS_ACCOUNT_HASH = accountCacheKey(authState.username);
-    if (protonRunner) addGameLog(`Proton prefix: ${protonRunner.compatibilityDataPath}/pfx`);
-    else await fs.mkdir(legacyPrefixRoot, { recursive: true });
-    const tracked = await spawnGameProcess(binary, args, {
-      cwd: game.path,
-      env: environment,
-      onLine: addGameLog,
-      maxOutput: 8_000_000,
-    }, { stopPrefix: protonRunner?.stopPrefix });
-    operations.set(operationId, tracked.child);
-    gameProcesses.set(operationId, tracked);
-    releaseDisplay = gameDisplay.acquire();
-    gameOperation.status = 'running';
-    gameOperation.phase = 'Xodus is running; waiting for the game window…';
-    emitSnapshot();
-    void tracked.result.then((result) => {
-      addGameLog(`The Xodus process exited with code ${result.code}.`);
-      if (!gameOperation || gameOperation.id !== operationId) return;
-      gameOperation.finishedAt = new Date().toISOString();
-      if (result.code === 0 || gameOperation.status === 'stopping') {
-        gameOperation.status = 'complete';
-        gameOperation.phase = result.code === 0 ? 'The game has exited.' : 'The game was stopped. Forced shutdown may leave unsynchronized saves.';
-      } else {
-        const detail = result.output.split('\n').map((line) => line.trim()).filter(Boolean).slice(-6).join(' | ');
-        gameOperation.status = 'failed';
-        gameOperation.error = `Xodus run exited with code ${result.code}${detail ? `: ${detail.slice(0, 900)}` : '.'}`;
-        gameOperation.phase = gameOperation.error;
-      }
-    }).catch((error) => {
-      addGameLog(`Process error: ${(error as Error).message}`);
-      if (!gameOperation || gameOperation.id !== operationId) return;
-      gameOperation.status = 'failed';
-      gameOperation.error = (error as Error).message;
-      gameOperation.phase = gameOperation.error;
-      gameOperation.finishedAt = new Date().toISOString();
-    }).finally(async () => {
-      releaseDisplay();
-      finalizingGame = true;
-      try {
-        operations.delete(operationId);
-        gameProcesses.delete(operationId);
-        if (serviceSession) {
-          await serviceSession.stop().catch((error) => addGameLog(`Account service cleanup failed: ${(error as Error).message}`));
-          serviceSessions.delete(operationId);
-        }
-        await tracked.cleanup().catch((error) => console.error('Game service cleanup failed:', error));
-        await launchWrapper?.cleanup().catch((error) => console.error('Game wrapper cleanup failed:', error));
-        gameLog.flush();
-        launchLog.end();
-        emitSnapshot();
-        if (gameOperation?.status === 'failed' && shortcutOnly) await shortcutError(new Error(gameOperation.error ?? 'The game exited with an error.'));
-      } finally { finalizingGame = false; finishShortcutSession(); }
-    });
-  } catch (error) {
-    releaseDisplay();
-    await launchWrapper?.cleanup().catch(() => undefined);
-    if (serviceSession) {
-      await serviceSession.stop().catch(() => undefined);
-      serviceSessions.delete(operationId);
-    }
-    writeLaunchLog(`Preparation error: ${(error as Error).message}`);
-    gameLog.flush();
-    launchLog.end();
-    if (gameOperation?.id === operationId) gameOperation = undefined;
-    emitSnapshot();
-    throw error;
-  }
 }
 
 async function installGameVcRuntime(id: string): Promise<void> {
@@ -1556,25 +1422,14 @@ function registerIpc(): void {
   ipcMain.handle('install-game-vc-runtime', (_event, id: string) => installGameVcRuntime(id));
   ipcMain.handle('cancel-game', async () => {
     if (!gameOperation || !['preparing', 'running', 'stopping'].includes(gameOperation.status)) throw new Error('No game launch is currently active.');
+    if (gameOperation.kind === 'launch') { await gameSession.cancel(); return; }
     const child = operations.get(gameOperation.id);
-    const gameProcess = gameProcesses.get(gameOperation.id);
     const controller = preparationControllers.get(gameOperation.id);
     if (!child && !controller) throw new Error('Xodus is still preparing; try stopping again in a moment.');
-    if (child && gameOperation.kind === 'prerequisite') throw new Error('VC++ installation is running. Wait for it to finish; interrupting it could damage the Proton prefix.');
+    if (child) throw new Error('VC++ installation is running. Wait for it to finish; interrupting it could damage the Proton prefix.');
     gameOperation.status = 'stopping';
-    gameOperation.phase = child ? 'Stopping Xodus and Wine…' : 'Cancelling prerequisite download…';
+    gameOperation.phase = 'Cancelling prerequisite download…';
     controller?.abort();
-    if (child && gameProcess) {
-      const operationId = gameOperation.id;
-      try { await gameProcess.stop(); }
-      catch (error) { gameOperation.status = 'running'; emitSnapshot(); throw error; }
-      const forceTimer = setTimeout(() => {
-        if (gameProcesses.get(operationId) === gameProcess) void gameProcess.forceStop().catch((error) => console.error('Could not force-stop game:', error));
-      }, 8_000);
-      forceTimer.unref();
-    } else if (child) {
-      child.kill('SIGINT');
-    }
     emitSnapshot();
   });
   ipcMain.handle('update-settings', async (_event, patch: Partial<Settings>) => {
@@ -1593,7 +1448,17 @@ function registerIpc(): void {
     if (typeof patch.runtimeRoot === 'string') allowed.runtimeRoot = path.resolve(patch.runtimeRoot);
     if (typeof patch.verboseLogs === 'boolean') allowed.verboseLogs = patch.verboseLogs;
     if (typeof patch.firstRunCompleted === 'boolean') allowed.firstRunCompleted = patch.firstRunCompleted;
+    if (typeof patch.backgroundDaemon === 'boolean') allowed.backgroundDaemon = patch.backgroundDaemon;
     const settings = await store.setSettings(allowed);
+    if (typeof patch.backgroundDaemon === 'boolean') {
+      try { await syncDaemonUnits(patch.backgroundDaemon); }
+      catch (error) {
+        if (patch.backgroundDaemon) await store.setSettings({ backgroundDaemon: false });
+        emitSnapshot();
+        throw Error(`Could not ${patch.backgroundDaemon ? 'enable' : 'disable'} the background service: ${(error as Error).message}`);
+      }
+      if (Object.keys(patch).every(key => key === 'backgroundDaemon')) { emitSnapshot(); return settings; }
+    }
     if (patch.downloadLimitMiB !== undefined) {
       try { await downloadLimitControls.apply(settings.downloadLimitMiB ?? 0); }
       catch { emitSnapshot(); throw Error('The speed limit was saved, but could not be sent to the active download. Retry the installation to apply it.'); }
@@ -1809,6 +1674,19 @@ app.whenReady().then(async () => {
     applications: path.join(dataHome, 'applications'), launcher: appImage ?? persistentBinary,
     icon: fileURLToPath(new URL('../../assets/icon.png', import.meta.url)) });
   if (!demoMode) await shortcuts.initialize().catch((error) => console.error('Game shortcut integration unavailable:', error));
+  daemonLauncher = appImage ?? persistentBinary;
+  const runtimeDir = process.env.XDG_RUNTIME_DIR;
+  if (process.platform === 'linux' && !demoMode && runtimeDir && path.isAbsolute(runtimeDir)) {
+    const configHome = process.env.XDG_CONFIG_HOME && path.isAbsolute(process.env.XDG_CONFIG_HOME) ? process.env.XDG_CONFIG_HOME : path.join(os.homedir(), '.config');
+    daemonUnits = new DaemonUnits({ configHome, runtimeDir });
+    const profileId = profileIdOf(app.getPath('userData'));
+    void daemonUnits.installed(profileId).then(async installed => {
+      daemonInstalled = installed;
+      // Keep the unit's launcher path current after the AppImage moved or updated.
+      if (store.settings.backgroundDaemon && daemonLauncher) await syncDaemonUnits(true);
+      else emitSnapshot();
+    }).catch(error => { daemonError = (error as Error).message; emitSnapshot(); });
+  }
   if (demoMode) {
     // Demo mode: no backend build, no runtime, no account access. Library
     // covers are fetched from the live Store; Store pages are live too.
