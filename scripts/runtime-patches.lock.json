@@ -202,7 +202,7 @@
     },
     {
       "file": "assets/xgameruntime-async-deferred-cleanup.patch",
-      "sha256": "b59a908eedba81de195824e9affcd7c31cb78e3c6b763dda12c67a936876d94d"
+      "sha256": "b75e07cf21271e8d7fe5feeb4fd82bf15946751e59a59ef75304e56ecc9c5209"
     }
   ],
   "expectedWineSources": {
@@ -236,7 +236,7 @@
     "dlls/xgameruntime/xstore_package_license.h": "678f109e0a0af3f5e87951666f7c891af3999658f8698eb8855387ea355e2a31",
     "dlls/xgameruntime/xsystem.c": "a3c151c5d05875b68f49c534aae9d40e3f15ec800af0f85e159ede7c95401880",
     "dlls/xgameruntime/xsystemanalytics.c": "189e99c83273b429325ecefa2b9246c45863c22f0c4006a791ec57b8f7b9d384",
-    "dlls/xgameruntime/xthreading.c": "179f6c686c7597610a9feca1c7a1314193f0d328033bf852c4fe174ac0d534ea",
+    "dlls/xgameruntime/xthreading.c": "4a15800dc3ea84a3638b676b8d67bd74b102b8b9b5c31920c48bc319b0eb251e",
     "dlls/xgameruntime/xuser.c": "603dc6efbb585544c4f1c1f117848268a09868a083758e4db131e2d19f2580db",
     "dlls/xgameruntime/xuser_audio.h": "66ede45d4fc798612c8dc939b8903bccb0a023228a6618636fd6ed76ca8ed8a7",
     "dlls/xgameruntime/xuser_device_events.h": "ed3b6ac25510b7bff288e36859781811e7de3985d418159ce25a2b00bc6d35cb",
