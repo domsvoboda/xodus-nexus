@@ -1,3 +1,4 @@
+import { createWriteStream } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import type { ConnectivityStatus, Game, GameOperation } from '../shared/types.js';
@@ -12,6 +13,8 @@ import { WalletUnlocker } from '../main/keyring-unlock.js';
 import { GameSession, type ActiveGame } from '../main/game-session.js';
 import { WarmServiceSessions } from '../main/service-sessions.js';
 import { readAccount } from '../main/account-refresh.js';
+import { GameLogReducer } from '../main/game-log.js';
+import { OutputTail } from '../main/output-tail.js';
 import { closeGracefully, keepSteamFocus, type Closable } from './graceful.js';
 import { AdoptedGame, adoptService, SessionStateFile, type SessionRecord } from './recovery.js';
 
@@ -100,6 +103,7 @@ export class GameController {
       services: this.services,
       onChange: () => this.publish(),
       onLog: (operationId, line) => { for (const listener of this.logListeners) listener(operationId, line); },
+      outputToFile: true,
     });
   }
 
@@ -259,7 +263,9 @@ export class GameController {
         // The previous daemon's focus marker exited with it; keep gamescope on the game.
         const stopFocus = keepSteamFocus(this.options.closeHelper, record.game.operationId, record.game.env, this.options.log);
         void game.result.catch(() => undefined).finally(stopFocus);
+        const stopOutput = this.followOutput(record.game);
         const finished = game.result.then(async () => {
+          await stopOutput();
           for (const listener of this.exitListeners) listener(game.operation.id, null, 'complete');
           game.dispose();
           await this.services.sweep().catch(() => undefined);
@@ -275,6 +281,31 @@ export class GameController {
     await this.persist();
   }
 
+  /**
+   * Keeps an adopted game's log going: the game still appends to its output
+   * file, so follow it from here on into the same log and to the clients.
+   * Returns the finish, which reads what is left once the game has exited.
+   */
+  private followOutput(record: NonNullable<SessionRecord['game']>): () => Promise<void> {
+    const { outputFile, logPath, operationId } = record;
+    if (!outputFile || !logPath) return async () => {};
+    const log = createWriteStream(logPath, { flags: 'a', encoding: 'utf8' });
+    log.on('error', error => this.options.log(`Unable to write launch log ${logPath}: ${error.message}`));
+    const write = (line: string) => {
+      log.write(`[${new Date().toISOString()}] ${line}\n`);
+      for (const listener of this.logListeners) listener(operationId, line);
+    };
+    const reducer = new GameLogReducer(write, record.env.XODUS_NEXUS_VERBOSE_LOGS === '1' || Boolean(this.store.settings.verboseLogs));
+    write('Re-attached after the background service restarted; output from the restart itself may be missing.');
+    const tail = new OutputTail(outputFile, line => reducer.push(line)).start();
+    return async () => {
+      await tail.drain();
+      reducer.flush();
+      write('The game has exited.');
+      await new Promise<void>(resolve => log.end(resolve));
+    };
+  }
+
   private async persist(): Promise<void> {
     const record: SessionRecord = { schema: 1 };
     const running = this.running;
@@ -283,7 +314,7 @@ export class GameController {
       const { active } = running;
       record.game = {
         operationId: active.operationId, gameId: active.gameId, title: active.operation.title, pgid,
-        logPath: active.operation.logPath, startedAt: active.operation.startedAt, stopPrefix: active.stopPrefix,
+        logPath: active.operation.logPath, outputFile: active.outputFile, startedAt: active.operation.startedAt, stopPrefix: active.stopPrefix,
         env: Object.fromEntries(Object.entries(this.clientEnvironment).filter((entry): entry is [string, string] => typeof entry[1] === 'string')),
       };
     } else if (running?.kind === 'adopted') record.game = running.game.record;

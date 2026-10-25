@@ -15,6 +15,8 @@ export interface SessionRecord {
     title: string;
     pgid: number;
     logPath?: string;
+    /** Where the game appends its raw output; a restarted daemon keeps following it. */
+    outputFile?: string;
     startedAt: string;
     stopPrefix?: { command: string; args: string[] };
     env: Record<string, string>;

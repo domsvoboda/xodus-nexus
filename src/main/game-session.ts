@@ -63,6 +63,8 @@ export interface GameSessionDeps {
   onChange(operation: GameOperation | undefined, operationId: string, immediate: boolean): void;
   /** Every reduced log line, in order, for hosts that stream them to a remote client. */
   onLog?(operationId: string, line: string): void;
+  /** Route the game's output through a file next to its log, so it survives this host restarting (daemon). */
+  outputToFile?: boolean;
 }
 
 export interface ActiveGame {
@@ -73,6 +75,8 @@ export interface ActiveGame {
   service?: AcquiredService;
   /** The prefix stop control of the prepared Proton runner, for a daemon that re-adopts the game after a restart. */
   stopPrefix?: { command: string; args: string[] };
+  /** The file the game writes its output to, when `outputToFile` is set. */
+  outputFile?: string;
   /** The backend process result, as `GameProcess.result`. */
   result: GameProcess['result'];
   /** Settles after the service, process group, wrapper and log are all cleaned up. */
@@ -231,12 +235,13 @@ export class GameSession {
       if (account.stored === true && account.username) environment.XODUS_ACCOUNT_HASH = accountCacheKey(account.username);
       if (protonRunner) addGameLog(`Proton prefix: ${protonRunner.compatibilityDataPath}/pfx`);
       else await fs.mkdir(legacyPrefixRoot, { recursive: true });
+      const outputFile = deps.outputToFile ? path.join(logDirectory, `${id}-latest.output`) : undefined;
       const tracked = await spawnGameProcess(binary, args, {
         cwd: game.path,
         env: environment,
         onLine: addGameLog,
         maxOutput: 8_000_000,
-      }, { stopPrefix: protonRunner?.stopPrefix });
+      }, { stopPrefix: protonRunner?.stopPrefix, outputFile });
       releaseDisplay = deps.displayGuard();
       operation.status = 'running';
       operation.phase = 'Xodus is running; waiting for the game window…';
@@ -275,7 +280,7 @@ export class GameSession {
           launchLog.end();
         } finally { changed(true); }
       });
-      const active: ActiveGame = { operationId, gameId: id, operation, process: tracked, service, stopPrefix: protonRunner?.stopPrefix, result: tracked.result, finished };
+      const active: ActiveGame = { operationId, gameId: id, operation, process: tracked, service, stopPrefix: protonRunner?.stopPrefix, outputFile, result: tracked.result, finished };
       this.active = active;
       return active;
     } catch (error) {
