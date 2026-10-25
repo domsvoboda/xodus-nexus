@@ -10,6 +10,9 @@ on:
     paths:
       - 'scripts/arm64/**'
       - scripts/runtime-base-arm64.lock.json
+      - scripts/runtime-patches.lock.json
+      - 'assets/xgameruntime-*.patch'
+      - 'assets/wine-*.patch'
       - scripts/runtime-layout.mjs
       - scripts/assemble-shared-runtime.mjs
       - scripts/build-runtime-dxvk.mjs

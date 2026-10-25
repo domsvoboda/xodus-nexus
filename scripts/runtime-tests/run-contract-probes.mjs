@@ -50,7 +50,7 @@ try {
     await fs.copyFile(path.join(files, 'lib', library, 'x86_64-windows', name), temporary, fs.constants.COPYFILE_EXCL);
     await fs.rename(temporary, dest);
   }
-  for (const name of ['appstate', 'appstate-source', 'appconstrained', 'appconstrained-source', 'hlsl-state-keywords', 'game-relaunch', 'taskqueue-teardown', 'taskqueue-contract', 'taskqueue-close', 'async-provider-contract', 'async-completion-lifetime', 'async-schedule', 'gamesave-files', 'gamesave-sync', 'gamesave-transfer', 'winrt-json', 'token-dispatch', 'user-privilege', 'store-entitlements', 'package-content', 'package-identity', 'package-legacy', 'package-chunks', 'package-monitors', 'package-progress-bytes', 'system-device-id', 'user-device-association', 'user-audio']) {
+  for (const name of ['appstate', 'appstate-source', 'appconstrained', 'appconstrained-source', 'hlsl-state-keywords', 'game-relaunch', 'taskqueue-teardown', 'taskqueue-contract', 'taskqueue-close', 'async-provider-contract', 'async-completion-lifetime', 'async-schedule', 'gamesave-files', 'gamesave-sync', 'gamesave-transfer', 'winrt-json', 'token-dispatch', 'user-privilege', 'store-entitlements', 'package-content', 'package-identity', 'package-legacy', 'package-chunks', 'package-monitors', 'package-progress-bytes', 'system-device-id', 'user-device-association', 'offline-identity', 'user-audio']) {
     const result = await run(wine, [path.join(tests, `${name}-probe.exe`)]);
     await fs.writeFile(path.join(root, `${name}.log`), result.output, { mode: 0o600 });
     const summary = result.output.split(/\r?\n/).filter(line => /^(FAIL |CHECKS |QUEUE |ASYNC |CHUNK METADATA CHECKS )/.test(line));

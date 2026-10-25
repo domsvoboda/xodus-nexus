@@ -1,0 +1,311 @@
+Offline identity cache for XUser sign-in
+
+When Microsoft is unreachable, XUserAddAsync(AddDefaultUserSilently) returns
+the identity of the last complete network sign-in in this prefix (XUID,
+gamertags, age group, endpoint tables; never a token). Token requests then
+fail with the WinHTTP connect error and XNetworkingGetConnectivityHint reports
+local access. XODUS_FORCE_OFFLINE=1 forces the unreachable path for probes.
+
+diff --git a/dlls/xgameruntime/private.h b/dlls/xgameruntime/private.h
+index b31f8e1..7ae81c1 100644
+--- a/dlls/xgameruntime/private.h
++++ b/dlls/xgameruntime/private.h
+@@ -75,6 +75,7 @@ HRESULT xpackage_query_content_store( const char *identifier, SIZE_T size, char
+ extern char *packageFamilyName;
+ UINT64 xuser_get_xuid( XUserHandle user );
+ BOOL xuser_is_current_user( XUserHandle user );
++BOOL xuser_offline_identity( void );
+ HRESULT xuser_device_authorization( XUserHandle user, const char *relyingParty, char **auth );
+ HRESULT xuser_signed_request( XUserHandle user, const char *method, const char *url, const char *auth, const char *extraHeaders,
+                               const void *body, DWORD bodySize, DWORD *status, BYTE **buffer, SIZE_T *bufferSize );
+diff --git a/dlls/xgameruntime/xnetworking.c b/dlls/xgameruntime/xnetworking.c
+index 48cb705..2aa2a48 100644
+--- a/dlls/xgameruntime/xnetworking.c
++++ b/dlls/xgameruntime/xnetworking.c
+@@ -350,7 +350,9 @@ static HRESULT WINAPI x_networking_XNetworkingGetConnectivityHint( IXNetworkingI
+ {
+     TRACE( "iface %p, connectivityHint %p.\n", iface, connectivityHint );
+     if (!connectivityHint) return E_POINTER;
+-    connectivityHint->connectivityLevel = XNetworkingConnectivityLevelHint_InternetAccess;
++    /* A user signed in from the offline identity cache has no internet. */
++    connectivityHint->connectivityLevel = xuser_offline_identity() ? XNetworkingConnectivityLevelHint_LocalAccess
++                                                                   : XNetworkingConnectivityLevelHint_InternetAccess;
+     connectivityHint->connectivityCost = XNetworkingConnectivityCostHint_Unrestricted;
+     connectivityHint->ianaInterfaceType = 6;
+     connectivityHint->networkInitialized = TRUE;
+diff --git a/dlls/xgameruntime/xuser.c b/dlls/xgameruntime/xuser.c
+index 7306406..d9f02f0 100644
+--- a/dlls/xgameruntime/xuser.c
++++ b/dlls/xgameruntime/xuser.c
+@@ -107,6 +107,7 @@ struct XUser
+     CONDITION_VARIABLE initCv;
+     LONG initDone;
+     HRESULT initResult;
++    BOOL offline;
+     UINT64 xuid;
+     XUserAgeGroup age_group;
+     UINT32 policiesLen;
+@@ -796,17 +797,216 @@ static HRESULT WINAPI user_Initialize( IUser *iface, const XUserAddOptions optio
+ /* The endpoint/device/SISU handshake can take minutes on a cold token cache.
+  * Titles time out sign-in while XUserAddAsync sits in DoWork for that long,
+  * so it runs on a background thread; consumers wait through user_wait_init. */
++
++/* Offline identity cache
++ *
++ * Windows keeps the last signed-in Xbox identity on the device, so a title's
++ * XUserAddAsync(AddDefaultUserSilently) succeeds without a network and only
++ * token requests fail until connectivity returns. This mirrors that for the
++ * prefix: after a complete network sign-in the identity the title can observe
++ * (XUID, gamertags, age group) and the endpoint tables are stored under
++ * %LOCALAPPDATA%\Xodus Nexus\offline-identity. No token, ticket or key is ever
++ * written. The cache is read only when the sign-in failed because Microsoft
++ * could not be reached, and it expires after 30 days, the span of an offline
++ * content license. XODUS_FORCE_OFFLINE=1 makes the network sign-in fail as if
++ * unreachable, for diagnostics and the contract probe. */
++
++#define OFFLINE_IDENTITY_SCHEMA 1
++#define OFFLINE_IDENTITY_MAX_AGE (30ull * 24 * 3600 * 10000000ull) /* 100 ns ticks */
++#define OFFLINE_IDENTITY_MAX_ENDPOINTS (1u << 20)
++
++static LONG offline_identity_in_use;
++
++BOOL xuser_offline_identity( void )
++{
++    return offline_identity_in_use != 0;
++}
++
++static BOOL connectivity_failure( HRESULT hr )
++{
++    /* WinHTTP: ERROR_WINHTTP_TIMEOUT, NAME_NOT_RESOLVED, CANNOT_CONNECT, CONNECTION_ERROR. */
++    return hr == HRESULT_FROM_WIN32( 12002 ) || hr == HRESULT_FROM_WIN32( 12007 ) ||
++           hr == HRESULT_FROM_WIN32( 12029 ) || hr == HRESULT_FROM_WIN32( 12030 );
++}
++
++static BOOL forced_offline( void )
++{
++    char value[4];
++    DWORD length = GetEnvironmentVariableA( "XODUS_FORCE_OFFLINE", value, sizeof(value) );
++    return length == 1 && value[0] == '1';
++}
++
++static BOOL offline_identity_file( WCHAR *path, SIZE_T length, const WCHAR *name )
++{
++    static const WCHAR vendor[] = L"\\Xodus Nexus", directory[] = L"\\offline-identity";
++    DWORD base = GetEnvironmentVariableW( L"LOCALAPPDATA", path, length );
++
++    if (!base || base >= length) return FALSE;
++    if (base + ARRAY_SIZE(vendor) + ARRAY_SIZE(directory) + wcslen( name ) + 2 > length) return FALSE;
++    wcscat( path, vendor );
++    CreateDirectoryW( path, NULL );
++    wcscat( path, directory );
++    CreateDirectoryW( path, NULL );
++    wcscat( path, L"\\" );
++    wcscat( path, name );
++    return TRUE;
++}
++
++static BOOL write_offline_identity_file( const WCHAR *name, const void *data, DWORD size )
++{
++    WCHAR path[MAX_PATH], temp[MAX_PATH];
++    DWORD written;
++    HANDLE file;
++
++    if (!offline_identity_file( path, ARRAY_SIZE(path), name )) return FALSE;
++    if (wcslen( path ) + 5 >= ARRAY_SIZE(temp)) return FALSE;
++    wcscpy( temp, path );
++    wcscat( temp, L".tmp" );
++    file = CreateFileW( temp, GENERIC_WRITE, 0, NULL, CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, NULL );
++    if (file == INVALID_HANDLE_VALUE) return FALSE;
++    if (!WriteFile( file, data, size, &written, NULL ) || written != size)
++    {
++        CloseHandle( file );
++        DeleteFileW( temp );
++        return FALSE;
++    }
++    CloseHandle( file );
++    if (!MoveFileExW( temp, path, MOVEFILE_REPLACE_EXISTING ))
++    {
++        DeleteFileW( temp );
++        return FALSE;
++    }
++    return TRUE;
++}
++
++static BYTE *read_offline_identity_file( const WCHAR *name, SIZE_T *size, DWORD limit )
++{
++    WCHAR path[MAX_PATH];
++    LARGE_INTEGER length;
++    BYTE *data = NULL;
++    HANDLE file;
++    DWORD read;
++
++    if (!offline_identity_file( path, ARRAY_SIZE(path), name )) return NULL;
++    file = CreateFileW( path, GENERIC_READ, FILE_SHARE_READ, NULL, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, NULL );
++    if (file == INVALID_HANDLE_VALUE) return NULL;
++    if (GetFileSizeEx( file, &length ) && length.QuadPart > 0 && length.QuadPart <= limit &&
++        (data = calloc( 1, length.QuadPart + 1 )))
++    {
++        if (ReadFile( file, data, (DWORD)length.QuadPart, &read, NULL ) && read == length.QuadPart) *size = read;
++        else
++        {
++            free( data );
++            data = NULL;
++        }
++    }
++    CloseHandle( file );
++    return data;
++}
++
++static BOOL offline_identity_text_ok( const char *text )
++{
++    for (; *text; text++) if ((unsigned char)*text < 0x20 || *text == 0x7f) return FALSE;
++    return TRUE;
++}
++
++static void store_offline_identity( struct XUser *user, const BYTE *defaults, SIZE_T defaultsSize,
++                                    const BYTE *current, SIZE_T currentSize )
++{
++    ULARGE_INTEGER now;
++    FILETIME time;
++    char text[512];
++    int length;
++
++    if (!user->xuid || !user->gamertag[0] || !offline_identity_text_ok( user->gamertag ) ||
++        !offline_identity_text_ok( user->modernGamertag ) || !offline_identity_text_ok( user->modernGamertagSuffix ) ||
++        !offline_identity_text_ok( user->uniqueModernGamertag ) || !defaults || !current ||
++        defaultsSize > OFFLINE_IDENTITY_MAX_ENDPOINTS || currentSize > OFFLINE_IDENTITY_MAX_ENDPOINTS) return;
++    GetSystemTimeAsFileTime( &time );
++    now.LowPart = time.dwLowDateTime;
++    now.HighPart = time.dwHighDateTime;
++    length = snprintf( text, sizeof(text), "schema=%u\nxuid=%I64u\nageGroup=%u\nsavedAt=%I64u\ngamertag=%s\nmodernGamertag=%s\nmodernGamertagSuffix=%s\nuniqueModernGamertag=%s\n",
++                       OFFLINE_IDENTITY_SCHEMA, user->xuid, (unsigned)user->age_group, now.QuadPart, user->gamertag,
++                       user->modernGamertag, user->modernGamertagSuffix, user->uniqueModernGamertag );
++    if (length <= 0 || length >= (int)sizeof(text)) return;
++    if (!write_offline_identity_file( L"endpoints-default.json", defaults, (DWORD)defaultsSize ) ||
++        !write_offline_identity_file( L"endpoints-current.json", current, (DWORD)currentSize ) ||
++        !write_offline_identity_file( L"identity.txt", text, (DWORD)length ))
++    {
++        WARN( "offline identity not stored, error %lu.\n", GetLastError() );
++        return;
++    }
++    TRACE( "stored the offline identity for xuid %I64u.\n", user->xuid );
++}
++
++static HRESULT load_offline_identity( struct XUser *user )
++{
++    SIZE_T size = 0, defaultsSize = 0, currentSize = 0;
++    BYTE *text, *defaults = NULL, *current = NULL;
++    UINT64 savedAt = 0, age = 0, schema = 0;
++    ULARGE_INTEGER now;
++    HRESULT hr = E_FAIL;
++    FILETIME time;
++    char *line, *next;
++
++    if (!(text = read_offline_identity_file( L"identity.txt", &size, 4096 ))) return HRESULT_FROM_WIN32( ERROR_FILE_NOT_FOUND );
++    for (line = (char *)text; line && *line; line = next)
++    {
++        char *value;
++        if ((next = strchr( line, '\n' ))) *next++ = 0;
++        if (!(value = strchr( line, '=' ))) continue;
++        *value++ = 0;
++        if (!offline_identity_text_ok( value )) goto cleanup;
++        if (!strcmp( line, "schema" )) schema = strtoull( value, NULL, 10 );
++        else if (!strcmp( line, "xuid" )) user->xuid = strtoull( value, NULL, 10 );
++        else if (!strcmp( line, "ageGroup" )) age = strtoull( value, NULL, 10 );
++        else if (!strcmp( line, "savedAt" )) savedAt = strtoull( value, NULL, 10 );
++        else if (!strcmp( line, "gamertag" )) lstrcpynA( user->gamertag, value, sizeof(user->gamertag) );
++        else if (!strcmp( line, "modernGamertag" )) lstrcpynA( user->modernGamertag, value, sizeof(user->modernGamertag) );
++        else if (!strcmp( line, "modernGamertagSuffix" )) lstrcpynA( user->modernGamertagSuffix, value, sizeof(user->modernGamertagSuffix) );
++        else if (!strcmp( line, "uniqueModernGamertag" )) lstrcpynA( user->uniqueModernGamertag, value, sizeof(user->uniqueModernGamertag) );
++    }
++    if (schema != OFFLINE_IDENTITY_SCHEMA || !user->xuid || !user->gamertag[0]) goto cleanup;
++    GetSystemTimeAsFileTime( &time );
++    now.LowPart = time.dwLowDateTime;
++    now.HighPart = time.dwHighDateTime;
++    if (!savedAt || now.QuadPart < savedAt || now.QuadPart - savedAt > OFFLINE_IDENTITY_MAX_AGE)
++    {
++        WARN( "offline identity is older than 30 days; a network sign-in is required.\n" );
++        goto cleanup;
++    }
++    if (!(defaults = read_offline_identity_file( L"endpoints-default.json", &defaultsSize, OFFLINE_IDENTITY_MAX_ENDPOINTS )) ||
++        FAILED(hr = load_endpoints( user, defaults, defaultsSize ))) goto cleanup;
++    if (!(current = read_offline_identity_file( L"endpoints-current.json", &currentSize, OFFLINE_IDENTITY_MAX_ENDPOINTS )) ||
++        FAILED(hr = load_endpoints( user, current, currentSize ))) goto cleanup;
++    user->age_group = age <= XUserAgeGroup_Adult ? (XUserAgeGroup)age : XUserAgeGroup_Unknown;
++    user->offline = TRUE;
++    hr = S_OK;
++
++cleanup:
++    if (FAILED(hr))
++    {
++        user->xuid = 0;
++        user->gamertag[0] = user->modernGamertag[0] = user->modernGamertagSuffix[0] = user->uniqueModernGamertag[0] = 0;
++    }
++    free( text );
++    free( defaults );
++    free( current );
++    return hr;
++}
++
+ static HRESULT user_initialize_network( XUserHandle user, XUserAddOptions options )
+ {
+     BYTE *currentBuffer = NULL, *defaultBuffer = NULL;
+     char *deviceTicket = NULL, *deviceToken = NULL, *userTicket = NULL;
+     struct XUser *impl = user;
+     WCHAR *auth = NULL;
+-    SIZE_T size;
++    SIZE_T size, defaultSize = 0;
+     HRESULT hr;
+ 
+-    if (FAILED(hr = http_request( L"GET", L"https://title.mgt.xboxlive.com/titles/default/endpoints?type=1", NULL, NULL, ACCEPT_JSON, &defaultBuffer, &size ))) return hr;
+-    if (FAILED(hr = load_endpoints( impl, defaultBuffer, size ))) goto cleanup;
++    if (forced_offline()) return HRESULT_FROM_WIN32( 12029 ); /* ERROR_WINHTTP_CANNOT_CONNECT */
++    if (FAILED(hr = http_request( L"GET", L"https://title.mgt.xboxlive.com/titles/default/endpoints?type=1", NULL, NULL, ACCEPT_JSON, &defaultBuffer, &defaultSize ))) return hr;
++    if (FAILED(hr = load_endpoints( impl, defaultBuffer, defaultSize ))) goto cleanup;
+     if (FAILED(hr = get_rps_tickets( options & XUserAddOptions_AddDefaultUserAllowingUI, &userTicket, &deviceTicket ))) goto cleanup;
+     if (FAILED(hr = device_auth( impl, deviceTicket, &deviceToken ))) goto cleanup;
+     free( impl->deviceToken );
+@@ -818,6 +1018,7 @@ static HRESULT user_initialize_network( XUserHandle user, XUserAddOptions option
+     if (FAILED(hr = sisu_auth( impl, userTicket, deviceToken, &auth ))) goto cleanup;
+     if (FAILED(hr = http_request( L"GET", L"https://title.mgt.xboxlive.com/titles/current/endpoints", NULL, auth, ACCEPT_JSON, &currentBuffer, &size ))) goto cleanup;
+     if (FAILED(hr = load_endpoints( impl, currentBuffer, size ))) goto cleanup;
++    store_offline_identity( impl, defaultBuffer, defaultSize, currentBuffer, size );
+ 
+ cleanup:
+     if (currentBuffer) free( currentBuffer );
+@@ -854,10 +1055,24 @@ static DWORD WINAPI user_network_init_thread( void *arg )
+     {
+         hr = user_initialize_network( user, options );
+         if (SUCCEEDED(hr)) break;
++        /* An unreachable network is not a start race; one retry is enough
++         * before the cached identity takes over. */
++        if (connectivity_failure( hr ) && attempt >= 1) break;
+         /* Transient bridge/service start races must not permanently break
+          * sign-in; retry with a delay before publishing the failure. */
+         if (attempt < 4) Sleep( 3000 );
+     }
++    if (FAILED(hr) && connectivity_failure( hr ))
++    {
++        HRESULT cached = load_offline_identity( user );
++        if (SUCCEEDED(cached))
++        {
++            WARN( "Microsoft is unreachable (hr %#lx); continuing with the cached offline identity.\n", hr );
++            InterlockedExchange( &offline_identity_in_use, 1 );
++            hr = S_OK;
++        }
++        else TRACE( "no usable offline identity, hr %#lx.\n", cached );
++    }
+     if (SUCCEEDED(com)) CoUninitialize();
+     EnterCriticalSection( &user->deviceAuthSection );
+     user->initResult = hr;
+@@ -2671,6 +2886,10 @@ static HRESULT xsts_authorize_privilege( XUserHandle user, const char *relyingPa
+     DWORD status = 0;
+     BOOL requested_title = title;
+ 
++    /* A cached offline identity has no tokens; report the network as
++     * unreachable, which is what an online attempt would produce. */
++    if (user->offline || !user->userToken) return HRESULT_FROM_WIN32( 12029 );
++
+     if (granted) *granted = FALSE;
+ 
+     TRACE( "user %p, relyingParty %s, title %d.\n", user, debugstr_a( relyingParty ), title );

@@ -112,6 +112,28 @@ outcome is reported as a `NEXUS_CONTENT_LICENSE_DIAGNOSTIC_V1 content-cache-*`
 line; the launcher maps the final stage to the shown error. The cache does not
 change add-on licensing, downloads or the runtime's package-license handles.
 
+### Offline sign-in identity
+
+`xgameruntime-offline-identity.patch`: a title's `XUserAddAsync` needs
+Microsoft for the endpoint tables, the RPS tickets, device authentication
+and SISU, so without a network it failed with the WinHTTP connect error and
+titles that wait for a signed-in user (Hollow Knight: Silksong among them)
+sat on a black screen. Windows keeps the last signed-in identity on the
+device for exactly this case. The runtime now does the same per prefix: after
+a complete network sign-in it stores the XUID, the gamertag variants, the age
+group and the two endpoint tables under
+`%LOCALAPPDATA%\Xodus Nexus\offline-identity`, never a token, ticket or key.
+When every sign-in attempt fails with a connectivity error (name resolution,
+connect, timeout) the cached identity completes `XUserAddAsync`, token and
+signature requests fail with that same connect error, and
+`XNetworkingGetConnectivityHint` reports local access so titles skip online
+features. The cache expires after 30 days, the span of an offline content
+license, and is never consulted for any other failure. It does not grant
+content: the backend's offline license decides whether the game may start.
+`XODUS_FORCE_OFFLINE=1` makes the network sign-in fail as unreachable, for the
+`offline-identity` contract probe and diagnostics. Metadata feature:
+`xuser-offline-identity-v1`.
+
 ### Task-queue ownership
 
 Public queue handles and references held by pending callbacks and dispatchers
