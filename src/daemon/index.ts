@@ -1,4 +1,4 @@
-import { createWriteStream, promises as fs } from 'node:fs';
+import { createWriteStream, fstatSync, promises as fs } from 'node:fs';
 import { createServer, type Server } from 'node:net';
 import os from 'node:os';
 import path from 'node:path';
@@ -10,6 +10,8 @@ import { BackendDiagnostics, setBackendDiagnostics } from '../main/backend-diagn
 import { GameController } from './controller.js';
 import { DaemonServer } from './server.js';
 import { bundledCloseHelper } from './graceful.js';
+import { socketReady } from '../main/xodus-service.js';
+
 
 const IDLE_EXIT_MS = 10 * 60_000;
 const IDLE_CHECK_MS = 30_000;
@@ -30,13 +32,23 @@ async function privateDirectory(directory: string): Promise<void> {
   if (!stat.isDirectory() || stat.isSymbolicLink() || stat.uid !== process.getuid?.() || (stat.mode & 0o077)) throw new Error(`Unsafe runtime directory: ${directory}`);
 }
 
+function activationSocket(): boolean {
+  try { return fstatSync(3).isSocket(); }
+  catch { return false; }
+}
+
 async function listen(server: Server, socketPath: string): Promise<string> {
-  // systemd socket activation hands over the listening socket on fd 3.
-  if (process.env.LISTEN_FDS === '1' && process.env.LISTEN_PID === String(process.pid)) {
+  // systemd socket activation hands over the listening socket on fd 3. The
+  // AppImage runtime forks before AppRun runs, so LISTEN_PID names an ancestor;
+  // trust the fd itself instead.
+  if (process.env.LISTEN_FDS === '1' && activationSocket()) {
     await new Promise<void>((resolve, reject) => { server.once('error', reject); server.listen({ fd: 3 }, () => { server.removeListener('error', reject); resolve(); }); });
     return 'systemd socket';
   }
   await privateDirectory(path.dirname(socketPath));
+  // Started by hand while the socket unit holds this path: never unlink a live
+  // listener, or activation breaks until the socket unit is restarted.
+  if (await socketReady(socketPath)) throw new AlreadyListening(socketPath);
   await fs.rm(socketPath, { force: true });
   await new Promise<void>((resolve, reject) => { server.once('error', reject); server.listen(socketPath, () => { server.removeListener('error', reject); resolve(); }); });
   await fs.chmod(socketPath, 0o600);

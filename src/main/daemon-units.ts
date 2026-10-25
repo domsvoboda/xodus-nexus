@@ -31,8 +31,12 @@ export function marker(profileId: string): string { return `# X-Xodus-Nexus-Prof
 /** The socket-activated pair; only the socket is enabled, the service follows it. */
 export function renderUnits({ profileId, launcher, userData }: RenderOptions): { socket: string; service: string } {
   const names = unitNames(profileId);
+  // `env -i` scrubs the user manager's inherited session variables, so the
+  // socket-activation variables systemd sets for this very exec must be passed
+  // through explicitly (systemd expands ${VAR} before the exec).
   const exec = [
     '/usr/bin/env', '-i', 'PATH=/usr/bin:/bin', 'HOME=%h', 'USER=%u', 'XDG_RUNTIME_DIR=%t', 'DBUS_SESSION_BUS_ADDRESS=unix:path=%t/bus',
+    'LISTEN_FDS=${LISTEN_FDS}', 'LISTEN_PID=${LISTEN_PID}', 'LISTEN_FDNAMES=${LISTEN_FDNAMES}',
     unitWord(safePath(launcher, 'launcher path')), '--nexus-daemon', '--nexus-profile', unitWord(safePath(userData, 'profile path')),
   ].join(' ');
   const socket = [

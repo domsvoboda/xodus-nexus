@@ -39,7 +39,7 @@ describe('unit rendering', () => {
     expect(rendered.service).toContain('TimeoutStopSec=150');
     expect(rendered.service).not.toContain('PartOf=graphical-session.target\n');
     expect(rendered.service).not.toContain('[Install]');
-    expect(rendered.service).toContain(`ExecStart=/usr/bin/env -i PATH=/usr/bin:/bin HOME=%h USER=%u XDG_RUNTIME_DIR=%t DBUS_SESSION_BUS_ADDRESS=unix:path=%t/bus "${options.launcher}" --nexus-daemon --nexus-profile "${options.userData}"`);
+    expect(rendered.service).toContain(`ExecStart=/usr/bin/env -i PATH=/usr/bin:/bin HOME=%h USER=%u XDG_RUNTIME_DIR=%t DBUS_SESSION_BUS_ADDRESS=unix:path=%t/bus LISTEN_FDS=\${LISTEN_FDS} LISTEN_PID=\${LISTEN_PID} LISTEN_FDNAMES=\${LISTEN_FDNAMES} "${options.launcher}" --nexus-daemon --nexus-profile "${options.userData}"`);
   });
 
   it('escapes systemd expansions in paths and refuses unstable or unsafe ones', () => {
