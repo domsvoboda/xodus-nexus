@@ -30,9 +30,10 @@ describe('GameLogReducer', () => {
       reducer.push(`0124:warn:vkd3d-proton:skip_dword_unknown: Skipping 0x${index.toString(16)} unknown DWORDs.`);
       reducer.push(`0124:warn:vkd3d-proton:parse_dxbc: Ignoring DXBC checksum ${(0x1000_0000 + index).toString(16)} ${index.toString(16).padStart(8, 'a')}.`);
     }
-    reducer.push('0124:err:vkd3d-proton:vkd3d_shader_compile: Failed to compile shader 0xdeadbeef.');
+    for (let index = 0; index < 3; index += 1) reducer.push('0124:err:vkd3d-proton:vkd3d_shader_compile: Failed to compile shader 0xdeadbeef.');
     reducer.flush();
-    expect(output).toHaveLength(7);
+    expect(output).toHaveLength(9);
+    expect(output.filter((line) => line.includes(':err:'))).toHaveLength(3);
     expect(output.join('\n')).toContain('Suppressed 998 repeated warn:vkd3d-proton:skip_dword_unknown');
     expect(output.join('\n')).toContain('Suppressed 998 repeated warn:vkd3d-proton:parse_dxbc');
     expect(output).toContain('0124:err:vkd3d-proton:vkd3d_shader_compile: Failed to compile shader 0xdeadbeef.');
@@ -49,8 +50,8 @@ describe('GameLogReducer', () => {
 
 describe('gameLoggingEnvironment', () => {
   it('reduces default Wine/vkd3d debug output without overriding user choices', () => {
-    expect(gameLoggingEnvironment({})).toMatchObject({ WINEDEBUG: '-fixme', VKD3D_DEBUG: 'err', VKD3D_SHADER_DEBUG: 'err' });
-    expect(gameLoggingEnvironment({ WINEDEBUG: '+relay', VKD3D_DEBUG: 'trace' })).toMatchObject({ WINEDEBUG: '+relay', VKD3D_DEBUG: 'trace', VKD3D_SHADER_DEBUG: 'err' });
+    expect(gameLoggingEnvironment({})).toMatchObject({ WINEDEBUG: '-fixme', VKD3D_DEBUG: 'fixme', VKD3D_SHADER_DEBUG: 'fixme' });
+    expect(gameLoggingEnvironment({ WINEDEBUG: '+relay', VKD3D_DEBUG: 'trace' })).toMatchObject({ WINEDEBUG: '+relay', VKD3D_DEBUG: 'trace', VKD3D_SHADER_DEBUG: 'fixme' });
     expect(gameLoggingEnvironment({ XODUS_NEXUS_VERBOSE_LOGS: '1' })).not.toHaveProperty('WINEDEBUG');
   });
 

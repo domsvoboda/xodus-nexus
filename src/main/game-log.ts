@@ -22,9 +22,10 @@ export function gameLoggingEnvironment(source: NodeJS.ProcessEnv, verbose = fals
   if (environment.XODUS_NEXUS_VERBOSE_LOGS === '1') return environment;
   environment.WINEDEBUG ??= '-fixme';
   // vkd3d-proton warns once per unknown shader DWORD/checksum, which can add
-  // hundreds of MB per session; errors still reach the log.
-  environment.VKD3D_DEBUG ??= 'err';
-  environment.VKD3D_SHADER_DEBUG ??= 'err';
+  // hundreds of MB per session. fixme (vkd3d's own default) drops those warn
+  // lines but keeps the build/version/config info needed for bug reports.
+  environment.VKD3D_DEBUG ??= 'fixme';
+  environment.VKD3D_SHADER_DEBUG ??= 'fixme';
   return environment;
 }
 
