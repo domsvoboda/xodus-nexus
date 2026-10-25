@@ -1,0 +1,46 @@
+--- a/dlls/xgameruntime/xthreading.c
++++ b/dlls/xgameruntime/xthreading.c
+@@ -310,3 +310,3 @@
+ 
+-static HRESULT async_invoke_provider( struct async_state *state, XAsyncOp op )
++static HRESULT async_invoke_provider_data( struct async_state *state, XAsyncOp op, const XAsyncProviderData *data )
+ {
+@@ -322,3 +322,3 @@
+     LeaveCriticalSection( &state->cs );
+-    hr = state->provider( op, &state->data );
++    hr = state->provider( op, data );
+     EnterCriticalSection( &state->cs );
+@@ -341,2 +341,7 @@
+ 
++static HRESULT async_invoke_provider( struct async_state *state, XAsyncOp op )
++{
++    return async_invoke_provider_data( state, op, &state->data );
++}
++
+ static void async_cleanup( XAsyncBlock *asyncBlock )
+@@ -574,2 +579,3 @@
+     struct async_state *state;
++    XAsyncProviderData data;
+     SIZE_T required;
+@@ -579,3 +585,6 @@
+     state = async_state( asyncBlock );
+-    required = state->data.bufferSize;
++    EnterCriticalSection( &state->cs );
++    data = state->data;
++    LeaveCriticalSection( &state->cs );
++    required = data.bufferSize;
+     if (!required)
+@@ -588,7 +597,8 @@
+     /* GDK supplies the caller's capacity to GetResult, not the minimum
+-     * payload size reported at Complete. Keep bufferUsed at that minimum. */
+-    state->data.bufferSize = bufferSize;
+-    state->data.buffer = buffer;
+-    hr = async_invoke_provider( state, XAsyncOp_GetResult );
+-    state->data.bufferSize = required;
++     * payload size reported at Complete. Keep bufferUsed at that minimum.
++     * The provider gets a private copy: concurrent GetResult/GetResultSize
++     * callers must keep reading the minimum from the shared data. */
++    data.bufferSize = bufferSize;
++    data.buffer = buffer;
++    hr = async_invoke_provider_data( state, XAsyncOp_GetResult, &data );
+     if (bufferUsed) *bufferUsed = SUCCEEDED(hr) ? required : 0;

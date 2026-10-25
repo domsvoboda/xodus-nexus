@@ -17,6 +17,7 @@
 - Resolve game and add-on bundles using explicit contents instead of unrelated licensing offers, and report precise Store metadata errors.
 - Fix resolving game editions whose non-installable bonus items reference the parent bundle.
 - Fix Jurassic World Evolution 3 aborting during app-constrained notification registration at startup.
+- Keep the reported result size of an Xbox async call correct while another thread is reading its result.
 - Fix repeated Xbox task-queue termination requests leaving games waiting during world cleanup or shutdown.
 
 ## 0.3.10

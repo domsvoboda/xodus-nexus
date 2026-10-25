@@ -43,6 +43,11 @@ static HRESULT WINAPI provider(XAsyncOp op, const XAsyncProviderData *data)
         return test->work_result;
     case XAsyncOp_GetResult:
         CHECK("provider-receives-caller-buffer-capacity", data->bufferSize == test->result_capacity);
+        {
+            /* The caller's capacity is private to this provider call. */
+            SIZE_T size = 0;
+            CHECK("result-size-during-get-result", IXThreadingImpl_XAsyncGetResultSize(threads, data->async, &size) == S_OK && size == sizeof(DWORD));
+        }
         *(DWORD *)data->buffer = 0x12345678;
         break;
     case XAsyncOp_Cleanup: ++test->cleanup; break;
