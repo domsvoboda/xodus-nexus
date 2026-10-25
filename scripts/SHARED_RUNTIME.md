@@ -139,6 +139,20 @@ content: the backend's offline license decides whether the game may start.
 `offline-identity` contract probe and diagnostics. Metadata feature:
 `xuser-offline-identity-v1`.
 
+`xgameruntime-offline-fast-fail.patch`: the fallback above used to arrive
+minutes late. Every runtime request retried three times on connect failures,
+each attempt ran into Wine's unbounded name resolution and 20-second connect
+default, and the sign-in thread then made a delayed second round, so a LAN
+without a route to the internet cost about two minutes before the cached
+identity was used. Requests now bound resolution and connect to 5 seconds
+each (`WinHttpSetTimeouts`, send/receive keep their defaults), stop retrying
+on name-resolution, connect, timeout and connection errors (server errors are
+still retried) and the sign-in falls back after the first unreachable
+attempt. The launcher sets `XODUS_FORCE_OFFLINE=1` for a launch it already
+found offline, which makes the cached sign-in immediate; the
+`offline-identity` probe checks that both forced-offline paths complete
+within two seconds.
+
 ### Task-queue ownership
 
 Public queue handles and references held by pending callbacks and dispatchers

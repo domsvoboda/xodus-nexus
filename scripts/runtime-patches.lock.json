@@ -203,6 +203,10 @@
     {
       "file": "assets/xgameruntime-offline-identity.patch",
       "sha256": "3e6571ab86e4982a91979e4f96ee89739a47d0eae86f413dfead9e2fc8a16a0e"
+    },
+    {
+      "file": "assets/xgameruntime-offline-fast-fail.patch",
+      "sha256": "a8fec994bd3ccfebd037a8e305dec8d726be4432b4a876c7040144f50690738b"
     }
   ],
   "expectedWineSources": {
@@ -237,12 +241,12 @@
     "dlls/xgameruntime/xsystem.c": "a3c151c5d05875b68f49c534aae9d40e3f15ec800af0f85e159ede7c95401880",
     "dlls/xgameruntime/xsystemanalytics.c": "189e99c83273b429325ecefa2b9246c45863c22f0c4006a791ec57b8f7b9d384",
     "dlls/xgameruntime/xthreading.c": "2cf262d75eb6da156f14f2702ccd3d59953da5bc8f4b898709c25d5489383361",
-    "dlls/xgameruntime/xuser.c": "0dd6600c4e9a17b02a0a7dcf7930606cddd426fde8befe1de9c5513ae4f8ac9f",
+    "dlls/xgameruntime/xuser.c": "94e0b72eea4fa4bba5f30225846dc92688c85e9abe9aacf041cc6f29627284b5",
     "dlls/xgameruntime/xuser_audio.h": "66ede45d4fc798612c8dc939b8903bccb0a023228a6618636fd6ed76ca8ed8a7",
     "dlls/xgameruntime/xuser_device_events.h": "ed3b6ac25510b7bff288e36859781811e7de3985d418159ce25a2b00bc6d35cb",
     "dlls/xgameruntime/xuser_privilege.h": "4aa9a2736b59feb4d86cb86d95d99119ab1ccb6ab07b6b9a53c7da61acd0a77b",
-    "dlls/xgameruntime/util.c": "aebf1a7ebef0dff89d3a1683bc40e16c821eaeb5cc1160ce474b905d14d7cb5c",
-    "dlls/xgameruntime/util.h": "b739dba8a69a36103e72afc8dcaeaf324470d9ed47a5a7dd81b18e4e511ae69a",
+    "dlls/xgameruntime/util.c": "4b1f6d1a392c3188034999c37f652bdc82abc8e43581f905a75405a660b6f415",
+    "dlls/xgameruntime/util.h": "6371fb9d0ee8c493bb4a74cf115462eb43a17ba1401f56e89bbf44b56920c0f2",
     "dlls/xgameruntime/userprovider.idl": "66fb09670b7dabfc55257475094239018ea9a19ec2be348e56cf2b17ef615d7a",
     "dlls/xgameruntime/xgamesavefiles.h": "5f21c809107e8c67659899a43f98143a4cbba744be5731cc5c68c177fdc7956a",
     "dlls/xgameruntime/xstore_game_license.h": "8bcc2fd256c3e08ba59d9d5211ffb6f70e01a95cef6d0272ddf61bb8d284bffb",

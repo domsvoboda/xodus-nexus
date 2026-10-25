@@ -1,0 +1,106 @@
+Fail fast when the network is unreachable
+
+Offline launches waited minutes in the runtime: every request retried three
+times on connect failures and each attempt ran into Wine's unbounded name
+resolution and 20-second connect default, and the sign-in thread then made a
+delayed second round. Requests now bound resolution and connect to 5 seconds
+each, stop retrying on name-resolution, connect, timeout and connection
+errors (server errors are still retried), and the sign-in falls back to the
+cached identity after the first unreachable attempt. With
+XODUS_FORCE_OFFLINE=1 the cached sign-in completes at once; the
+offline-identity contract probe checks both paths finish within two seconds.
+
+diff --git a/dlls/xgameruntime/util.c b/dlls/xgameruntime/util.c
+index 55a40d8..0077a4b 100644
+--- a/dlls/xgameruntime/util.c
++++ b/dlls/xgameruntime/util.c
+@@ -26,6 +26,15 @@ static const WCHAR USER_AGENT[] = L"curl/1.0";
+ 
+ static HRESULT http_request_once( const WCHAR *method, const WCHAR *url, char *data, const WCHAR *headers, const WCHAR **accept, UCHAR **buffer, SIZE_T *bufferSize );
+ 
++/* Name resolution, connect, timeout and connection errors mean the network is
++ * unreachable; a retry only repeats the wait. Callers fall back (the cached
++ * sign-in identity, the backend's offline license) or fail at once. */
++BOOL http_connectivity_failure( HRESULT hr )
++{
++    return hr == HRESULT_FROM_WIN32( ERROR_WINHTTP_TIMEOUT ) || hr == HRESULT_FROM_WIN32( ERROR_WINHTTP_NAME_NOT_RESOLVED ) ||
++           hr == HRESULT_FROM_WIN32( ERROR_WINHTTP_CANNOT_CONNECT ) || hr == HRESULT_FROM_WIN32( ERROR_WINHTTP_CONNECTION_ERROR );
++}
++
+ HRESULT http_request( const WCHAR *method, const WCHAR *url, char *data, const WCHAR *headers, const WCHAR **accept, UCHAR **buffer, SIZE_T *bufferSize )
+ {
+     HRESULT hr = E_FAIL;
+@@ -39,7 +48,7 @@ HRESULT http_request( const WCHAR *method, const WCHAR *url, char *data, const W
+         *buffer = NULL;
+         *bufferSize = 0;
+         if (SUCCEEDED(hr = http_request_once( method, url, data, headers, accept, buffer, bufferSize ))) break;
+-        if (hr == E_FAIL) break;
++        if (hr == E_FAIL || http_connectivity_failure( hr )) break;
+     }
+     return hr;
+ }
+@@ -65,6 +74,11 @@ static HRESULT http_request_once( const WCHAR *method, const WCHAR *url, char *d
+     memcpy( hostName, uc.lpszHostName, uc.dwHostNameLength * sizeof(WCHAR) );
+ 
+     if (!(session = WinHttpOpen( USER_AGENT, WINHTTP_ACCESS_TYPE_DEFAULT_PROXY, WINHTTP_NO_PROXY_NAME, WINHTTP_NO_PROXY_BYPASS, 0 ))) goto error;
++    /* Bound name resolution and the connect to 5 seconds each: Wine's defaults
++     * are an unbounded resolution and a 20-second connect, so an unreachable
++     * Microsoft cost tens of seconds per request. Send/receive keep the
++     * 30-second defaults. */
++    WinHttpSetTimeouts( session, 5000, 5000, 30000, 30000 );
+     if (!(connection = WinHttpConnect( session, hostName, INTERNET_DEFAULT_HTTPS_PORT, 0 ))) goto error;
+     if (!(request = WinHttpOpenRequest( connection, method, uc.lpszUrlPath, NULL, WINHTTP_NO_REFERER, accept, WINHTTP_FLAG_SECURE ))) goto error;
+     if (!WinHttpSendRequest( request, headers ? headers : WINHTTP_NO_ADDITIONAL_HEADERS, headers ? -1 : 0, data, (data ? strlen( data ) : 0), (data ? strlen( data ) : 0), 0 )) goto error;
+@@ -135,6 +149,11 @@ HRESULT http_request_raw( const WCHAR *method, const WCHAR *url, const WCHAR *he
+     memcpy( hostName, uc.lpszHostName, uc.dwHostNameLength * sizeof(WCHAR) );
+ 
+     if (!(session = WinHttpOpen( USER_AGENT, WINHTTP_ACCESS_TYPE_DEFAULT_PROXY, WINHTTP_NO_PROXY_NAME, WINHTTP_NO_PROXY_BYPASS, 0 ))) goto error;
++    /* Bound name resolution and the connect to 5 seconds each: Wine's defaults
++     * are an unbounded resolution and a 20-second connect, so an unreachable
++     * Microsoft cost tens of seconds per request. Send/receive keep the
++     * 30-second defaults. */
++    WinHttpSetTimeouts( session, 5000, 5000, 30000, 30000 );
+     if (!(connection = WinHttpConnect( session, hostName, uc.nPort, 0 ))) goto error;
+     if (!(request = WinHttpOpenRequest( connection, method, uc.lpszUrlPath, NULL, WINHTTP_NO_REFERER, WINHTTP_DEFAULT_ACCEPT_TYPES,
+                                         uc.nScheme == INTERNET_SCHEME_HTTPS ? WINHTTP_FLAG_SECURE : 0 ))) goto error;
+diff --git a/dlls/xgameruntime/util.h b/dlls/xgameruntime/util.h
+index e9f45cf..5ff3a38 100644
+--- a/dlls/xgameruntime/util.h
++++ b/dlls/xgameruntime/util.h
+@@ -21,6 +21,7 @@
+ 
+ HRESULT http_request( const WCHAR *method, const WCHAR *url, char *data, const WCHAR *headers,  const WCHAR **accept, UCHAR **buffer, SIZE_T *bufferSize );
+ HRESULT http_request_raw( const WCHAR *method, const WCHAR *url, const WCHAR *headers, const void *body, DWORD bodySize, DWORD *status, BYTE **buffer, SIZE_T *bufferSize );
++BOOL http_connectivity_failure( HRESULT hr );
+ HRESULT encode_base64( const UINT32 dataSize, const BYTE *data, const UINT32 base64Size, char *base64, BOOLEAN pad );
+ HRESULT encode_base64_url( const UINT32 dataSize, const BYTE *data, const UINT32 base64Size, char *base64, BOOLEAN pad );
+ HRESULT encode_base64_utf16( const UINT32 dataSize, const BYTE *data, const UINT32 base64Size, WCHAR *base64, BOOLEAN pad );
+diff --git a/dlls/xgameruntime/xuser.c b/dlls/xgameruntime/xuser.c
+index b3081fd..f0814ad 100644
+--- a/dlls/xgameruntime/xuser.c
++++ b/dlls/xgameruntime/xuser.c
+@@ -1056,9 +1056,11 @@ static DWORD WINAPI user_network_init_thread( void *arg )
+     {
+         hr = user_initialize_network( user, options );
+         if (SUCCEEDED(hr)) break;
+-        /* An unreachable network is not a start race; one retry is enough
+-         * before the cached identity takes over. */
+-        if (connectivity_failure( hr ) && attempt >= 1) break;
++        /* An unreachable network is not a start race. The request layer
++         * already bounds resolution and connect and does not retry them, so
++         * the cached identity takes over at once instead of after a delayed
++         * second round of the same waits. */
++        if (connectivity_failure( hr )) break;
+         /* Transient bridge/service start races must not permanently break
+          * sign-in; retry with a delay before publishing the failure. */
+         if (attempt < 4) Sleep( 3000 );
+@@ -2852,6 +2854,9 @@ HRESULT xuser_signed_request( XUserHandle user, const char *method, const char *
+                 Sleep( 500 * attempt );
+             }
+             if (SUCCEEDED(hr = http_request_raw( methodW, urlW, headersW, body, bodySize, status, buffer, bufferSize )) && *status < 500) break;
++            /* Signed requests are retried for server errors, not for a network
++             * that cannot be reached: the caller reports that at once. */
++            if (FAILED(hr) && http_connectivity_failure( hr )) break;
+             if (SUCCEEDED(hr))
+             {
+                 free( *buffer );

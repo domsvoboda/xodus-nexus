@@ -81,6 +81,7 @@ int main(void)
     HMODULE dll;
     HRESULT (WINAPI *query)(const GUID *, REFIID, void **);
     ULARGE_INTEGER now;
+    ULONGLONG started;
     FILETIME time;
     UINT64 xuid = 0;
     XUserState state = XUserState_SignedOut;
@@ -126,9 +127,12 @@ int main(void)
     CHECK("hint-online", IXNetworkingImpl_XNetworkingGetConnectivityHint(networking, &hint) == S_OK &&
           hint.connectivityLevel == XNetworkingConnectivityLevelHint_InternetAccess);
 
-    /* No cached identity: the unreachable network is reported, nothing is invented. */
+    /* No cached identity: the unreachable network is reported, nothing is
+     * invented, and nothing waits for retries or delayed attempts. */
+    started = GetTickCount64();
     hr = add_user(queue, &user);
     CHECK("no-cache-fails", hr == CANNOT_CONNECT && !user);
+    CHECK("no-cache-fails-fast", GetTickCount64() - started < 2000);
     CHECK("hint-still-online", IXNetworkingImpl_XNetworkingGetConnectivityHint(networking, &hint) == S_OK &&
           hint.connectivityLevel == XNetworkingConnectivityLevelHint_InternetAccess);
 
@@ -146,8 +150,12 @@ int main(void)
     /* A fresh cache signs the user in offline. */
     snprintf(text, sizeof(text), identity_text, now.QuadPart - 10000000ull);
     CHECK("write-fresh", write_file(cache, L"identity.txt", text));
+    started = GetTickCount64();
     hr = add_user(queue, &user);
     CHECK("cached-sign-in", hr == S_OK && user);
+    /* An offline launch must not wait on the network: the forced-offline
+     * attempt fails at once and the cached identity follows without delay. */
+    CHECK("cached-sign-in-fast", GetTickCount64() - started < 2000);
     if (SUCCEEDED(hr) && user)
     {
         CHECK("xuid", IXUserImpl6_XUserGetId(users, user, &xuid) == S_OK && xuid == 2535400000000001ull);
