@@ -8,7 +8,7 @@ import { systemGameLocale } from './game-locale.js';
 import { windowsGameLocale } from '../shared/game-language.js';
 import { prepareShaderCache } from './shader-cache.js';
 import { DEFAULT_SHADER_CACHE_GIB, shaderCacheLimits } from '../shared/shader-cache.js';
-import { detectProtonLayout, protonRootOf } from './proton-layout.js';
+import { detectProtonLayout, protonRootOf, type ProtonLayout } from './proton-layout.js';
 
 function shellQuote(value: string): string {
   return `'${value.replace(/'/g, `'"'"'`)}'`;
@@ -26,11 +26,18 @@ const REQUIRED_PREFIX_FILES = [
   'drive_c/windows/system32/dxgi.dll',
   'drive_c/windows/system32/d3d12.dll',
 ];
+// The arm64 base ships no aarch64 vkd3d-utils (d3d12 comes from vkd3d-proton
+// there); its prefix is judged by the Direct3D modules it does carry.
+const REQUIRED_ARM64_PREFIX_FILES = [
+  'drive_c/windows/system32/dxgi.dll',
+  'drive_c/windows/system32/d3d11.dll',
+  'drive_c/windows/system32/d3d12.dll',
+];
 
-async function missingPrefixFiles(compatibilityDataPath: string): Promise<string[]> {
+async function missingPrefixFiles(compatibilityDataPath: string, layout: ProtonLayout): Promise<string[]> {
   const prefix = path.join(compatibilityDataPath, 'pfx');
   const missing: string[] = [];
-  for (const relative of REQUIRED_PREFIX_FILES) {
+  for (const relative of layout.peArch === 'aarch64-windows' ? REQUIRED_ARM64_PREFIX_FILES : REQUIRED_PREFIX_FILES) {
     try { await fs.access(path.join(prefix, relative), constants.R_OK); }
     catch { missing.push(relative); }
   }
@@ -358,7 +365,7 @@ export async function prepareProtonRunner(
   await prepareManagedPrefix(compatibilityDataPath);
   await fs.mkdir(steamRoot, { recursive: true });
   await rebaseRuntimeSymlinks(path.join(compatibilityDataPath, 'pfx'), protonRoot);
-  let missing = await missingPrefixFiles(compatibilityDataPath);
+  let missing = await missingPrefixFiles(compatibilityDataPath, layout);
   if (missing.length > 0) {
     const initialized = await run(proton, ['run', 'cmd', '/c', 'exit'], {
       env: {
@@ -372,7 +379,7 @@ export async function prepareProtonRunner(
       },
       maxOutput: 1_000_000,
     });
-    missing = await missingPrefixFiles(compatibilityDataPath);
+    missing = await missingPrefixFiles(compatibilityDataPath, layout);
     if (missing.length > 0) {
       const detail = initialized.output.split('\n').map((line) => line.trim()).filter(Boolean).slice(-5).join(' | ');
       throw new Error(`The Proton prefix was not prepared correctly; missing ${missing.join(', ')}${detail ? `: ${detail}` : ` (code ${initialized.code})`}`);

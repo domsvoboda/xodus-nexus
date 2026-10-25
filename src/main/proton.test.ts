@@ -188,7 +188,8 @@ describe('prepareProtonRunner', () => {
     await chmod(wineserver, 0o700);
     await writeFile(path.join(runtime, 'proton'), '#!/bin/sh\nexit 0\n');
     await chmod(path.join(runtime, 'proton'), 0o700);
-    for (const name of ['libvkd3d-utils-1.dll', 'dxgi.dll', 'd3d12.dll']) await writeFile(path.join(system32, name), 'ready');
+    // The arm64 prefix has no libvkd3d-utils-1.dll; dxgi, d3d11 and d3d12 prove it is prepared.
+    for (const name of ['dxgi.dll', 'd3d11.dll', 'd3d12.dll']) await writeFile(path.join(system32, name), 'ready');
     await writeFile(path.join(runtime, 'files/lib/wine/x86_64-windows/libnghttp2.dll'), x64Dll);
     await writeFile(path.join(runtime, 'files/lib/wine/aarch64-windows/libnghttp2.dll'), arm64Dll);
     const sha = (bytes: Buffer) => createHash('sha256').update(bytes).digest('hex');
