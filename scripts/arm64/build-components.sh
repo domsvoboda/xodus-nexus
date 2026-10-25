@@ -141,11 +141,12 @@ rm -rf "$RUNTIME"
 cp -a --reflink=auto "$BASE_DIR/$DIRECTORY" "$RUNTIME"
 HOST_PE="$(lock layout.hostPeArch)"; PFX="$(lock layout.defaultPrefix)"
 for dll in xgameruntime.dll winhttp.dll mscoree.dll windows.web.dll twinapi.appcore.dll libnghttp2.dll; do
-  install -m 644 "$OUT/$dll" "$RUNTIME/files/lib/wine/$HOST_PE/$dll"
-  install -m 644 "$OUT/$dll" "$RUNTIME/$PFX/drive_c/windows/system32/$dll"
+  install -D -m 644 "$OUT/$dll" "$RUNTIME/files/lib/wine/$HOST_PE/$dll"
+  install -D -m 644 "$OUT/$dll" "$RUNTIME/$PFX/drive_c/windows/system32/$dll"
 done
-install -m 644 "$OUT/libvkd3d-shader-1.dll" "$RUNTIME/files/lib/vkd3d/$HOST_PE/libvkd3d-shader-1.dll"
-install -m 644 "$OUT/libvkd3d-shader-1.dll" "$RUNTIME/$PFX/drive_c/windows/system32/libvkd3d-shader-1.dll"
+# The arm64 base ships no vkd3d PE directory for aarch64; create it.
+install -D -m 644 "$OUT/libvkd3d-shader-1.dll" "$RUNTIME/files/lib/vkd3d/$HOST_PE/libvkd3d-shader-1.dll"
+install -D -m 644 "$OUT/libvkd3d-shader-1.dll" "$RUNTIME/$PFX/drive_c/windows/system32/libvkd3d-shader-1.dll"
 cp "$OUT/arm64-components.json" "$RUNTIME/XODUS_NEXUS_ARM64_EXPERIMENT.json"
 
 # ---- smoke test: arm64 Wine runs an x86_64 PE through its bundled FEX ------
