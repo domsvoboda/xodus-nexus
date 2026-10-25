@@ -71,6 +71,7 @@ export class BackendManager {
       if (capabilities.run) {
         const launch = await run(binaryPath, ['run', '--help'], { maxOutput: 100_000 });
         capabilities.licenseCache = launch.code === 0 && /(?:^|\s)--license-cache(?:\s|$)/m.test(launch.output);
+        capabilities.offlineLaunch = Boolean(capabilities.licenseCache && /(?:^|\s)--offline(?:\s|$)/m.test(launch.output));
       }
       return capabilities.login && capabilities.streaming ? capabilities : null;
     } catch { return null; }

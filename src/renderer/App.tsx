@@ -101,9 +101,13 @@ export function TopStatus({ data, go }: { data: AppSnapshot; go: (page: Page) =>
     nexusRuntimeUpdateAvailable(data.runtime) ? `Runtime ${data.runtime.nexusVersion?.replace(/^runtime-/, '') ?? ''}`.trim() : '',
   ].filter(Boolean);
   const updateTitle = [restart ? 'Restart to finish launcher update.' : '', updates.length ? `Available updates: ${updates.join(', ')}` : ''].filter(Boolean).join(' ');
+  const offline = data.backend.available && data.connectivity?.state === 'offline';
   return <div className="top-status">
     {updates.length || restart ? <button className="update-notice" title={updateTitle} aria-label={updateTitle} onClick={() => go('settings')}><ArrowDownToLine /><strong>{restart ? 'Restart available' : 'Update available'}</strong></button> : null}
-    <StatusDot tone={data.backend.available ? 'green' : 'red'} /><span>{data.backend.available ? 'Xodus ready' : 'Backend offline'}</span><button title="Settings" onClick={() => go('settings')}><Settings2 /></button>
+    <StatusDot tone={!data.backend.available ? 'red' : offline ? 'amber' : 'green'} />
+    <span title={offline ? `${data.connectivity?.reason ?? 'Microsoft is unreachable.'} Installed games launch with their stored offline licenses.` : undefined}>
+      {!data.backend.available ? 'Backend offline' : offline ? 'Offline' : 'Xodus ready'}
+    </span><button title="Settings" onClick={() => go('settings')}><Settings2 /></button>
   </div>;
 }
 

@@ -52,6 +52,7 @@ export function demoAccountLibrary(kind: AccountLibraryPage['kind'], artwork: Re
 export function demoSnapshot(versions: DemoVersions = { launcher: '0.0.0', backend: '0.0.0',
   backendCommit: '0'.repeat(40), backendCompatibility: 'demo' }, artwork: ReadonlyMap<string, DemoArtwork> = new Map()): AppSnapshot {
   return {
+    connectivity: { state: 'online', checkedAt: '2026-01-01T00:00:00.000Z' },
     backend: {
       available: true, source: 'managed', binaryPath: '/home/demo/.config/xodus-nexus/xodus-backends/current', commit: versions.backendCommit, upstreamCommit: versions.backendCommit, updateAvailable: false, checking: false, updating: false, externalRoot: '',
       capabilities: { commands: ['login', 'logout', 'download', 'streaming', 'run', 'license', 'extract', 'profile', 'library'], account: true, profile: true, library: true, login: true, externalAuth: true, logout: true, download: true, streaming: true, streamingProgressJson: true, streamingControls: true, run: true, version: '0.5.0' },

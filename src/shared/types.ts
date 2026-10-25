@@ -17,6 +17,8 @@ export interface BackendCapabilities {
   licenseCache?: boolean;
   /** `offline-pc`: show or change the account's designated offline PC. */
   offlinePc?: boolean;
+  /** `run --offline`: skip Microsoft entirely and launch on the stored offline license. */
+  offlineLaunch?: boolean;
   streamingControls?: boolean;
   streamingBandwidthLimit?: boolean;
   packageSelection?: boolean;
@@ -231,9 +233,18 @@ export interface OfflinePermissions {
   checkedAt: string;
 }
 
+/** Reachability of Microsoft's sign-in hosts, probed by the launcher. */
+export interface ConnectivityStatus {
+  state: 'online' | 'offline' | 'unknown';
+  checkedAt?: string;
+  /** Why the launcher considers Microsoft unreachable. */
+  reason?: string;
+}
+
 export interface AppSnapshot {
   backend: BackendStatus;
   runtime: RuntimeStatus;
+  connectivity?: ConnectivityStatus;
   games: Game[];
   downloads: DownloadTask[];
   settings: Settings;

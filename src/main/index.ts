@@ -1,11 +1,11 @@
-import { app, BrowserWindow, clipboard, dialog, ipcMain, nativeImage, Notification, powerSaveBlocker, screen, shell } from 'electron';
+import { app, BrowserWindow, clipboard, dialog, ipcMain, nativeImage, net, Notification, powerSaveBlocker, screen, shell } from 'electron';
 import { constants, createWriteStream, promises as fs, readFileSync, writeFileSync } from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
 import { fileURLToPath } from 'node:url';
 import { randomUUID } from 'node:crypto';
 import type { ChildProcessWithoutNullStreams } from 'node:child_process';
-import type { AppSnapshot, AuthStatus, DownloadTask, Game, GameLaunchOptions, GameOperation, GameUpdate, InstallRequest, Settings } from '../shared/types.js';
+import type { AppSnapshot, AuthStatus, ConnectivityStatus, DownloadTask, Game, GameLaunchOptions, GameOperation, GameUpdate, InstallRequest, Settings } from '../shared/types.js';
 import { downloadFailure, safeProductId } from '../shared/utils.js';
 import { downloadLimitArgs, downloadLimitKiB } from '../shared/download-bandwidth.js';
 import { DownloadBandwidthControls, isBandwidthOnlyPatch } from './download-bandwidth.js';
@@ -28,6 +28,7 @@ import { spawnGameProcess, type GameProcess } from './game-process.js';
 import { gameLocaleEnvironment, manifestLocales, manifestTitleId, supportedGameLocale } from './game-locale.js';
 import { antiCheatEnvironment } from './anti-cheat.js';
 import { gameLaunchArguments, preparedGameWine } from './game-launch.js';
+import { ConnectivityMonitor } from './connectivity.js';
 import { prepareGameWrapper, type GameWrapper } from './game-wrapper.js';
 import { normalizeLaunchTools } from '../shared/launch-tools.js';
 import { LauncherUpdater } from './launcher-update.js';
@@ -80,6 +81,7 @@ let store: StateStore;
 let backend: BackendManager;
 let backendDiagnostics: BackendDiagnostics;
 let runtime: RuntimeManager;
+let connectivity: ConnectivityMonitor | undefined;
 const operations = new Map<string, ChildProcessWithoutNullStreams>();
 const gameProcesses = new Map<string, GameProcess>();
 const cancelledDownloads = new Set<string>();
@@ -199,6 +201,7 @@ function snapshot(): AppSnapshot {
   return {
     backend: backend.current,
     runtime: runtime.current,
+    connectivity: connectivity?.current ?? { state: 'unknown' },
     games: structuredClone(store.games),
     downloads: structuredClone(store.downloads.map(task => downloadCancellations.has(task.id)
       ? { ...task, cancelling: true, canPause: false, phase: 'Cancelling download and checking files…' } : task)),
@@ -859,8 +862,14 @@ async function prepareGameLaunch(id: string): Promise<void> {
     throw new Error('The active runtime has cloud saves without the required service bridge. Update the active runtime in Settings.');
   }
   const dataRoot = path.dirname(store.settings.runtimeRoot);
+  // Decide "offline" here, once, from a fresh probe: the backend then skips
+  // its ticket, license and PlayFab requests and the runtime signs in from
+  // its cached identity, instead of each waiting for its own connect timeout.
+  const reachability: ConnectivityStatus = connectivity ? await connectivity.check() : { state: 'unknown' };
+  const offlineLaunch = reachability.state === 'offline';
   const args = gameLaunchArguments(inspected, wine, store.settings.market, backend.current.linuxRunPatch,
-    backend.current.capabilities.licenseCache ? licenseCacheDirectory(dataRoot) : undefined);
+    backend.current.capabilities.licenseCache ? licenseCacheDirectory(dataRoot) : undefined,
+    offlineLaunch && Boolean(backend.current.capabilities.offlineLaunch));
   const operationId = `game-${id}`;
   const logDirectory = path.join(dataRoot, 'logs');
   const logPath = path.join(logDirectory, `${id}-latest.log`);
@@ -894,6 +903,7 @@ async function prepareGameLaunch(id: string): Promise<void> {
   writeLaunchLog(`Mode: package manifest; cloud saves: ${cloudRuntime ? 'enabled' : 'not available in active runtime'}; verbose logs: ${verboseLogs ? 'on' : 'off'}`);
   writeLaunchLog(`Backend: ${binary}`);
   writeLaunchLog(`Wine: ${wine}`);
+  writeLaunchLog(`Connectivity: ${reachability.state}${reachability.reason ? ` (${reachability.reason})` : ''}; offline launch: ${offlineLaunch ? 'yes' : 'no'}`);
   emitSnapshot();
   let serviceSession: XodusServiceSession | undefined;
   let launchWrapper: GameWrapper | undefined;
@@ -924,6 +934,12 @@ async function prepareGameLaunch(id: string): Promise<void> {
       return [] as string[];
     });
     if (contentRoots.length) environment.XODUS_CONTENT_ROOTS = [environment.XODUS_CONTENT_ROOTS, ...contentRoots.map(root => 'Z:' + root.replaceAll('/', '\\'))].filter(Boolean).join(';');
+    if (offlineLaunch) {
+      // The runtime treats the network as unreachable at once and completes
+      // the Xbox sign-in from its cached identity (xuser-offline-identity-v1).
+      environment.XODUS_FORCE_OFFLINE = '1';
+      addGameLog(`Microsoft is unreachable (${reachability.reason ?? 'no answer'}); launching offline with the stored license and the cached Xbox identity.`);
+    }
     if (locale) {
       addGameLog(`Selected package language: ${locale}.`);
       await syncPrefixUserLocale(wineCommand, protonRunner ? path.join(compatibilityDataPath, 'pfx') : legacyPrefixRoot, locale, environment, addGameLog);
@@ -1828,6 +1844,13 @@ app.whenReady().then(async () => {
   backend = new BackendManager(app.getPath('userData'), store.settings.externalXodusRoot, emitLog, () => keyringSupport.busy || downloadCancellations.size > 0 || operations.size > 0 || installQueue.size > 0 || preparingInstall || runtime?.current.updating === true);
   await backend.refresh();
   await runtime.refresh();
+  if (!demoMode) {
+    // Reachability of Microsoft's sign-in hosts, kept current for the header
+    // and consulted before a launch so offline play starts without waiting
+    // for the backend's and the runtime's own connect timeouts.
+    connectivity = new ConnectivityMonitor({ interfaceOnline: () => net.isOnline(), onChange: scheduleSnapshot });
+    connectivity.start();
+  }
   void backend.checkUpdate().then(async () => {
     // First run: install the prebuilt backend automatically so the setup
     // wizard's sign-in step works without a detour into Settings. Users who
@@ -1874,6 +1897,7 @@ app.on('window-all-closed', () => {
 app.on('will-quit', () => gameDisplay.stop());
 
 app.on('before-quit', (event) => {
+  connectivity?.stop();
   walletUnlocker.cancel();
   installQueue.stop();
   installQueue.stop();

@@ -11,6 +11,16 @@ it('keeps backend health and launcher update notices distinct', () => {
   const html = renderToStaticMarkup(<TopStatus data={data} go={() => {}} />);
   expect(html).toContain('Update available'); expect(html).toContain('Xodus ready');
 });
+it('shows the offline verdict only while the backend itself is available', () => {
+  const data = demoSnapshot(); data.connectivity = { state: 'offline', reason: 'No network interface is connected.' };
+  const offline = renderToStaticMarkup(<TopStatus data={data} go={() => {}} />);
+  expect(offline).toContain('status-dot amber'); expect(offline).toContain('>Offline<'); expect(offline).toContain('stored offline licenses');
+  data.backend.available = false;
+  const noBackend = renderToStaticMarkup(<TopStatus data={data} go={() => {}} />);
+  expect(noBackend).toContain('status-dot red'); expect(noBackend).toContain('Backend offline'); expect(noBackend).not.toContain('>Offline<');
+  data.backend.available = true; data.connectivity = { state: 'unknown' };
+  expect(renderToStaticMarkup(<TopStatus data={data} go={() => {}} />)).toContain('Xodus ready');
+});
 it.each([
   [false, false, false], [true, false, false], [false, true, false], [false, false, true],
   [true, true, false], [true, false, true], [false, true, true], [true, true, true],
