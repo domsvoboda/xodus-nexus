@@ -27,7 +27,7 @@ The runtime does not provide a unique platform device identifier.
 - `async-provider-contract-probe.c`: Begin setup vs provider errors, pending
   work, work errors, missing completion, first-terminal-result wins, private
   provider block, and deleting the user block during immediate completion
-  without premature provider cleanup (58 checks).
+  without premature provider cleanup (116 checks).
 - `async-completion-lifetime-probe.c`: 400 completions with block deletion,
   result consumption and block reuse (2,805 checks). Callback changes for a
   reused block are made **before** Begin, matching the native snapshot contract.
@@ -35,6 +35,12 @@ The runtime does not provide a unique platform device identifier.
   work, terminal-state rejection and original failure preservation (16 checks).
   A vectored fault handler records the released DLL's read-0x20 crash without
   opening a debugger. No real game, account, cloud or successful-save claim.
+- The three async probes take an optional DLL path as `argv[1]` (default
+  `xgameruntime.dll`). Under Wine the path is ignored and the installed builtin
+  loads (and passes) unless `WINEDLLOVERRIDES=xgameruntime=n` is set. With `=n`
+  a non-Wine (e.g. Microsoft) DLL loads from the path; a Wine build with its
+  builtin marker intact fails to load. To test another Wine build, swap the DLL
+  in `lib/wine/x86_64-windows`.
 - `winrt-json-probe.c`: real WinRT JSON activation, Parse, GetObject and
   nested array/object access (9 checks). Required by XUser endpoint parsing;
   HTTP 200 alone does not establish successful account initialization.

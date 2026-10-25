@@ -39,10 +39,10 @@ static HRESULT WINAPI provider(XAsyncOp op, const XAsyncProviderData *data)
     }
     return S_OK;
 }
-int main(void)
+int main(int argc, char **argv)
 {
     AddVectoredExceptionHandler(1, exception);
-    HMODULE dll = LoadLibraryW(L"xgameruntime.dll");
+    HMODULE dll = LoadLibraryA(argc > 1 ? argv[1] : "xgameruntime.dll");
     HRESULT (WINAPI *query)(const GUID *, const GUID *, void **) = dll ? (void *)GetProcAddress(dll, "QueryApiImpl") : NULL;
     CHECK("threading", query && query(&CLSID_XThreadingImpl, &IID_IXThreadingImpl, (void **)&threads) == S_OK);
     if (!threads) return 1;
