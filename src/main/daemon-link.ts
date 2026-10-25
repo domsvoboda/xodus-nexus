@@ -28,6 +28,8 @@ export class DaemonLink extends EventEmitter<DaemonLinkEvents> {
   private timer: ReturnType<typeof setTimeout> | undefined;
   private stopped = true;
   private current: DaemonState | undefined;
+  /** The game this launcher owns; re-claimed after the daemon restarts. */
+  private owned: string | undefined;
   private readonly connectImpl: typeof DaemonConnection.connect;
 
   constructor(private readonly options: DaemonLinkOptions) {
@@ -67,6 +69,8 @@ export class DaemonLink extends EventEmitter<DaemonLinkEvents> {
       });
       connection.send({ schema: 1, type: 'hello', client: 'electron', version: this.options.version });
       connection.send({ schema: 1, type: 'subscribe' });
+      // The daemon restarted under our game: claim it back before its orphan grace ends.
+      if (this.owned) connection.send({ schema: 1, type: 'attach', operationId: this.owned });
       this.attempt = 0;
       this.emit('connected', true);
     } catch {
@@ -85,19 +89,26 @@ export class DaemonLink extends EventEmitter<DaemonLinkEvents> {
   private receive(frame: DaemonFrame): void {
     if (frame.type === 'hello' || frame.type === 'state') {
       this.current = frame.state;
+      const operation = frame.state.gameOperation;
+      if (this.owned && (!operation || operation.id !== this.owned || !['preparing', 'running', 'stopping'].includes(operation.status))) this.owned = undefined;
       this.emit('state', frame.state);
     }
   }
 
-  /** Asks the daemon to run the game; resolves with its operation id once accepted. */
-  async launch(gameId: string, env: Record<string, string>): Promise<string> {
+  /**
+   * Asks the daemon to run the game; resolves with its operation id once
+   * accepted. With `own`, the daemon closes the game when this launcher goes
+   * away (Game Mode, where Steam's Exit game ends Nexus).
+   */
+  async launch(gameId: string, env: Record<string, string>, own = false): Promise<string> {
     const connection = this.require();
     const requestId = randomUUID();
     const answer = connection.next((frame): frame is DaemonFrame & { type: 'accepted' | 'error' } =>
       (frame.type === 'accepted' || frame.type === 'error') && frame.requestId === requestId, 120_000);
-    connection.send({ schema: 1, type: 'launch', requestId, gameId, env, attach: false });
+    connection.send({ schema: 1, type: 'launch', requestId, gameId, env, attach: own });
     const frame = await answer;
     if (frame.type === 'error') throw new Error(frame.message);
+    if (own) this.owned = frame.operationId;
     return frame.operationId;
   }
 

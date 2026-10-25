@@ -20,6 +20,8 @@ export interface SessionRecord {
     startedAt: string;
     stopPrefix?: { command: string; args: string[] };
     env: Record<string, string>;
+    /** A client owned the game (Steam, or the launcher in Game Mode); absent in older records, read as owned. */
+    owned?: boolean;
   };
   service?: {
     pid: number;

@@ -79,4 +79,28 @@ describe('DaemonLink', () => {
     expect(connection.sent.at(-1)).toEqual({ schema: 1, type: 'reload' });
     link.stop();
   });
+
+  it('owns a launch it asked to own and claims it back after the daemon restarts, until the game ends', async () => {
+    vi.useFakeTimers();
+    const connections: FakeConnection[] = [];
+    const connect = vi.fn(async () => { const connection = new FakeConnection(); connections.push(connection); return connection as unknown as DaemonConnection; });
+    const link = new DaemonLink({ socketPath: '/run/x.sock', version: '1', connect, backoffMs: [100] });
+    link.start();
+    await vi.advanceTimersByTimeAsync(0);
+    const accepted = link.launch('1', {}, true);
+    const request = connections[0].sent.find(frame => frame.type === 'launch') as Extract<ClientFrame, { type: 'launch' }>;
+    expect(request.attach).toBe(true);
+    connections[0].answer({ schema: 1, type: 'accepted', requestId: request.requestId, operationId: 'game-1' });
+    await accepted;
+    connections[0].answer({ schema: 1, type: 'state', state });
+    connections[0].close();
+    await vi.advanceTimersByTimeAsync(100);
+    expect(connections[1].sent).toContainEqual({ schema: 1, type: 'attach', operationId: 'game-1' });
+    connections[1].answer({ schema: 1, type: 'state', state: { ...state, gameOperation: { ...state.gameOperation, status: 'complete' as const } } });
+    connections[1].close();
+    await vi.advanceTimersByTimeAsync(100);
+    expect(connections[2].sent.map(frame => frame.type)).toEqual(['hello', 'subscribe']);
+    link.stop();
+    vi.useRealTimers();
+  });
 });

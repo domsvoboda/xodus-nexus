@@ -69,6 +69,8 @@ export class GameController {
   private preparing = false;
   private running: Running | undefined;
   private ownerId: string | undefined;
+  /** The running game belongs to a client (even one that has since gone): it must not outlive it. */
+  private ownedGame = false;
   private cancelWhenStarted = false;
   private closing = false;
   private inspected: DaemonState['inspected'];
@@ -170,6 +172,7 @@ export class GameController {
     if (this.busy) throw new DaemonError('busy', 'Another game is already starting or running.');
     this.preparing = true;
     this.ownerId = ownerId;
+    this.ownedGame = Boolean(ownerId);
     this.cancelWhenStarted = false;
     this.closing = false;
     try {
@@ -210,12 +213,13 @@ export class GameController {
       if (this.session.current && this.session.current.status === 'preparing') throw new Error('Xodus is still preparing; try stopping again in a moment.');
       throw new Error('No game launch is currently active.');
     }
-    if (running.kind === 'launched') { await this.session.cancel(); return; }
-    running.game.operation.status = 'stopping';
-    running.game.operation.phase = 'Stopping Xodus and Wine…';
+    // Stop closes the game like Exit game does, so the runtime still uploads its
+    // saves; pressing Stop again while it closes forces it.
+    if (!this.closing) { void this.close('stopped from Nexus'); return; }
+    this.options.log('Stop pressed again; forcing the game to stop.');
     this.publish();
-    await running.game.stop();
-    setTimeout(() => { if (this.running === running) void running.game.forceStop().catch(error => this.options.log(`Force stop failed: ${(error as Error).message}`)); }, 8_000).unref?.();
+    const game: Closable = running.kind === 'launched' ? running.active.process : running.game;
+    await game.forceStop().catch(error => this.options.log(`Force stop failed: ${(error as Error).message}`));
   }
 
   /** A reconnecting client takes ownership of the running game it names. */
@@ -223,6 +227,7 @@ export class GameController {
     const current = this.running?.kind === 'launched' ? this.running.active.operationId : this.running?.game.operation.id;
     if (!current || current !== operationId) return false;
     this.ownerId = ownerId;
+    this.ownedGame = true;
     this.cancelWhenStarted = false;
     if (this.orphanTimer) { clearTimeout(this.orphanTimer); this.orphanTimer = undefined; }
     void this.persist();
@@ -261,6 +266,7 @@ export class GameController {
   private finished(ownerId: string | undefined): void {
     this.running = undefined;
     this.stopFocus = undefined;
+    this.ownedGame = false;
     this.closing = false;
     if (this.ownerId === ownerId) this.ownerId = undefined;
     void this.persist();
@@ -292,9 +298,13 @@ export class GameController {
         const running: Running = { kind: 'adopted', game, finished };
         this.running = running;
         void finished.finally(() => this.finished(undefined));
-        this.options.log(`Re-attached to the running game ${record.game.title}; waiting for its Steam client to reconnect.`);
-        this.orphanTimer = setTimeout(() => { if (this.running === running && !this.ownerId) void this.close('no Steam client reclaimed it after the restart'); }, this.options.orphanGraceMs ?? 60_000);
-        this.orphanTimer.unref?.();
+        // A game nobody owned (launched from Nexus in Desktop Mode) simply keeps running.
+        this.ownedGame = record.game.owned !== false;
+        if (this.ownedGame) {
+          this.options.log(`Re-attached to the running game ${record.game.title}; waiting for its client to reconnect.`);
+          this.orphanTimer = setTimeout(() => { if (this.running === running && !this.ownerId) void this.close('no client reclaimed it after the restart'); }, this.options.orphanGraceMs ?? 60_000);
+          this.orphanTimer.unref?.();
+        } else this.options.log(`Re-attached to the running game ${record.game.title}.`);
       } else this.options.log(`The previous game ${record.game.title} is no longer running.`);
     }
     await this.persist();
@@ -335,8 +345,9 @@ export class GameController {
         operationId: active.operationId, gameId: active.gameId, title: active.operation.title, pgid,
         logPath: active.operation.logPath, outputFile: active.outputFile, startedAt: active.operation.startedAt, stopPrefix: active.stopPrefix,
         env: Object.fromEntries(Object.entries(this.clientEnvironment).filter((entry): entry is [string, string] => typeof entry[1] === 'string')),
+        owned: this.ownedGame,
       };
-    } else if (running?.kind === 'adopted') record.game = running.game.record;
+    } else if (running?.kind === 'adopted') record.game = { ...running.game.record, owned: this.ownedGame };
     const service = this.services.status;
     const live = this.services.current;
     const pid = live?.pid;

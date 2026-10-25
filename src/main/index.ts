@@ -1420,7 +1420,9 @@ function registerIpc(): void {
     if (!daemonRunsGames()) return launchGame(id);
     ensureIdle('launch');
     await prepareSystemWallet();
-    await daemonLink!.launch(id, filterClientEnvironment(process.env));
+    // In Game Mode Steam's Exit game ends Nexus; own the game so the daemon then closes it gracefully.
+    const gameMode = Boolean(process.env.XDG_CURRENT_DESKTOP?.split(':').some(part => part.toLowerCase() === 'gamescope'));
+    await daemonLink!.launch(id, filterClientEnvironment(process.env), gameMode);
   });
   ipcMain.handle('add-to-steam', async (_event, id?: string) => {
     if (process.platform !== 'linux') throw Error('Steam integration is currently supported on Linux only.');
