@@ -35,7 +35,7 @@ describe.skipIf(!linux)('AdoptedGame', () => {
 
   it('verifies the launch id in the process environment and watches a group it did not spawn', async () => {
     // The environment exists before the script runs; wait for the handlers before signalling.
-    child = spawn(process.execPath, ['-e', 'process.on("SIGINT",()=>process.exit(0));setInterval(()=>{},1000);process.stdout.write("READY\n")'], { detached: true, stdio: ['ignore', 'pipe', 'ignore'], env: { ...process.env, XODUS_NEXUS_LAUNCH_ID: 'game-abc' } });
+    child = spawn(process.execPath, ['-e', 'process.on("SIGINT",()=>process.exit(0));setInterval(()=>{},1000);process.stdout.write("READY\\n")'], { detached: true, stdio: ['ignore', 'pipe', 'ignore'], env: { ...process.env, XODUS_NEXUS_LAUNCH_ID: 'game-abc' } });
     await once(child.stdout!, 'data');
     const pgid = child.pid!;
     await vi.waitFor(async () => expect(await processCarries(pgid, 'XODUS_NEXUS_LAUNCH_ID', 'game-abc')).toBe(true));
@@ -53,7 +53,7 @@ describe.skipIf(!linux)('AdoptedGame', () => {
   });
 
   it('force-stops a group that ignores the interrupt', async () => {
-    child = spawn(process.execPath, ['-e', 'process.on("SIGINT",()=>{});process.on("SIGTERM",()=>{});setInterval(()=>{},1000);process.stdout.write("READY\n")'], { detached: true, stdio: ['ignore', 'pipe', 'ignore'], env: { ...process.env, XODUS_NEXUS_LAUNCH_ID: 'game-def' } });
+    child = spawn(process.execPath, ['-e', 'process.on("SIGINT",()=>{});process.on("SIGTERM",()=>{});setInterval(()=>{},1000);process.stdout.write("READY\\n")'], { detached: true, stdio: ['ignore', 'pipe', 'ignore'], env: { ...process.env, XODUS_NEXUS_LAUNCH_ID: 'game-def' } });
     await once(child.stdout!, 'data');
     const record = { operationId: 'game-def', gameId: 'def', title: 'Stubborn', pgid: child.pid!, startedAt: 'now', env: {} };
     await vi.waitFor(async () => expect(await AdoptedGame.verify(record)).toBe(true));
