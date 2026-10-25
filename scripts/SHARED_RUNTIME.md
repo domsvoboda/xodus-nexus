@@ -344,12 +344,33 @@ config.sub does not know arm64ec). `d3dcompiler_47` is part of the set because
 the arm64 base links vkd3d-shader into it statically, so the HLSL
 state-keyword patch cannot travel in `libvkd3d-shader-1.dll` there. Machine
 types are verified (ARM64X reports ARM64; ARM64EC reports AMD64 and is told
-apart by its CHPE load-config metadata), the overlays are installed into
-`aarch64-windows` and `default_pfx_arm64/.../system32`, and a smoke test boots
-a fresh prefix with the arm64 Wine and runs an arm64 and an x86_64 probe that
-load the overlaid `xgameruntime.dll`. Not yet done: assembly through
-`assemble-shared-runtime.mjs` (aarch64 host shim and FFmpeg libraries, ARM64X
-DXVK, both PE sets), a release job, and on-device verification.
+apart by its CHPE load-config metadata). [`arm64/collect-components.mjs`](arm64/collect-components.mjs)
+then produces a components directory with the same contract as the x86_64
+build: the pinned-source provenance from `--prepare-only`, those PE modules,
+the compatibility layer from `runtime-compat/build.mjs` (the `wine-launcher`
+shim compiled for aarch64; `PlayFabGameSave.dll` and
+`gaming-services-version.exe` stay x86_64 and run through the base's
+ARM64EC/FEX path like the games they serve), DXVK built for `arm64ec` by
+`build-runtime-dxvk.mjs` (same pinned sources, patch and native compiler
+tests; a generated llvm-mingw cross file that pre-includes the standard
+headers libc++ does not provide transitively) and the licence texts.
+`build-runtime-media.mjs` builds the pinned FFmpeg libraries for the host it
+runs on, so the workflow's `media` job runs on `ubuntu-22.04-arm`.
+
+`assemble-shared-runtime.mjs` detects the base layout
+([`runtime-layout.mjs`](runtime-layout.mjs)), refuses components built for the
+other PE architecture, overlays into `aarch64-windows`,
+`default_pfx_arm64/.../system32` and `files/lib/aarch64-linux-gnu`, replaces
+`files/bin-arm64/wine` with the shim and records `arch`, `hostPeArch` and
+`componentsByArch` in `XODUS_NEXUS_PATCH.json`. The script then boots a fresh
+prefix with the assembled runtime, runs an arm64 and an x86_64 probe that load
+the overlaid `xgameruntime.dll`, checks the default prefix carries the
+overlaid DXVK and d3dcompiler, and packages
+`xodus-nexus-runtime-<version>-aarch64.tar.xz` with its SHA-512 and
+corresponding source. The workflow uploads that as the `nexus-runtime-aarch64`
+candidate; it is never published from CI. Not yet done: running the x86_64
+contract, HTTP/2, media and DXVK probe suites under the arm64 runtime (they
+are built by the x86_64 pipeline only), and on-device verification.
 
 ## Patch sequence
 
