@@ -12,13 +12,17 @@ static XTaskQueueHandle queue;
 static LONG callbacks, cleanups, results, cancels, checks, failures;
 static HRESULT outcome;
 static SIZE_T payload;
-static BOOL consume, reuse;
+static BOOL consume, reuse, slow_results;
+static HANDLE race_start;
+static LONG race_successes;
+#define RACERS 4
 #define CHECK(x) do { checks++; if (!(x)) { failures++; printf("FAIL %d\n", __LINE__); } } while (0)
 
 static HRESULT WINAPI provider(XAsyncOp op, const XAsyncProviderData *data)
 {
     if (op == XAsyncOp_GetResult && data->buffer) *(DWORD *)data->buffer = 0x12345678;
     if (op == XAsyncOp_GetResult) InterlockedIncrement(&results);
+    if (op == XAsyncOp_GetResult && slow_results) Sleep(3);
     if (op == XAsyncOp_Cancel) InterlockedIncrement(&cancels);
     if (op == XAsyncOp_Cleanup) InterlockedIncrement(&cleanups);
     return S_OK;
@@ -50,6 +54,32 @@ static void WINAPI completed(XAsyncBlock *block)
     } else {
         CHECK(VirtualFree(block, 0, MEM_RELEASE));
     }
+}
+
+static DWORD WINAPI race_get_result(void *block)
+{
+    DWORD result = 0;
+    WaitForSingleObject(race_start, INFINITE);
+    if (IXThreadingImpl_XAsyncGetResult(threads, block, NULL, sizeof(result), &result, NULL) == S_OK)
+        InterlockedIncrement(&race_successes);
+    return 0;
+}
+
+/* Racing GetResult calls while the callback is still running: exactly one
+ * caller gets the results and the provider hands them out once. */
+static void WINAPI raced(XAsyncBlock *block)
+{
+    HANDLE racers[RACERS];
+    LONG entry = cleanups;
+    int i;
+    ResetEvent(race_start);
+    race_successes = 0;
+    for (i = 0; i < RACERS; i++) racers[i] = CreateThread(NULL, 0, race_get_result, block, 0, NULL);
+    SetEvent(race_start);
+    CHECK(WaitForMultipleObjects(RACERS, racers, TRUE, 10000) == WAIT_OBJECT_0);
+    for (i = 0; i < RACERS; i++) CloseHandle(racers[i]);
+    CHECK(race_successes == 1);
+    CHECK(cleanups == entry);
 }
 
 int main(int argc, char **argv)
@@ -89,6 +119,23 @@ int main(int argc, char **argv)
     CHECK(cleanups == 500);
     CHECK(results == 100);
     CHECK(cancels == 0);
+    race_start = CreateEventA(NULL, TRUE, FALSE, NULL);
+    slow_results = TRUE;
+    for (i = 0; i < 50; i++) {
+        LONG before = cleanups, handed = results;
+        XAsyncBlock *block = VirtualAlloc(NULL, 4096, MEM_COMMIT | MEM_RESERVE, PAGE_READWRITE);
+        CHECK(block != NULL);
+        if (!block) return 1;
+        block->queue = queue;
+        block->callback = raced;
+        CHECK(IXThreadingImpl_XAsyncBegin(threads, block, NULL, NULL, "race", provider) == S_OK);
+        IXThreadingImpl_XAsyncComplete(threads, block, S_OK, sizeof(DWORD));
+        CHECK(IXThreadingImpl_XTaskQueueDispatch(threads, queue, XTaskQueuePort_Completion, 0));
+        CHECK(results == handed + 1);
+        CHECK(cleanups == before + 1);
+        CHECK(VirtualFree(block, 0, MEM_RELEASE));
+    }
+    CloseHandle(race_start);
     IXThreadingImpl_XTaskQueueCloseHandle(threads, queue);
     IXThreadingImpl_Release(threads);
     printf("ASYNC CHECKS %ld FAILURES %ld CALLBACKS %ld CLEANUPS %ld\n", checks, failures, callbacks, cleanups);
