@@ -34,7 +34,7 @@ index 48cb705..2aa2a48 100644
      connectivityHint->ianaInterfaceType = 6;
      connectivityHint->networkInitialized = TRUE;
 diff --git a/dlls/xgameruntime/xuser.c b/dlls/xgameruntime/xuser.c
-index 7306406..d9f02f0 100644
+index 7306406..d59cc06 100644
 --- a/dlls/xgameruntime/xuser.c
 +++ b/dlls/xgameruntime/xuser.c
 @@ -107,6 +107,7 @@ struct XUser
@@ -298,14 +298,14 @@ index 7306406..d9f02f0 100644
      if (SUCCEEDED(com)) CoUninitialize();
      EnterCriticalSection( &user->deviceAuthSection );
      user->initResult = hr;
-@@ -2671,6 +2886,10 @@ static HRESULT xsts_authorize_privilege( XUserHandle user, const char *relyingPa
-     DWORD status = 0;
-     BOOL requested_title = title;
+@@ -2673,6 +2888,10 @@ static HRESULT xsts_authorize_privilege( XUserHandle user, const char *relyingPa
+ 
+     if (granted) *granted = FALSE;
  
 +    /* A cached offline identity has no tokens; report the network as
 +     * unreachable, which is what an online attempt would produce. */
 +    if (user->offline || !user->userToken) return HRESULT_FROM_WIN32( 12029 );
 +
-     if (granted) *granted = FALSE;
- 
      TRACE( "user %p, relyingParty %s, title %d.\n", user, debugstr_a( relyingParty ), title );
+ 
+     if (!user->deviceToken || !user->userToken || !user->proofKey)
