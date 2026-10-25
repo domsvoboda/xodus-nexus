@@ -22,7 +22,9 @@
  * which app a window belongs to. Steam's own reaper makes that happen for
  * games it spawned; a game the Nexus daemon spawned needs it done by hand,
  * or Game Mode never shows it. With --watch-ms it keeps rescanning (0 =
- * until killed) so windows created later are stamped too.
+ * until killed) so windows created later are stamped too. A watch also ends
+ * when the process that started it (the daemon) goes away, so a daemon crash
+ * never leaves a stray marker behind; the restarted daemon starts a new one.
  *
  * Exit status: 0 at least one window matched (always 0 after a mark/watch
  * run), 1 none matched, 2 on usage or X errors (no display, root window
@@ -410,6 +412,7 @@ int main(int argc, char **argv)
     Atom net_client_list, net_wm_pid, wm_protocols, wm_delete_window, steam_game;
     static Window windows[MAX_WINDOWS];
     struct timespec start;
+    pid_t parent = getppid();
 
     for (i = 1; i < argc; i++) {
         if (strcmp(argv[i], "--launch-id") == 0 && i + 1 < argc) {
@@ -489,6 +492,8 @@ int main(int argc, char **argv)
             /* Marking: keep going for the watch window; new windows appear late. */
             status = 0;
             if (watch_ms < 0 || (watch_ms > 0 && elapsed_ms(&start) >= watch_ms)) break;
+            /* Reparented: the daemon that owns this watch died. */
+            if (getppid() != parent) break;
             sleep_ms(RESCAN_INTERVAL_MS * 2);
             continue;
         }

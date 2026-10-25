@@ -250,15 +250,19 @@ export class GameController {
     if (record.game) {
       if (await AdoptedGame.verify(record.game)) {
         const game = new AdoptedGame(record.game);
+        // The previous daemon's focus marker exited with it; keep gamescope on the game.
+        const stopFocus = keepSteamFocus(this.options.closeHelper, record.game.operationId, record.game.env, this.options.log);
+        void game.result.catch(() => undefined).finally(stopFocus);
         const finished = game.result.then(async () => {
           for (const listener of this.exitListeners) listener(game.operation.id, null, 'complete');
           game.dispose();
           await this.services.sweep().catch(() => undefined);
         });
-        this.running = { kind: 'adopted', game, finished };
+        const running: Running = { kind: 'adopted', game, finished };
+        this.running = running;
         void finished.finally(() => this.finished(undefined));
         this.options.log(`Re-attached to the running game ${record.game.title}; waiting for its Steam client to reconnect.`);
-        this.orphanTimer = setTimeout(() => { if (this.running === this.running && !this.ownerId) void this.close('no Steam client reclaimed it after the restart'); }, this.options.orphanGraceMs ?? 60_000);
+        this.orphanTimer = setTimeout(() => { if (this.running === running && !this.ownerId) void this.close('no Steam client reclaimed it after the restart'); }, this.options.orphanGraceMs ?? 60_000);
         this.orphanTimer.unref?.();
       } else this.options.log(`The previous game ${record.game.title} is no longer running.`);
     }
