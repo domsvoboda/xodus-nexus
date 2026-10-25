@@ -127,7 +127,7 @@ const metadata = {
   ...(mediaMetadata ? { media: mediaMetadata } : {}),
 };
 const metadataTemporary = path.join(options.output, `.nexus-metadata-${process.pid}`);
-metadata.features = [...new Set([...metadata.features, 'hlsl-state-keywords-v1', 'appstate-registration-v1', 'appconstrained-registration-v1', 'xtaskqueue-repeat-termination-v1', 'xgame-relaunch-current-user-v1', 'dxvk-constant-compare-v1'])];
+metadata.features = [...new Set([...metadata.features, 'hlsl-state-keywords-v1', 'appstate-registration-v1', 'appconstrained-registration-v1', 'xtaskqueue-repeat-termination-v1', 'xasync-deferred-cleanup-v1', 'xgame-relaunch-current-user-v1', 'dxvk-constant-compare-v1'])];
 await fs.writeFile(metadataTemporary, JSON.stringify(metadata, null, 2) + '\n', { flag: 'wx' });
 await fs.rename(metadataTemporary, path.join(options.output, 'XODUS_NEXUS_PATCH.json'));
 console.log(`Assembled isolated runtime: ${options.output}. Active runtime unchanged.`);

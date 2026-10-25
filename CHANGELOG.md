@@ -2,6 +2,7 @@
 
 ## Unreleased
 
+- Fix 007 First Light closing about 15 seconds after start (exit code 5): Xbox async results now stay valid until the game's completion callback returns, as on Windows.
 - Preserve Microsoft broker headers on both hosted sign-in steps. Thanks @Wyze3306 for the upstream fix adapted here.
 - Accept compact JWE tickets when requesting game content licenses without changing Xbox or Store sign-in token handling.
 - Show owned games with unsupported packages in My Library with the existing Unsupported badge and installation disabled.
