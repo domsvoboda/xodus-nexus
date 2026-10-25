@@ -9,7 +9,7 @@
 
 static IXThreadingImpl *threads;
 static XTaskQueueHandle queue;
-static LONG callbacks, cleanups, checks, failures;
+static LONG callbacks, cleanups, results, cancels, checks, failures;
 static HRESULT outcome;
 static SIZE_T payload;
 static BOOL consume, reuse;
@@ -18,6 +18,8 @@ static BOOL consume, reuse;
 static HRESULT WINAPI provider(XAsyncOp op, const XAsyncProviderData *data)
 {
     if (op == XAsyncOp_GetResult && data->buffer) *(DWORD *)data->buffer = 0x12345678;
+    if (op == XAsyncOp_GetResult) InterlockedIncrement(&results);
+    if (op == XAsyncOp_Cancel) InterlockedIncrement(&cancels);
     if (op == XAsyncOp_Cleanup) InterlockedIncrement(&cleanups);
     return S_OK;
 }
@@ -32,6 +34,10 @@ static void WINAPI completed(XAsyncBlock *block)
         CHECK(result == 0x12345678);
         /* Native XAsync runs provider Cleanup only after this callback
          * returns; titles may read result data after closing its handle. */
+        CHECK(cleanups == entry);
+        /* Results are returned once; a finished operation ignores Cancel. */
+        CHECK(IXThreadingImpl_XAsyncGetResult(threads, block, NULL, sizeof(result), &result, NULL) == E_ILLEGAL_METHOD_CALL);
+        IXThreadingImpl_XAsyncCancel(threads, block);
         CHECK(cleanups == entry);
     }
     InterlockedIncrement(&callbacks);
@@ -81,6 +87,8 @@ int main(int argc, char **argv)
     }
     CHECK(callbacks == 400);
     CHECK(cleanups == 500);
+    CHECK(results == 100);
+    CHECK(cancels == 0);
     IXThreadingImpl_XTaskQueueCloseHandle(threads, queue);
     IXThreadingImpl_Release(threads);
     printf("ASYNC CHECKS %ld FAILURES %ld CALLBACKS %ld CLEANUPS %ld\n", checks, failures, callbacks, cleanups);
