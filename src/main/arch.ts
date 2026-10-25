@@ -5,6 +5,10 @@ export const NEXUS_ARCHES: readonly NexusArch[] = ['x64', 'arm64'];
 export const BACKEND_ARCH_SUFFIX: Record<NexusArch, string> = { x64: 'x86_64', arm64: 'aarch64' };
 /** AppImages: `Xodus-Nexus-<version>-<suffix>.AppImage` (electron-builder's `${arch}`). */
 export const APPIMAGE_ARCH_SUFFIX: Record<NexusArch, string> = { x64: 'x86_64', arm64: 'arm64' };
+/** Runtime archives: `xodus-nexus-runtime-<version>-<suffix>.tar.xz` (uname -m names, like the backend). */
+export const RUNTIME_ARCH_SUFFIX: Record<NexusArch, string> = BACKEND_ARCH_SUFFIX;
+/** Matches the runtime archive suffix of either architecture, for release-name stripping. */
+export const RUNTIME_ARCHIVE_SUFFIX = /-(?:x86_64|aarch64)\.tar\.xz$/;
 /** ELF `e_machine` values the installers verify before executing anything. */
 export const ELF_MACHINE: Record<NexusArch, number> = { x64: 62, arm64: 183 };
 

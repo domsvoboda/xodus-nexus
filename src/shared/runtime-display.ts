@@ -2,7 +2,7 @@ import type { RuntimeStatus } from './types.js';
 
 export function nexusRuntimeUpdateAvailable(runtime: RuntimeStatus): boolean {
   return Boolean(runtime.nexusAvailable && runtime.nexusName &&
-    runtime.name !== runtime.nexusName.replace(/-x86_64\.tar\.xz$/, ''));
+    runtime.name !== runtime.nexusName.replace(/-(?:x86_64|aarch64)\.tar\.xz$/, ''));
 }
 
 // Describe the active runtime, not the available update. Older Nexus builds

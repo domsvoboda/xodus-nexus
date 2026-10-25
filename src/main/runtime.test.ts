@@ -9,6 +9,7 @@ import { run } from './process.js';
 describe('previewBaseRelease', () => {
   it('derives release names from versions, commits and asset names', () => {
     expect(nexusReleaseName('xodus-nexus-runtime-11.0-20261011-g3fd4ae10-x86_64.tar.xz')).toBe('xodus-nexus-runtime-11.0-20261011-g3fd4ae10');
+    expect(nexusReleaseName('xodus-nexus-runtime-11.0-20261011-g3fd4ae10-aarch64.tar.xz')).toBe('xodus-nexus-runtime-11.0-20261011-g3fd4ae10');
     expect(canonicalSnapshotName('3fd4ae1091339ef07d6f2d53fda8e15541f96ad3')).toBe('xodus-proton-3fd4ae10');
   });
 

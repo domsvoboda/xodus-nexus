@@ -167,6 +167,49 @@ describe('prepareProtonRunner', () => {
     expect(lines[3]).toBe('target path');
   });
 
+  it('uses the arm64 Proton layout: bin-arm64, default_pfx_arm64 and ARM64X overlays', async () => {
+    const root = await mkdtemp(path.join(tmpdir(), 'xodus-nexus-proton-arm64-'));
+    created.push(root);
+    const runtime = path.join(root, 'runtime');
+    const wine = path.join(runtime, 'files', 'bin-arm64', 'wine');
+    const wineserver = path.join(runtime, 'files', 'bin-arm64', 'wineserver');
+    const compat = path.join(root, 'compat');
+    const system32 = path.join(compat, 'pfx/drive_c/windows/system32');
+    const x64Dll = Buffer.from('x86_64 nghttp2 fixture');
+    const arm64Dll = Buffer.from('ARM64X nghttp2 fixture');
+    await mkdir(path.dirname(wine), { recursive: true });
+    await mkdir(path.join(runtime, 'files/share/default_pfx_arm64'), { recursive: true });
+    await mkdir(path.join(runtime, 'files/lib/wine/x86_64-windows'), { recursive: true });
+    await mkdir(path.join(runtime, 'files/lib/wine/aarch64-windows'), { recursive: true });
+    await mkdir(system32, { recursive: true });
+    await writeFile(wine, '#!/bin/sh\nprintf \'%s\\n\' "$PATH" "$WINEDLLOVERRIDES"\n');
+    await chmod(wine, 0o700);
+    await writeFile(wineserver, '#!/bin/sh\nexit 0\n');
+    await chmod(wineserver, 0o700);
+    await writeFile(path.join(runtime, 'proton'), '#!/bin/sh\nexit 0\n');
+    await chmod(path.join(runtime, 'proton'), 0o700);
+    for (const name of ['libvkd3d-utils-1.dll', 'dxgi.dll', 'd3d12.dll']) await writeFile(path.join(system32, name), 'ready');
+    await writeFile(path.join(runtime, 'files/lib/wine/x86_64-windows/libnghttp2.dll'), x64Dll);
+    await writeFile(path.join(runtime, 'files/lib/wine/aarch64-windows/libnghttp2.dll'), arm64Dll);
+    const sha = (bytes: Buffer) => createHash('sha256').update(bytes).digest('hex');
+    const metadata = { features: ['wine-winhttp-http2-v1'], components: { 'libnghttp2.dll': sha(x64Dll) },
+      componentsByArch: { 'x86_64-windows': { 'libnghttp2.dll': sha(x64Dll) }, 'aarch64-windows': { 'libnghttp2.dll': sha(arm64Dll) } } };
+    await writeFile(path.join(runtime, 'XODUS_NEXUS_PATCH.json'), JSON.stringify(metadata));
+
+    const runner = await prepareProtonRunner(wine, compat, path.join(root, 'steam'));
+    expect(await readFile(path.join(system32, 'libnghttp2.dll'))).toEqual(arm64Dll);
+    const { stdout } = await execFile(runner!.command);
+    const [executablePath, overrides] = stdout.trim().split('\n');
+    expect(executablePath.split(':')[0]).toBe(path.join(runtime, 'files', 'bin-arm64'));
+    expect(overrides).toContain('winhttp=b;libnghttp2=n');
+    expect(runner!.stopPrefix.args).toContain('--nexus-stop-prefix');
+    await execFile(runner!.stopPrefix.command, runner!.stopPrefix.args);
+
+    // An arm64 assembly without the per-architecture checksums must refuse, not fall back to the x86_64 set.
+    await writeFile(path.join(runtime, 'XODUS_NEXUS_PATCH.json'), JSON.stringify({ features: metadata.features, components: metadata.components }));
+    await expect(prepareProtonRunner(wine, compat, path.join(root, 'steam'))).rejects.toThrow(/libnghttp2\.dll checksum/);
+  });
+
   it('falls back when the selected Wine is not part of a Proton distribution', async () => {
     const root = await mkdtemp(path.join(tmpdir(), 'xodus-nexus-wine-'));
     created.push(root);
