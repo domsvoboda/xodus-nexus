@@ -37,7 +37,9 @@ static BOOL write_file(const WCHAR *directory, const WCHAR *name, const char *te
     WCHAR path[MAX_PATH];
     DWORD written, size = (DWORD)strlen(text);
     HANDLE file;
-    swprintf(path, MAX_PATH, L"%s\\%s", directory, name);
+    wcscpy(path, directory);
+    wcscat(path, L"\\");
+    wcscat(path, name);
     file = CreateFileW(path, GENERIC_WRITE, 0, NULL, CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, NULL);
     if (file == INVALID_HANDLE_VALUE) return FALSE;
     WriteFile(file, text, size, &written, NULL);
@@ -86,11 +88,24 @@ int main(void)
     SIZE_T used = 0;
     HRESULT hr;
 
-    /* Private cache root: the runtime writes and reads below %LOCALAPPDATA%. */
-    if (!GetTempPathW(MAX_PATH, base)) return 2;
-    swprintf(local, MAX_PATH, L"%snexus-offline-identity-%lu", base, GetCurrentProcessId());
-    swprintf(cache, MAX_PATH, L"%s\\Xodus Nexus\\offline-identity", local);
+    /* Private cache root: the runtime writes and reads below %LOCALAPPDATA%.
+     * Paths are assembled without wide printf so the layout does not depend on
+     * the C runtime's %s semantics. A previous run's cache is removed first. */
+    if (!GetTempPathW(MAX_PATH - 64, base)) return 2;
+    wcscpy(local, base);
+    wcscat(local, L"nexus-offline-identity-probe");
     CreateDirectoryW(local, NULL);
+    wcscpy(cache, local);
+    wcscat(cache, L"\\Xodus Nexus");
+    CreateDirectoryW(cache, NULL);
+    wcscat(cache, L"\\offline-identity");
+    CreateDirectoryW(cache, NULL);
+    {
+        static const WCHAR *const names[] = { L"identity.txt", L"endpoints-default.json", L"endpoints-current.json" };
+        WCHAR stale[MAX_PATH];
+        unsigned i;
+        for (i = 0; i < 3; i++) { wcscpy(stale, cache); wcscat(stale, L"\\"); wcscat(stale, names[i]); DeleteFileW(stale); }
+    }
     SetEnvironmentVariableW(L"LOCALAPPDATA", local);
     SetEnvironmentVariableW(L"XODUS_FORCE_OFFLINE", L"1");
 
@@ -118,10 +133,7 @@ int main(void)
     now.LowPart = time.dwLowDateTime;
     now.HighPart = time.dwHighDateTime;
     snprintf(text, sizeof(text), identity_text, now.QuadPart - 31ull * 24 * 3600 * 10000000ull);
-    swprintf(cache, MAX_PATH, L"%s\\Xodus Nexus", local);
-    CreateDirectoryW(cache, NULL);
-    swprintf(cache, MAX_PATH, L"%s\\Xodus Nexus\\offline-identity", local);
-    CHECK("cache-dir", CreateDirectoryW(cache, NULL) || GetLastError() == ERROR_ALREADY_EXISTS);
+    CHECK("cache-dir", GetFileAttributesW(cache) != INVALID_FILE_ATTRIBUTES);
     CHECK("write-stale", write_file(cache, L"identity.txt", text) && write_file(cache, L"endpoints-default.json", endpoints_text) &&
           write_file(cache, L"endpoints-current.json", endpoints_text));
     hr = add_user(queue, &user);
@@ -153,7 +165,8 @@ int main(void)
         HANDLE file;
         DWORD read = 0;
         char copy[600] = {0};
-        swprintf(path, MAX_PATH, L"%s\\identity.txt", cache);
+        wcscpy(path, cache);
+        wcscat(path, L"\\identity.txt");
         file = CreateFileW(path, GENERIC_READ, FILE_SHARE_READ, NULL, OPEN_EXISTING, 0, NULL);
         CHECK("cache-readable", file != INVALID_HANDLE_VALUE);
         if (file != INVALID_HANDLE_VALUE) { ReadFile(file, copy, sizeof(copy) - 1, &read, NULL); CloseHandle(file); }
