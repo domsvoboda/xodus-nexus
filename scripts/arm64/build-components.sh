@@ -85,9 +85,12 @@ if [ ! -f "$BUILD/Makefile" ]; then
     --without-freetype --without-gnutls > configure.out 2>&1 || { tail -60 configure.out; exit 1; })
   tail -20 "$BUILD/configure.out"
 fi
+# d3dcompiler_47 is included because the arm64 base links vkd3d-shader into it
+# statically (no libvkd3d-shader-1.dll import), so the HLSL state-keyword patch
+# only reaches games through a patched d3dcompiler build.
 TARGETS=(dlls/xgameruntime/aarch64-windows/xgameruntime.dll dlls/winhttp/aarch64-windows/winhttp.dll
   dlls/mscoree/aarch64-windows/mscoree.dll dlls/windows.web/aarch64-windows/windows.web.dll
-  dlls/twinapi.appcore/aarch64-windows/twinapi.appcore.dll)
+  dlls/twinapi.appcore/aarch64-windows/twinapi.appcore.dll dlls/d3dcompiler_47/aarch64-windows/d3dcompiler_47.dll)
 make -C "$BUILD" -j"$JOBS" "${TARGETS[@]}"
 
 # ---- collect and verify machine types -------------------------------------
@@ -140,7 +143,7 @@ RUNTIME="$WORK/runtime-arm64"
 rm -rf "$RUNTIME"
 cp -a --reflink=auto "$BASE_DIR/$DIRECTORY" "$RUNTIME"
 HOST_PE="$(lock layout.hostPeArch)"; PFX="$(lock layout.defaultPrefix)"
-for dll in xgameruntime.dll winhttp.dll mscoree.dll windows.web.dll twinapi.appcore.dll libnghttp2.dll; do
+for dll in xgameruntime.dll winhttp.dll mscoree.dll windows.web.dll twinapi.appcore.dll d3dcompiler_47.dll libnghttp2.dll; do
   install -D -m 644 "$OUT/$dll" "$RUNTIME/files/lib/wine/$HOST_PE/$dll"
   install -D -m 644 "$OUT/$dll" "$RUNTIME/$PFX/drive_c/windows/system32/$dll"
 done
@@ -164,9 +167,9 @@ export FEX_APP_CONFIG_LOCATION="$RUNTIME/files/share/fex-emu/" FEX_DISKCACHE=1
 wine --version
 timeout 600 wine wineboot --init > "$SMOKE/wineboot.log" 2>&1 || echo "wineboot exit $?"
 tail -5 "$SMOKE/wineboot.log"
-timeout 300 wine "$SMOKE/hello-arm64.exe" > "$SMOKE/hello-arm64.log" 2>&1 || echo "arm64 hello exit $?"
+timeout 300 wine "$SMOKE/hello-arm64.exe" > "$SMOKE/hello-arm64.log" 2>&1 || { echo "arm64 hello exit $?"; cat "$SMOKE/hello-arm64.log"; exit 1; }
 tail -5 "$SMOKE/hello-arm64.log"
-timeout 300 wine "$SMOKE/hello-x64.exe" > "$SMOKE/hello-x64.log" 2>&1 || echo "x64 hello exit $?"
+timeout 300 wine "$SMOKE/hello-x64.exe" > "$SMOKE/hello-x64.log" 2>&1 || { echo "x64 hello exit $?"; cat "$SMOKE/hello-x64.log"; exit 1; }
 tail -5 "$SMOKE/hello-x64.log"
 timeout 120 wineserver -w || true
 echo ARM64-RUNTIME-EXPERIMENT-DONE

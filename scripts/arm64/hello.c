@@ -16,8 +16,12 @@ int main(void)
         printf("xgameruntime.dll did not load: %lu\n", GetLastError());
         return 2;
     }
-    printf("xgameruntime.dll loaded; XGameRuntimeInitialize %s\n",
-           GetProcAddress(module, "XGameRuntimeInitialize") ? "exported" : "missing");
+    /* The public XGameRuntime* API is a header-level static library; the DLL
+     * itself exports the implementation entry points. */
+    printf("xgameruntime.dll loaded; InitializeApiImpl %s, QueryApiImpl %s\n",
+           GetProcAddress(module, "InitializeApiImpl") ? "exported" : "missing",
+           GetProcAddress(module, "QueryApiImpl") ? "exported" : "missing");
+    if (!GetProcAddress(module, "InitializeApiImpl")) return 3;
     FreeLibrary(module);
     return 0;
 }
