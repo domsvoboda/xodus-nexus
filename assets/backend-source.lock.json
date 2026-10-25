@@ -1,11 +1,11 @@
 {
   "schema": 1,
-  "version": "0.2.13",
+  "version": "0.2.14",
   "repository": "https://github.com/xodus-gaming/xodus.git",
   "commit": "53ea781dcd073e31d7ea68e894134e9c959bff04",
   "rust": "1.99.0",
   "cargoLockSha256": "2259b343e00dadc263018beb7664b12e9d58a0b73bff502ad566f5f8619ce28a",
-  "patchId": "linux-run-v44",
+  "patchId": "linux-run-v45",
   "compatibility": "linux-run-v22",
   "patches": [
     {
@@ -183,6 +183,10 @@
     {
       "file": "xodus-offline-fast-path.patch",
       "sha256": "7f8cc014852c262021b9ccfd28db9ee2a2b0158c13204987d816c9074d3a7d41"
+    },
+    {
+      "file": "xodus-offline-launch.patch",
+      "sha256": "c4a6b876b8d0274ab8e371109f24358f408ff0ff03a92ade1ca527a11aab2ecb"
     }
   ]
 }

@@ -423,8 +423,6 @@ test('offline launches detect an unreachable Microsoft quickly and skip online-o
   assert.equal(createHash('sha256').update(patch).digest('hex'), entry.sha256);
   // Applies after the offline license it builds on.
   assert.ok(lock.patches.findIndex(p => p.file === entry.file) > lock.patches.findIndex(p => p.file === 'xodus-offline-license.patch'));
-  assert.equal(lock.version, '0.2.13');
-  assert.equal(lock.patchId, 'linux-run-v44');
   const files = [...patch.matchAll(/^diff --git a\/(\S+) b\/\S+$/gm)].map(match => match[1]);
   assert.deepEqual(files.sort(), ['crates/xodus-cli/src/commands/run.rs', 'crates/xodus-cli/src/license.rs', 'crates/xodus-cli/src/main.rs', 'crates/xodus-service/src/simple_context.rs']);
   // Only the connect phase is bounded; a request timeout would break game streaming.
@@ -434,4 +432,36 @@ test('offline launches detect an unreachable Microsoft quickly and skip online-o
   assert.match(patch, /OFFLINE_LICENSE_USED\.store\(true/);
   assert.match(patch, /if crate::license::OFFLINE_LICENSE_USED\.load/);
   await fs.access('.github/release-notes/backend-0.2.13.md');
+});
+
+test('launcher-requested offline launches skip Microsoft and survive an expired device token', async () => {
+  const lock = JSON.parse(await fs.readFile('assets/backend-source.lock.json', 'utf8'));
+  const entry = lock.patches.find(p => p.file === 'xodus-offline-launch.patch');
+  assert.ok(entry);
+  const patch = await fs.readFile(`assets/${entry.file}`, 'utf8');
+  assert.equal(createHash('sha256').update(patch).digest('hex'), entry.sha256);
+  assert.ok(lock.patches.findIndex(p => p.file === entry.file) > lock.patches.findIndex(p => p.file === 'xodus-offline-fast-path.patch'));
+  assert.equal(lock.version, '0.2.14');
+  assert.equal(lock.patchId, 'linux-run-v45');
+  const files = [...patch.matchAll(/^diff --git a\/(\S+) b\/\S+$/gm)].map(match => match[1]);
+  assert.deepEqual(files.sort(), ['crates/xodus-cli/src/commands/license.rs', 'crates/xodus-cli/src/commands/run.rs', 'crates/xodus-cli/src/commands/streaming.rs', 'crates/xodus-cli/src/license.rs', 'crates/xodus-cli/src/main.rs']);
+  // The flag exists only together with a license cache and is the launcher's verdict, not a guess made here.
+  assert.match(patch, /^\+\s*requires = "license_cache",/m);
+  assert.match(patch, /^\+\s*offline: bool,/m);
+  assert.match(patch, /matches!\(args\.command, SubCommand::Run \{ offline: true, \.\. \}\)/);
+  // Offline: no request at all, the stored license under the usual rules, the runtime forced offline.
+  assert.match(patch, /^\+\s*if offline \{\s*$/m);
+  assert.match(patch, /OnlineFailure::Unreachable\("Microsoft is unreachable \(offline launch requested\)\."/);
+  assert.match(patch, /command\.env\("XODUS_FORCE_OFFLINE", "1"\)/);
+  assert.match(patch, /offline_launch_never_contacts_microsoft_and_uses_only_the_stored_license/);
+  // A failed device renewal is tolerated only for launches with a license cache and a stored device license.
+  assert.match(patch, /launch_with_license_cache && tokens\.get_device_license\(\)\.is_ok\(\)/);
+  assert.match(patch, /needs_device_credentials && !offline_launch/);
+  // Downloads and the license command stay online-only.
+  assert.match(patch, /get_license\(client, tokens, content_id, market, None, false\)/);
+  // Client timeouts are untouched; the only one added belongs to the unit test's unroutable client.
+  assert.equal((patch.match(/^\+.*connect_timeout\(/gm) ?? []).length, 1);
+  assert.match(patch, /^\+\s*\.connect_timeout\(std::time::Duration::from_millis\(1\)\)/m);
+  assert.doesNotMatch(patch, /^\+.*\.timeout\(/m);
+  await fs.access('.github/release-notes/backend-0.2.14.md');
 });
