@@ -382,7 +382,7 @@ static int parse_app_id(const char *text, long *out)
     unsigned long value;
     errno = 0;
     value = strtoul(text, &end, 10);
-    if (errno != 0 || end == text || *end != ' ' || *text == '-' || value > 0xffffffffUL) return -1;
+    if (errno != 0 || end == text || *end != '\0' || *text == '-' || value > 0xffffffffUL) return -1;
     *out = (long)value;
     return 0;
 }
