@@ -97,14 +97,25 @@ for t in "${TARGETS[@]}"; do cp "$BUILD/$t" "$OUT/"; done
 cp "$NG_BUILD/lib/libnghttp2.dll" "$OUT/"
 cp "$SHADER_BUILD/.libs/libvkd3d-shader-1.dll" "$OUT/"
 "$BUILD/tools/winebuild/winebuild" --builtin "$OUT/libvkd3d-shader-1.dll"
+# ARM64X hybrids carry the ARM64 machine type. Plain ARM64EC images carry the
+# AMD64 machine type like real x86_64 code and are told apart by the CHPE
+# metadata in their load config, so the check reads that with llvm-readobj.
 python3 - "$OUT" <<'PY'
-import json, pathlib, struct, sys, hashlib
-out = pathlib.Path(sys.argv[1]); MACH = {0x8664: 'x86_64', 0xAA64: 'ARM64', 0xA641: 'ARM64EC', 0x14C: 'i386'}
+import json, pathlib, struct, sys, hashlib, subprocess
+out = pathlib.Path(sys.argv[1]); MACH = {0x8664: 'x86_64', 0xAA64: 'ARM64', 0x14C: 'i386'}
+def chpe(path):
+    text = subprocess.run(['llvm-readobj', '--coff-load-config', str(path)], capture_output=True, text=True).stdout
+    for line in text.splitlines():
+        if 'CHPEMetadataPointer' in line:
+            return line.split(':')[-1].strip() not in ('0', '0x0')
+    return False
 report = {}
 for f in sorted(out.glob('*.dll')):
     b = f.read_bytes(); off = struct.unpack_from('<I', b, 0x3C)[0]; m = struct.unpack_from('<H', b, off + 4)[0]
-    report[f.name] = {'machine': MACH.get(m, hex(m)), 'size': len(b), 'sha256': hashlib.sha256(b).hexdigest()}
-    print(f'{f.name:28} {report[f.name]["machine"]:8} {len(b):>9} bytes')
+    machine = MACH.get(m, hex(m))
+    if machine == 'x86_64' and chpe(f): machine = 'ARM64EC'
+    report[f.name] = {'machine': machine, 'size': len(b), 'sha256': hashlib.sha256(b).hexdigest()}
+    print(f'{f.name:28} {machine:8} {len(b):>9} bytes')
 (out / 'arm64-components.json').write_text(json.dumps(report, indent=2) + '\n')
 bad = [n for n, r in report.items() if r['machine'] not in ('ARM64', 'ARM64EC')]
 if bad: raise SystemExit(f'unexpected machine types: {bad}')
