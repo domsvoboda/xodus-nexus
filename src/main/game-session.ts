@@ -71,6 +71,8 @@ export interface ActiveGame {
   operation: GameOperation;
   process: GameProcess;
   service?: AcquiredService;
+  /** The prefix stop control of the prepared Proton runner, for a daemon that re-adopts the game after a restart. */
+  stopPrefix?: { command: string; args: string[] };
   /** The backend process result, as `GameProcess.result`. */
   result: GameProcess['result'];
   /** Settles after the service, process group, wrapper and log are all cleaned up. */
@@ -273,7 +275,7 @@ export class GameSession {
           launchLog.end();
         } finally { changed(true); }
       });
-      const active: ActiveGame = { operationId, gameId: id, operation, process: tracked, service, result: tracked.result, finished };
+      const active: ActiveGame = { operationId, gameId: id, operation, process: tracked, service, stopPrefix: protonRunner?.stopPrefix, result: tracked.result, finished };
       this.active = active;
       return active;
     } catch (error) {

@@ -9,6 +9,7 @@ import { daemonSocketPath } from '../main/daemon-client.js';
 import { BackendDiagnostics, setBackendDiagnostics } from '../main/backend-diagnostics.js';
 import { GameController } from './controller.js';
 import { DaemonServer } from './server.js';
+import { bundledCloseHelper } from './graceful.js';
 
 const IDLE_EXIT_MS = 10 * 60_000;
 const IDLE_CHECK_MS = 30_000;
@@ -59,8 +60,13 @@ async function main(): Promise<void> {
   const diagnostics = new BackendDiagnostics(path.join(userData, 'daemon'));
   setBackendDiagnostics(diagnostics);
 
-  const controller = new GameController({ userData, home: os.homedir(), log });
+  const runtimeRoot = path.join(runtimeDir, 'xodus-nexus', profileId);
+  await privateDirectory(path.dirname(runtimeRoot));
+  await privateDirectory(runtimeRoot);
+  const closeHelper = await bundledCloseHelper();
+  const controller = new GameController({ userData, home: os.homedir(), runtimeRoot, log, closeHelper });
   await controller.start();
+  log(closeHelper ? `Graceful close helper: ${closeHelper}.` : 'No graceful close helper in this build; Exit game falls back to signals.');
   const dataRoot = path.dirname(controller.store.settings.runtimeRoot);
   try {
     await fs.mkdir(path.join(dataRoot, 'logs'), { recursive: true });
@@ -91,8 +97,8 @@ async function main(): Promise<void> {
   };
   const idleTimer = setInterval(() => {
     if (controller.busy || server.clientCount > 0) { idleSince = Date.now(); return; }
-    if (exitWhenIdle) void shutdown('reload requested');
-    else if (Date.now() - idleSince > IDLE_EXIT_MS) void shutdown('idle');
+    if (exitWhenIdle && controller.idle) void shutdown('reload requested');
+    else if (controller.idle && Date.now() - idleSince > IDLE_EXIT_MS) void shutdown('idle');
   }, IDLE_CHECK_MS);
   process.on('SIGTERM', () => void shutdown('SIGTERM'));
   process.on('SIGINT', () => void shutdown('SIGINT'));

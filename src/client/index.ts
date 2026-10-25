@@ -11,6 +11,7 @@ import { DaemonConnection, daemonSocketPath } from '../main/daemon-client.js';
 import { unitNames } from '../main/daemon-units.js';
 
 const CONNECT_WINDOW_MS = 10_000;
+const REATTACH_WINDOW_MS = 60_000;
 const say = (line: string) => process.stdout.write(`[nexus] ${line}\n`);
 const warn = (line: string) => process.stderr.write(`[nexus] ${line}\n`);
 
@@ -79,7 +80,9 @@ export async function main(argv = process.argv.slice(2), env = process.env): Pro
   return new Promise<number>((resolve, reject) => {
     let operationId: string | undefined;
     let exited = false;
-    connection.on('frame', frame => {
+    let link = connection;
+    const listen = (active: DaemonConnection) => { active.on('frame', onFrame); active.on('close', onClose); };
+    const onFrame = (frame: DaemonFrame) => {
       switch (frame.type) {
         case 'accepted': if (frame.requestId === requestId) { operationId = frame.operationId; say('Launch accepted.'); } break;
         case 'log': if (!operationId || frame.operationId === operationId) say(frame.line); break;
@@ -95,16 +98,39 @@ export async function main(argv = process.argv.slice(2), env = process.env): Pro
           if (operationId && frame.operationId !== operationId) break;
           exited = true;
           say(frame.status === 'complete' ? 'The game has exited.' : 'The game exited with an error.');
-          connection.close();
+          link.close();
           resolve(frame.code ?? (frame.status === 'complete' ? 0 : 1));
           break;
       }
-    });
-    connection.on('close', error => {
+    };
+    const onClose = async (error: Error | undefined) => {
       if (exited) return;
-      warn(error ? `Lost the background service: ${error.message}` : 'The background service closed the connection.');
-      resolve(1);
-    });
+      if (!operationId) { warn(error ? `Lost the background service: ${error.message}` : 'The background service closed the connection.'); resolve(1); return; }
+      // The daemon went away under a running game: it restarts and re-adopts the
+      // game, so keep Steam's "running" state and take the game back by its id.
+      warn('Lost the background service; reconnecting to the running game.');
+      const reattached = await reattach(operationId);
+      if (!reattached) { warn('Could not reach the background service again; the game keeps running on its own.'); resolve(1); return; }
+      link = reattached;
+      listen(link);
+      say('Reconnected to the background service.');
+    };
+    const reattach = async (id: string): Promise<DaemonConnection | undefined> => {
+      const deadline = Date.now() + REATTACH_WINDOW_MS;
+      while (Date.now() < deadline) {
+        try {
+          const next = await DaemonConnection.connect(daemonSocketPath(runtimeDir!, profileId), 3_000);
+          next.send({ schema: 1, type: 'hello', client: 'steam', version: '1' });
+          await next.next((frame): frame is DaemonFrame & { type: 'hello' } => frame.type === 'hello', 5_000);
+          next.send({ schema: 1, type: 'attach', operationId: id });
+          const answer = await next.next((frame): frame is DaemonFrame & { type: 'state' | 'error' } => frame.type === 'state' || frame.type === 'error', 5_000);
+          if (answer.type === 'error') { next.close(); return undefined; }
+          return next;
+        } catch { await new Promise(resolve => setTimeout(resolve, 1_000)); }
+      }
+      return undefined;
+    };
+    listen(connection);
   });
 }
 

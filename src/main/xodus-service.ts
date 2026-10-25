@@ -11,6 +11,10 @@ export interface XodusServiceSession {
   socketPath: string;
   bridgePort: number;
   bridgeKey: string;
+  /** The service process and its private runtime directory, for a daemon that must re-adopt them after a restart. */
+  pid?: number;
+  runtimeDir?: string;
+  startedAt?: string;
   stop(): Promise<void>;
 }
 
@@ -20,8 +24,10 @@ export interface XodusBridge {
   stop(): Promise<void>;
 }
 
-export async function startXodusBridge(socketPath: string): Promise<XodusBridge> {
-  const key = randomBytes(32).toString('hex');
+/** `reuse` rebinds the bridge a running game already knows (same port and key) after a daemon restart. */
+export async function startXodusBridge(socketPath: string, reuse?: { port: number; key: string }): Promise<XodusBridge> {
+  if (reuse && !/^[0-9a-f]{64}$/.test(reuse.key)) throw new Error('Invalid bridge key.');
+  const key = reuse?.key ?? randomBytes(32).toString('hex');
   const expected = Buffer.from(key, 'ascii');
   const clients = new Set<Socket>();
   const server: Server = createServer((client) => {
@@ -55,7 +61,7 @@ export async function startXodusBridge(socketPath: string): Promise<XodusBridge>
   });
   await new Promise<void>((resolve, reject) => {
     server.once('error', reject);
-    server.listen(0, '127.0.0.1', () => { server.removeListener('error', reject); resolve(); });
+    server.listen(reuse?.port ?? 0, '127.0.0.1', () => { server.removeListener('error', reject); resolve(); });
   });
   const address = server.address();
   if (!address || typeof address === 'string') throw new Error('Could not bind the Xodus loopback bridge.');
@@ -69,7 +75,7 @@ export async function startXodusBridge(socketPath: string): Promise<XodusBridge>
   };
 }
 
-async function socketReady(socketPath: string): Promise<boolean> {
+export function socketReady(socketPath: string): Promise<boolean> {
   return new Promise((resolve) => {
     const socket = createConnection(socketPath);
     socket.once('connect', () => { socket.destroy(); resolve(true); });
@@ -171,7 +177,7 @@ export async function startXodusService(
         bridge = await startXodusBridge(socketPath);
         backendDiagnostic({ operation: 'service', event: 'validation', stage: 'ready' });
         onStatus('Xodus account service and private loopback bridge are ready.');
-        return { socketPath, bridgePort: bridge.port, bridgeKey: bridge.key, stop };
+        return { socketPath, bridgePort: bridge.port, bridgeKey: bridge.key, pid: child.pid, runtimeDir, startedAt: new Date().toISOString(), stop };
       }
       if (exitCode !== null) throw new Error(credentialError.message ?? `xodus-service exited with code ${exitCode}. Check the stored Xodus account and network connection.`);
       await new Promise((resolve) => setTimeout(resolve, 250));

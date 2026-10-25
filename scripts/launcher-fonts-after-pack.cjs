@@ -20,6 +20,11 @@ module.exports = async function afterPack(context) {
   for (const part of ['main', 'shared', 'daemon', 'client']) {
     await fs.cp(path.join(__dirname, '..', 'dist-electron', part), path.join(nodeRoot, 'dist-electron', part), { recursive: true, filter: source => !/\.(map|cts)$/.test(source) });
   }
-  await fs.writeFile(path.join(nodeRoot, 'package.json'), JSON.stringify({ type: 'module', private: true }) + '
-');
+  await fs.writeFile(path.join(nodeRoot, 'package.json'), JSON.stringify({ type: 'module', private: true }) + '\n');
+  // Native helpers CI compiled into build/tools/<arch>/ (nexus-close-window). A
+  // local pack without them still works: the daemon falls back to signals.
+  const tools = path.join(__dirname, '..', 'build', 'tools');
+  if (await fs.stat(tools).then(stat => stat.isDirectory(), () => false)) {
+    await fs.cp(tools, path.join(root, 'resources', 'tools'), { recursive: true });
+  }
 };

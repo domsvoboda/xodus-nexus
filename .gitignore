@@ -19,6 +19,8 @@ coverage/
 .aws/
 .codex/
 *.AppImage
+# CI-built native helpers staged for packaging (see scripts/launcher-fonts-after-pack.cjs)
+/build/tools/
 *.dll
 # Local development runtime archives (never packaged or committed)
 bundled/

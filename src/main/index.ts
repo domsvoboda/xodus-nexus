@@ -42,6 +42,9 @@ import { ShortcutLaunch } from './shortcut-launch.js';
 import { GameSession, gameLocales, gameTitleId, licenseCacheDirectory, type ActiveGame } from './game-session.js';
 import { EphemeralServiceSessions } from './service-sessions.js';
 import { DaemonUnits } from './daemon-units.js';
+import { DaemonLink } from './daemon-link.js';
+import { daemonSocketPath } from './daemon-client.js';
+import { filterClientEnvironment, type DaemonState } from '../shared/daemon-protocol.js';
 import { profileIdOf } from '../shared/profile-id.js';
 import { loadShortcutIcon } from './shortcut-icon.js';
 import { AccountProfile } from './account-profile.js';
@@ -141,6 +144,11 @@ let daemonUnits: DaemonUnits | undefined;
 let daemonLauncher: string | undefined;
 let daemonInstalled = false;
 let daemonError: string | undefined;
+// While the daemon runs the games, the launcher mirrors its operation state.
+let daemonLink: DaemonLink | undefined;
+let mirroredOperation: GameOperation | undefined;
+let mirroredState: DaemonState | undefined;
+let releaseMirroredDisplay: (() => void) | undefined;
 let accountProfile: AccountProfile;
 let preparingLaunch = false;
 let preparingInstall = false;
@@ -174,7 +182,7 @@ else if (!demoMode) app.on('second-instance', (_event, _argv, _workingDirectory,
   }
 });
 const shortcutLaunch = new ShortcutLaunch(
-  () => gameOperation?.kind === 'launch' && ['preparing', 'running', 'stopping'].includes(gameOperation.status) ? gameOperation.gameId : undefined,
+  () => { const active = visibleGameOperation(); return active?.kind === 'launch' && ['preparing', 'running', 'stopping'].includes(active.status) ? active.gameId : undefined; },
   (id) => launchGame(id),
 );
 
@@ -206,7 +214,48 @@ function daemonStatus(): AppSnapshot['daemon'] {
   if (process.platform !== 'linux') return { supported: false, installed: false, reason: 'The background service is available on Linux only.' };
   if (!daemonUnits) return { supported: false, installed: false, reason: 'The background service needs a systemd user session (XDG_RUNTIME_DIR).' };
   if (!daemonLauncher) return { supported: false, installed: false, reason: 'The background service needs an installed launcher or AppImage with a persistent path.' };
-  return { supported: true, installed: daemonInstalled, error: daemonError };
+  return { supported: true, installed: daemonInstalled, connected: Boolean(daemonLink?.connected), warm: mirroredState?.session.warm, error: daemonError };
+}
+
+const ACTIVE_STATUSES = ['preparing', 'running', 'stopping'];
+/** The game operation to show and to guard against: a local one while active, else the daemon's. */
+function visibleGameOperation(): GameOperation | undefined {
+  if (gameOperation && ACTIVE_STATUSES.includes(gameOperation.status)) return gameOperation;
+  if (mirroredOperation && ACTIVE_STATUSES.includes(mirroredOperation.status)) return mirroredOperation;
+  if (gameOperation && mirroredOperation) return Date.parse(mirroredOperation.startedAt) > Date.parse(gameOperation.startedAt) ? mirroredOperation : gameOperation;
+  return gameOperation ?? mirroredOperation;
+}
+function daemonRunsGames(): boolean { return Boolean(daemonLink?.connected); }
+
+function receiveDaemonState(state: DaemonState): void {
+  mirroredState = state;
+  mirroredOperation = state.gameOperation;
+  if (state.inspected) {
+    const { gameId, patch } = state.inspected;
+    if (store.games.some(game => game.id === gameId)) void store.patchGame(gameId, patch).catch(error => console.error('Could not persist the daemon\'s inspection:', error));
+  }
+  const running = mirroredOperation?.status === 'running' || mirroredOperation?.status === 'stopping';
+  if (running && !releaseMirroredDisplay) releaseMirroredDisplay = gameDisplay.acquire();
+  if (!running && releaseMirroredDisplay) { releaseMirroredDisplay(); releaseMirroredDisplay = undefined; }
+  scheduleSnapshot();
+}
+
+function connectDaemonLink(): void {
+  const runtimeDir = process.env.XDG_RUNTIME_DIR;
+  if (daemonLink || !daemonUnits || !daemonInstalled || !store.settings.backgroundDaemon || !runtimeDir) return;
+  daemonLink = new DaemonLink({ socketPath: daemonSocketPath(runtimeDir, profileIdOf(app.getPath('userData'))), version: app.getVersion() });
+  daemonLink.on('state', receiveDaemonState);
+  daemonLink.on('connected', connected => {
+    if (!connected) { mirroredState = undefined; mirroredOperation = undefined; if (releaseMirroredDisplay) { releaseMirroredDisplay(); releaseMirroredDisplay = undefined; } }
+    scheduleSnapshot();
+  });
+  daemonLink.start();
+}
+function disconnectDaemonLink(): void {
+  daemonLink?.stop();
+  daemonLink = undefined;
+  mirroredState = undefined; mirroredOperation = undefined;
+  if (releaseMirroredDisplay) { releaseMirroredDisplay(); releaseMirroredDisplay = undefined; }
 }
 
 /** Writes or removes the per-profile units to match `enabled`; an install also refreshes the launcher path after an update. */
@@ -218,7 +267,9 @@ async function syncDaemonUnits(enabled: boolean): Promise<void> {
       if (!daemonLauncher) throw Error('The background service needs an installed launcher or AppImage with a persistent path.');
       await daemonUnits.install({ profileId, launcher: await fs.realpath(daemonLauncher), userData: app.getPath('userData') });
       daemonInstalled = true;
+      connectDaemonLink();
     } else {
+      disconnectDaemonLink();
       await daemonUnits.remove(profileId);
       daemonInstalled = false;
     }
@@ -245,7 +296,7 @@ function snapshot(): AppSnapshot {
     launcherUpdate: structuredClone(launcherUpdater.state),
     gameUpdates: structuredClone(gameUpdates),
     downloadProgressSupported: Boolean(backend.current.capabilities.streamingProgressJson),
-    gameOperation: gameOperation ? structuredClone(gameOperation) : undefined,
+    gameOperation: (() => { const visible = visibleGameOperation(); return visible ? structuredClone(visible) : undefined; })(),
     daemon: daemonStatus(),
   };
 }
@@ -333,7 +384,7 @@ function ensureIdle(mode?: 'install' | 'launch' | 'remove'): void {
   if (launcherUpdater?.state.updating) throw new Error('The launcher is being updated.');
   if (checkingGameUpdates) throw new Error('A game update check is in progress.');
   if (gameRemovalInProgress) throw new Error('A game is being removed. Wait for it to finish.');
-  assertActivityCompatible(operations.keys(), store.downloads, gameOperation, installQueue.size, mode);
+  assertActivityCompatible(operations.keys(), store.downloads, visibleGameOperation(), installQueue.size, mode);
   if (backend.current.updating) throw new Error('The backend is being updated.');
   if (runtime.current.updating) throw new Error('Xodus Runtime is being installed.');
 }
@@ -610,8 +661,9 @@ async function prepareInstall(request: InstallRequest, updateGame?: Game, conten
     if (identity !== `${authState.username}:${backend.current.binaryPath}:${currentMarket()}`) throw Error('Account, backend or Store market changed. Retry the installation.');
     if (await backend.externalDownloadRunning()) throw Error('Another Xodus download is running outside this queue.');
     await assertInstallDestination(destination, store.games.filter(game => game.id !== updateGame?.id && game.id !== content?.game.id).map(game => game.path));
-    if (gameOperation && ['preparing', 'running', 'stopping'].includes(gameOperation.status)) {
-      const playing = store.games.find(game => game.id === gameOperation?.gameId);
+    const activeOperation = visibleGameOperation();
+    if (activeOperation && ['preparing', 'running', 'stopping'].includes(activeOperation.status)) {
+      const playing = store.games.find(game => game.id === activeOperation.gameId);
       if (playing && (playing.id === content?.game.id || installPathsOverlap(destination, await canonicalInstallPath(playing.path)))) throw Error('Close this game before changing its installed files.');
     }
     if (shutdownStarted || isCancelled()) return;
@@ -1158,6 +1210,8 @@ function registerIpc(): void {
   ipcMain.handle('restart-launcher', () => {
     ensureIdle();
     if (!launcherUpdater.state.restartRequired || !launcherUpdater.targetPath) throw new Error('No launcher restart is pending.');
+    // The daemon exits once idle; socket activation starts the updated build next time.
+    daemonLink?.reload();
     // AppImage sets these again for the new mount. Do not reuse the old mount.
     for (const key of ['APPIMAGE', 'APPDIR', 'ARGV0', 'OWD']) delete process.env[key];
     const externalEnvironment = externalLauncherEnvironment();
@@ -1173,17 +1227,20 @@ function registerIpc(): void {
     return gameUpdateJob;
   });
   ipcMain.handle('read-diagnostic-log', (_event, id: string) => {
-    if (!gameOperation?.logPath || gameOperation.id !== id) throw new Error('This diagnostic log is no longer available.');
-    return readDiagnosticTail(gameOperation.logPath, path.join(path.dirname(store.settings.runtimeRoot), 'logs'));
+    const visible = visibleGameOperation();
+    if (!visible?.logPath || visible.id !== id) throw new Error('This diagnostic log is no longer available.');
+    return readDiagnosticTail(visible.logPath, path.join(path.dirname(store.settings.runtimeRoot), 'logs'));
   });
   ipcMain.handle('reveal-diagnostic-log', async (_event, id: string) => {
-    if (!gameOperation?.logPath || gameOperation.id !== id) throw new Error('This diagnostic log is no longer available.');
-    const file = await diagnosticLogFile(gameOperation.logPath, path.join(path.dirname(store.settings.runtimeRoot), 'logs'));
+    const visible = visibleGameOperation();
+    if (!visible?.logPath || visible.id !== id) throw new Error('This diagnostic log is no longer available.');
+    const file = await diagnosticLogFile(visible.logPath, path.join(path.dirname(store.settings.runtimeRoot), 'logs'));
     shell.showItemInFolder(file);
   });
   ipcMain.handle('copy-diagnostic-log', async (_event, id: string) => {
-    if (!gameOperation?.logPath || gameOperation.id !== id) throw new Error('This diagnostic log is no longer available.');
-    await copyDiagnosticFile(gameOperation.logPath, path.join(path.dirname(store.settings.runtimeRoot), 'logs'), text => clipboard.writeText(text));
+    const visible = visibleGameOperation();
+    if (!visible?.logPath || visible.id !== id) throw new Error('This diagnostic log is no longer available.');
+    await copyDiagnosticFile(visible.logPath, path.join(path.dirname(store.settings.runtimeRoot), 'logs'), text => clipboard.writeText(text));
   });
   ipcMain.handle('login', () => requestAuth('login'));
   ipcMain.handle('logout', () => requestAuth('logout'));
@@ -1302,7 +1359,8 @@ function registerIpc(): void {
     if (!game) throw new Error('Game not found.');
     gameRemovalInProgress = true;
     try {
-      const activeGame = gameOperation && ['preparing', 'running', 'stopping'].includes(gameOperation.status) ? gameOperation : undefined;
+      const visible = visibleGameOperation();
+      const activeGame = visible && ['preparing', 'running', 'stopping'].includes(visible.status) ? visible : undefined;
       const runningGame = activeGame ? store.games.find(entry => entry.id === activeGame.gameId) : undefined;
       if (activeGame && !runningGame) throw Error('Could not verify the active game. Close it before removing a game.');
       await assertGameRemovalAvailable(game, store.downloads, task => operations.has(task.id) || installQueue.has(task.id), runningGame);
@@ -1358,7 +1416,12 @@ function registerIpc(): void {
     if (authState.running || authState.stored !== true || account !== authState.username || binary !== backend.current.binaryPath) return { status: 'error' };
     return value;
   });
-  ipcMain.handle('launch-game', (_event, id: string) => launchGame(id));
+  ipcMain.handle('launch-game', async (_event, id: string) => {
+    if (!daemonRunsGames()) return launchGame(id);
+    ensureIdle('launch');
+    await prepareSystemWallet();
+    await daemonLink!.launch(id, filterClientEnvironment(process.env));
+  });
   ipcMain.handle('add-to-steam', async (_event, id?: string) => {
     if (process.platform !== 'linux') throw Error('Steam integration is currently supported on Linux only.');
     if (id !== undefined && typeof id !== 'string') throw Error('Invalid game ID.');
@@ -1421,14 +1484,16 @@ function registerIpc(): void {
   });
   ipcMain.handle('install-game-vc-runtime', (_event, id: string) => installGameVcRuntime(id));
   ipcMain.handle('cancel-game', async () => {
-    if (!gameOperation || !['preparing', 'running', 'stopping'].includes(gameOperation.status)) throw new Error('No game launch is currently active.');
-    if (gameOperation.kind === 'launch') { await gameSession.cancel(); return; }
-    const child = operations.get(gameOperation.id);
-    const controller = preparationControllers.get(gameOperation.id);
+    const visible = visibleGameOperation();
+    if (!visible || !['preparing', 'running', 'stopping'].includes(visible.status)) throw new Error('No game launch is currently active.');
+    if (visible === mirroredOperation) { await daemonLink!.cancel(); return; }
+    if (visible.kind === 'launch') { await gameSession.cancel(); return; }
+    const child = operations.get(visible.id);
+    const controller = preparationControllers.get(visible.id);
     if (!child && !controller) throw new Error('Xodus is still preparing; try stopping again in a moment.');
     if (child) throw new Error('VC++ installation is running. Wait for it to finish; interrupting it could damage the Proton prefix.');
-    gameOperation.status = 'stopping';
-    gameOperation.phase = 'Cancelling prerequisite download…';
+    visible.status = 'stopping';
+    visible.phase = 'Cancelling prerequisite download…';
     controller?.abort();
     emitSnapshot();
   });
@@ -1685,6 +1750,7 @@ app.whenReady().then(async () => {
       // Keep the unit's launcher path current after the AppImage moved or updated.
       if (store.settings.backgroundDaemon && daemonLauncher) await syncDaemonUnits(true);
       else emitSnapshot();
+      connectDaemonLink();
     }).catch(error => { daemonError = (error as Error).message; emitSnapshot(); });
   }
   if (demoMode) {
@@ -1776,6 +1842,7 @@ app.on('will-quit', () => gameDisplay.stop());
 
 app.on('before-quit', (event) => {
   connectivity?.stop();
+  disconnectDaemonLink();
   walletUnlocker.cancel();
   installQueue.stop();
   installQueue.stop();

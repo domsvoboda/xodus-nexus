@@ -262,6 +262,10 @@ export interface DaemonStatus {
   /** systemd user units can be written on this system. */
   supported: boolean;
   installed: boolean;
+  /** The launcher is talking to the daemon right now. */
+  connected?: boolean;
+  /** The daemon keeps a signed-in account service ready. */
+  warm?: boolean;
   reason?: string;
   error?: string;
 }
