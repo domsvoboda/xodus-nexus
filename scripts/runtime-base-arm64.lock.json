@@ -1,0 +1,22 @@
+{
+  "schema": 1,
+  "arch": "arm64",
+  "repository": "CachyOS/proton-cachyos",
+  "tag": "cachyos-11.0-20261015-slr",
+  "archive": "proton-cachyos-11.0-20261015-slr-arm64.tar.xz",
+  "checksum": "proton-cachyos-11.0-20261015-slr-arm64.sha512sum",
+  "archiveSha512": "d61bfe4caae66d63c71bb1c84da326ca9af2d66f8c73dbcffe5fb58148ce950339984f84c4a3e3eead883b7f5d3aa7192d020ae413323c5e343dad851e65ed87",
+  "directory": "proton-cachyos-11.0-20261015-slr-arm64",
+  "version": "1792526967 cachyos-11.0-20261015-slr",
+  "layout": {
+    "bin": "files/bin-arm64",
+    "defaultPrefix": "files/share/default_pfx_arm64",
+    "hostPeArch": "aarch64-windows",
+    "wow64PeArch": "x86_64-windows",
+    "hostLibraries": "files/lib/aarch64-linux-gnu"
+  },
+  "files": {
+    "files/bin-arm64/wine": "6c07894513c6d0661d87d57036b10b1270b72ebeb3c1605988bf2717b7de9605",
+    "files/bin-arm64/wineserver": "d3465396c1e4a733570b92cdf5b9e833173b9d6b3c768626e2d77d1c60aaa17c"
+  }
+}

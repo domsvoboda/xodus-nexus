@@ -15,8 +15,10 @@ export async function verifyRuntimeBase(base, lock) {
   }
 }
 if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
-  if (process.argv.length !== 3) throw new Error('Usage: verify-runtime-base.mjs BASE_DIRECTORY');
-  const lock = JSON.parse(await fs.readFile(new URL('./runtime-base.lock.json', import.meta.url), 'utf8'));
+  // The optional second argument selects another base lock, e.g. runtime-base-arm64.lock.json.
+  if (process.argv.length < 3 || process.argv.length > 4) throw new Error('Usage: verify-runtime-base.mjs BASE_DIRECTORY [LOCK_FILE]');
+  const lockFile = process.argv[3] ? path.resolve(process.argv[3]) : fileURLToPath(new URL('./runtime-base.lock.json', import.meta.url));
+  const lock = JSON.parse(await fs.readFile(lockFile, 'utf8'));
   await verifyRuntimeBase(path.resolve(process.argv[2]), lock);
   console.log(`Verified locked Proton base: ${lock.version}`);
 }
