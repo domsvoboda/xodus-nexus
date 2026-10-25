@@ -9,7 +9,7 @@
 
 static IXThreadingImpl *threads;
 static XTaskQueueHandle queue;
-static LONG callbacks, cleanups, checks, failures;
+static LONG callbacks, cleanups, checks, failures, canceled_callbacks;
 static HRESULT outcome;
 static SIZE_T payload;
 static BOOL consume, reuse;
@@ -40,6 +40,15 @@ static void WINAPI completed(XAsyncBlock *block)
     } else {
         CHECK(VirtualFree(block, 0, MEM_RELEASE));
     }
+}
+
+/* Native XAsync lets canceled completions through so titles can free the
+ * per-call context they own; the completed status is preserved. */
+static void WINAPI canceled_completed(XAsyncBlock *block)
+{
+    CHECK(IXThreadingImpl_XAsyncGetStatus(threads, block, FALSE) == S_OK);
+    InterlockedIncrement(&canceled_callbacks);
+    CHECK(VirtualFree(block, 0, MEM_RELEASE));
 }
 
 int main(int argc, char **argv)
@@ -77,8 +86,25 @@ int main(int argc, char **argv)
     }
     CHECK(callbacks == 400);
     CHECK(cleanups == 500);
+    {
+        XTaskQueueHandle terminated = NULL;
+        XAsyncBlock *block = VirtualAlloc(NULL, 4096, MEM_COMMIT | MEM_RESERVE, PAGE_READWRITE);
+        CHECK(block != NULL);
+        if (!block) return 1;
+        CHECK(IXThreadingImpl_XTaskQueueCreate(threads, XTaskQueueDispatchMode_Manual, XTaskQueueDispatchMode_Manual, &terminated) == S_OK);
+        block->queue = terminated;
+        block->callback = canceled_completed;
+        CHECK(IXThreadingImpl_XAsyncBegin(threads, block, NULL, NULL, "canceled", provider) == S_OK);
+        IXThreadingImpl_XAsyncComplete(threads, block, S_OK, 0);
+        /* Terminate before the queued completion is dispatched: it runs canceled. */
+        CHECK(IXThreadingImpl_XTaskQueueTerminate(threads, terminated, FALSE, NULL, NULL) == S_OK);
+        for (i = 0; i < 4; i++) IXThreadingImpl_XTaskQueueDispatch(threads, terminated, XTaskQueuePort_Completion, 0);
+        CHECK(canceled_callbacks == 1);
+        CHECK(cleanups == 501);
+        IXThreadingImpl_XTaskQueueCloseHandle(threads, terminated);
+    }
     IXThreadingImpl_XTaskQueueCloseHandle(threads, queue);
     IXThreadingImpl_Release(threads);
-    printf("ASYNC CHECKS %ld FAILURES %ld CALLBACKS %ld CLEANUPS %ld\n", checks, failures, callbacks, cleanups);
+    printf("ASYNC CHECKS %ld FAILURES %ld CALLBACKS %ld CANCELED %ld CLEANUPS %ld\n", checks, failures, callbacks, canceled_callbacks, cleanups);
     return failures ? 1 : 0;
 }

@@ -2,6 +2,7 @@
 
 ## Unreleased
 
+- Run Xbox async completion callbacks canceled by task-queue shutdown, so games can release per-call data instead of leaking it or waiting forever.
 - Preserve Microsoft broker headers on both hosted sign-in steps. Thanks @Wyze3306 for the upstream fix adapted here.
 - Accept compact JWE tickets when requesting game content licenses without changing Xbox or Store sign-in token handling.
 - Show owned games with unsupported packages in My Library with the existing Unsupported badge and installation disabled.

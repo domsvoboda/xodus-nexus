@@ -1,0 +1,13 @@
+--- a/dlls/xgameruntime/xthreading.c
++++ b/dlls/xgameruntime/xthreading.c
+@@ -528,7 +528,9 @@
+     EnterCriticalSection( &state->cs );
+     state->completion_thread = GetCurrentThreadId();
+     LeaveCriticalSection( &state->cs );
+-    if (!canceled) state->callback( state->user_block );
++    /* Native XAsync lets canceled completions through as well, so titles can
++     * release per-call data they own when their queue is terminated. */
++    state->callback( state->user_block );
+     EnterCriticalSection( &state->cs );
+     state->completion_thread = 0;
+     state->completion_finished = TRUE;
