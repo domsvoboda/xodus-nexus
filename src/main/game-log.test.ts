@@ -52,6 +52,7 @@ describe('gameLoggingEnvironment', () => {
   it('reduces default Wine/vkd3d debug output without overriding user choices', () => {
     expect(gameLoggingEnvironment({})).toMatchObject({ WINEDEBUG: '-fixme', VKD3D_DEBUG: 'fixme', VKD3D_SHADER_DEBUG: 'fixme' });
     expect(gameLoggingEnvironment({ WINEDEBUG: '+relay', VKD3D_DEBUG: 'trace' })).toMatchObject({ WINEDEBUG: '+relay', VKD3D_DEBUG: 'trace', VKD3D_SHADER_DEBUG: 'fixme' });
+    expect(gameLoggingEnvironment({ VKD3D_SHADER_DEBUG: 'warn' })).toMatchObject({ VKD3D_DEBUG: 'fixme', VKD3D_SHADER_DEBUG: 'warn' });
     expect(gameLoggingEnvironment({ XODUS_NEXUS_VERBOSE_LOGS: '1' })).not.toHaveProperty('WINEDEBUG');
   });
 
