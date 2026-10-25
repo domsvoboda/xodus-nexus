@@ -34,6 +34,8 @@ jobs:
           test -x "$widl_dir/widl"
           echo "$widl_dir" >> "$GITHUB_PATH"
       - name: Build ARM64X overlays, assemble onto the pinned CachyOS arm64 base, smoke test
+        # `shell: bash` enables pipefail, so a script failure is not hidden by tee.
+        shell: bash
         env:
           WORK: ${{ github.workspace }}/arm64-build
           JOBS: '4'
@@ -46,6 +48,8 @@ jobs:
           cp -r arm64-build/components-arm64 results/ 2>/dev/null || true
           cp -r arm64-build/smoke/*.log results/ 2>/dev/null || true
           cp arm64-build/wine-build-arm64/config.log results/wine-config.log 2>/dev/null || true
+          cp arm64-build/wine-build-arm64/configure.out results/wine-configure.out 2>/dev/null || true
+          cp arm64-build/vkd3d-arm64ec/config.log results/vkd3d-config.log 2>/dev/null || true
       - uses: actions/upload-artifact@v4
         if: always()
         with:
