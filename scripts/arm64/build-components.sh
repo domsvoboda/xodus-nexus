@@ -74,11 +74,13 @@ fi
 # ---- Wine: ARM64X overlay DLLs --------------------------------------------
 BUILD="$WORK/wine-build-arm64"
 if [ ! -f "$BUILD/Makefile" ]; then
+  # Same generation steps as build-shared-runtime.mjs: the pinned tree has no
+  # configure script until autoreconf runs.
+  (cd "$SRC/dlls/winevulkan" && python3 make_vulkan -x vk.xml -X video.xml)
+  (cd "$SRC" && perl tools/make_specfiles && autoreconf -fiv)
   mkdir -p "$BUILD"
-  # The pinned tree ships its generated files (configure, winevulkan, spec
-  # files) like the x86_64 build, which runs configure directly too. With both
-  # archs enabled the arm64ec objects are linked into ARM64X hybrids that land
-  # in aarch64-windows.
+  # With both archs enabled the arm64ec objects are linked into ARM64X hybrids
+  # that land in aarch64-windows.
   (cd "$BUILD" && "$SRC/configure" --enable-archs=aarch64,arm64ec --without-x --without-wayland --disable-tests \
     --without-freetype --without-gnutls > configure.out 2>&1 || { tail -60 configure.out; exit 1; })
   tail -20 "$BUILD/configure.out"

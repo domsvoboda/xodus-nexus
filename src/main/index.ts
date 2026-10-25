@@ -20,6 +20,7 @@ import { inspectGameDirectory, StateStore } from './store.js';
 import { RuntimeManager } from './runtime.js';
 import { prepareProtonRunner } from './proton.js';
 import { applyOfflinePermissions, bindOfflineAccess, licenseCacheDirectory, revokeOfflineAccess, type OfflineRevocation } from './offline-access.js';
+import { detectProtonLayout, protonRootOf } from './proton-layout.js';
 import { CatalogService } from './catalog.js';
 import { cloudSaveRuntime, selectedWinePath, startXodusService, storeContentRuntime, type XodusServiceSession } from './xodus-service.js';
 import { gameLoggingEnvironment } from './game-log.js';
@@ -947,10 +948,11 @@ async function gameLaunchOptions(id: string): Promise<GameLaunchOptions> {
   if (!wine) return { cloudSaves: false, cloudReason: 'Select Xodus Runtime in Settings.', vcInstall: false, vcReason: 'Select Xodus Runtime in Settings.' };
   const wineAvailable = await fs.access(wine, constants.X_OK).then(() => true, () => false);
   if (!wineAvailable) return { cloudSaves: false, cloudReason: 'The selected Wine binary is unavailable.', vcInstall: false, vcReason: 'The selected Wine binary is unavailable.' };
-  const protonRoot = path.resolve(path.dirname(wine), '..', '..');
+  const protonRoot = protonRootOf(wine);
+  const layout = await detectProtonLayout(wine);
   const protonAvailable = await Promise.all([
     fs.access(path.join(protonRoot, 'proton'), constants.X_OK).then(() => true, () => false),
-    fs.access(path.join(protonRoot, 'files', 'share', 'default_pfx'), constants.R_OK).then(() => true, () => false),
+    fs.access(path.join(protonRoot, 'files', 'share', layout.defaultPrefix), constants.R_OK).then(() => true, () => false),
   ]).then((values) => values.every(Boolean));
   const previewRuntime = await cloudSaveRuntime(wine);
   const servicePath = backend.current.binaryPath ? path.join(path.dirname(backend.current.binaryPath), 'xodus-service') : '';

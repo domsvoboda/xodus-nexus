@@ -8,6 +8,8 @@ describe('runtimeDisplay', () => {
       nexusName: 'xodus-nexus-runtime-new-x86_64.tar.xz', name: 'xodus-nexus-runtime-old' };
     expect(nexusRuntimeUpdateAvailable(runtime)).toBe(true);
     expect(nexusRuntimeUpdateAvailable({ ...runtime, name: 'xodus-nexus-runtime-new' })).toBe(false);
+    expect(nexusRuntimeUpdateAvailable({ ...runtime, nexusName: 'xodus-nexus-runtime-new-aarch64.tar.xz', name: 'xodus-nexus-runtime-new' })).toBe(false);
+    expect(nexusRuntimeUpdateAvailable({ ...runtime, nexusName: 'xodus-nexus-runtime-new-aarch64.tar.xz' })).toBe(true);
     expect(nexusRuntimeUpdateAvailable({ ...runtime, nexusAvailable: false })).toBe(false);
     expect(nexusRuntimeUpdateAvailable({ ...runtime, nexusName: undefined })).toBe(false);
   });
