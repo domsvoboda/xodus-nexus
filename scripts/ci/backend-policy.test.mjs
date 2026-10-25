@@ -414,3 +414,24 @@ test('SMBIOS probing never prompts for elevation on devices without a firmware t
   assert.match(build, /command\('cargo', \['test', '--locked', \.\.\.offline, \.\.\.features, '-p', 'xodus', 'smbios_'\]\)/);
   assert.match(build, /archSuffix = \{ x64: 'x86_64', arm64: 'aarch64' \}\[process\.arch\]/);
 });
+
+test('offline launches detect an unreachable Microsoft quickly and skip online-only steps', async () => {
+  const lock = JSON.parse(await fs.readFile('assets/backend-source.lock.json', 'utf8'));
+  const entry = lock.patches.find(p => p.file === 'xodus-offline-fast-path.patch');
+  assert.ok(entry);
+  const patch = await fs.readFile(`assets/${entry.file}`, 'utf8');
+  assert.equal(createHash('sha256').update(patch).digest('hex'), entry.sha256);
+  // Applies after the offline license it builds on.
+  assert.ok(lock.patches.findIndex(p => p.file === entry.file) > lock.patches.findIndex(p => p.file === 'xodus-offline-license.patch'));
+  assert.equal(lock.version, '0.2.13');
+  assert.equal(lock.patchId, 'linux-run-v44');
+  const files = [...patch.matchAll(/^diff --git a\/(\S+) b\/\S+$/gm)].map(match => match[1]);
+  assert.deepEqual(files.sort(), ['crates/xodus-cli/src/commands/run.rs', 'crates/xodus-cli/src/license.rs', 'crates/xodus-cli/src/main.rs', 'crates/xodus-service/src/simple_context.rs']);
+  // Only the connect phase is bounded; a request timeout would break game streaming.
+  assert.equal((patch.match(/^\+.*connect_timeout\(std::time::Duration::from_secs\(10\)\)/gm) ?? []).length, 2);
+  assert.doesNotMatch(patch, /^\+.*\.timeout\(/m);
+  // The PlayFab step is skipped only when the stored offline license is in use.
+  assert.match(patch, /OFFLINE_LICENSE_USED\.store\(true/);
+  assert.match(patch, /if crate::license::OFFLINE_LICENSE_USED\.load/);
+  await fs.access('.github/release-notes/backend-0.2.13.md');
+});
