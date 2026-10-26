@@ -1,0 +1,40 @@
+name: Sync English UI to Tolgee
+
+on:
+  push:
+    branches: [main]
+    paths: [assets/locales/en.json, .tolgeerc.json, .github/workflows/translations.yml]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: tolgee-english
+  cancel-in-progress: false
+
+jobs:
+  source:
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      # Always publish current main, including when an older queued run starts.
+      - uses: actions/checkout@v4
+        with:
+          ref: main
+          persist-credentials: false
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+      - run: npm ci --ignore-scripts
+      - name: Upload only the English interface catalogue
+        env:
+          TOLGEE_API_KEY: ${{ secrets.TOLGEE_SOURCE_API_KEY }}
+        run: |
+          if [ -z "$TOLGEE_API_KEY" ]; then
+            echo 'Set the project-scoped TOLGEE_SOURCE_API_KEY repository secret.' >&2
+            exit 1
+          fi
+          npm run i18n:push

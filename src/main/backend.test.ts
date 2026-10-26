@@ -13,6 +13,8 @@ vi.mock('./process.js', async importOriginal => {
   return { ...actual, run: vi.fn(async (cmd: string, args: string[], options: object) => {
     if (cmd.endsWith('/xodus-cli')) {
       const marker = (await fs.readFile(cmd))[63];
+      if (marker === 7) return {code:127,output:'/private/path/xodus-cli: error while loading shared libraries: libdbus-1.so.3: cannot open shared object file: No such file or directory\n'};
+      if (args[0] === 'resolve-package') return { code:0,output: marker === 6 ? '--include-dlc\n' : '--json\n--market\n' };
       return { code: 0, output: args[0] === 'streaming' ? '--selected-content-id\n' + ([3,5].includes(marker) ? '--progress-json\n--control-stdin\n' : '') + (marker === 3 ? '--download-limit-kib\n' : '') : args[0] === 'run' ? (marker === 2 ? '--unsupported' : '--materialize-chain') :
         (marker === 1 ? 'xodus-cli 0.1.0\n  login    Login\n  streaming    Streaming\n' :
         'xodus-cli 0.1.0\n  account    Account\n  login    Login\n  logout    Logout\n  download    Download\n  streaming    Streaming\n  run    Run\n  resolve-package    Resolve packages\n' + (marker === 4 ? '' : '\nOptions:\n  --external-webview-stdio  External UI\n')) };
@@ -29,6 +31,46 @@ const url = (name: string) => `https://github.com/domsvoboda/xodus-nexus/release
 const elf = () => { const bytes = Buffer.alloc(64); bytes.set([0x7f, 0x45, 0x4c, 0x46, 2, 1]); bytes.writeUInt16LE(62, 18); return bytes; };
 
 describe('prebuilt backend', () => {
+  it('reports a missing loader dependency instead of hiding it behind offline status (#328)',async()=>{
+    const root=await fs.mkdtemp(path.join(os.tmpdir(),'nexus-backend-loader-'));
+    try{
+      const cli=path.join(root,'broken','xodus-cli');await fs.mkdir(path.dirname(cli),{recursive:true});
+      const bytes=elf();bytes[63]=7;await fs.writeFile(cli,bytes,{mode:0o755});
+      await fs.mkdir(path.join(root,'xodus-backends'));
+      const pointer=JSON.stringify({binaryPath:cli});await fs.writeFile(path.join(root,'xodus-backends/current.json'),pointer);
+      const name=backendPackageName(backendLock.version),archive=name+'.tar.xz';
+      const manifest={schema:1,authUi:'electron',version:backendLock.version,commit:backendLock.commit,
+        recipeSha256:backendRecipeSha256,compatibility:backendLock.compatibility,platform:'linux',arch:'x64',archive,
+        archiveSha512:'a'.repeat(128),files:{LICENSE:'b'.repeat(64),'xodus-cli':'c'.repeat(64),'xodus-service':'d'.repeat(64)}};
+      const fetcher=vi.fn(async(input:URL|RequestInfo)=>{
+        const target=String(input);
+        if(target.includes('/releases?'))return new Response(JSON.stringify([{tag_name:tag,assets:[archive,name+'.manifest.json',name+'.sha512sum',name+'-source.tar.xz',name+'-source.sha512sum'].map(asset=>({name:asset,browser_download_url:url(asset)}))}]));
+        if(target.endsWith('.manifest.json'))return new Response(JSON.stringify(manifest));
+        if(target.endsWith('.sha512sum'))return new Response(manifest.archiveSha512+'  '+archive+'\n');
+        throw Error('Unexpected download during release check');
+      }) as unknown as typeof fetch;
+      const manager=new BackendManager(root,'',()=>{},()=>false,fetcher);
+      const status=await manager.refresh();expect(status.available).toBe(false);
+      expect(status.blockReason).toContain('D-Bus runtime library is missing');
+      expect(status.blockReason).not.toContain('/private');expect(status.capabilities.login).toBe(false);
+      expect(await fs.readFile(path.join(root,'xodus-backends/current.json'),'utf8')).toBe(pointer);
+      // A successful release check must not erase why the installed backend
+      // cannot start. It also must not activate or download anything by itself.
+      const checked=await manager.checkUpdate();expect(checked.available).toBe(false);expect(checked.releaseAvailable).toBe(true);
+      expect(checked.blockReason).toContain('D-Bus runtime library is missing');
+      bytes[63]=0;await fs.writeFile(cli,bytes);
+      const recovered=await manager.refresh();expect(recovered.available).toBe(true);expect(recovered.blockReason).toBeUndefined();
+    }finally{await fs.rm(root,{recursive:true,force:true});}
+  });
+  it.each([false,true])('only enables Durable selection when the real subcommand advertises it: %s',async supported=>{
+    const root=await fs.mkdtemp(path.join(os.tmpdir(),'nexus-content-cap-'));
+    try{const cli=path.join(root,'target/release/xodus-cli');await fs.mkdir(path.dirname(cli),{recursive:true});
+      const bytes=elf();if(supported)bytes[63]=6;await fs.writeFile(cli,bytes,{mode:0o755});
+      const status=await new BackendManager(root,root,()=>{},()=>false).refresh();
+      expect(status.capabilities.contentPackageSelection).toBe(supported);
+      expect(status.capabilities.packageSelection).toBe(true);
+    }finally{await fs.rm(root,{recursive:true,force:true});}
+  });
   it.each([false, true])('detects structured progress and controls from actual subcommand help: %s', async supported => {
     const root = await fs.mkdtemp(path.join(os.tmpdir(), 'nexus-progress-caps-'));
     try {
@@ -53,7 +95,7 @@ describe('prebuilt backend', () => {
       expect(status.capabilities.streamingControls).toBe(true);expect(status.capabilities.streamingBandwidthLimit).toBe(false);
     } finally {await fs.rm(root,{recursive:true,force:true});}
   });
-  it.each(['valid', 'archive-digest', 'recipe', 'binary-digest', 'symlink', 'hardlink', 'missing-service', 'bad-elf', 'bad-service-elf', 'missing-capability', 'missing-auth-ui', 'missing-launch-chain', 'busy-after-download'])('verifies install and preserves the old pointer on failure: %s', async scenario => {
+  it.each(['valid', 'archive-digest', 'recipe', 'binary-digest', 'symlink', 'hardlink', 'missing-service', 'bad-elf', 'bad-service-elf', 'missing-capability', 'missing-auth-ui', 'missing-launch-chain', 'missing-system-library', 'busy-after-download'])('verifies install and preserves the old pointer on failure: %s', async scenario => {
     const root = await fs.mkdtemp(path.join(os.tmpdir(), 'nexus-backend-test-'));
     try {
       const build = path.join(root, 'build');
@@ -63,6 +105,7 @@ describe('prebuilt backend', () => {
       if (scenario === 'missing-capability') cli[63] = 1;
       if (scenario === 'missing-launch-chain') cli[63] = 2;
       if (scenario === 'missing-auth-ui') cli[63] = 4;
+      if (scenario === 'missing-system-library') cli[63] = 7;
       await fs.writeFile(path.join(bundle, 'xodus-cli'), scenario === 'bad-elf' ? 'not an ELF' : cli);
       await fs.writeFile(path.join(bundle, 'xodus-service'), scenario === 'bad-service-elf' ? 'not an ELF' : elf());
       await fs.writeFile(path.join(bundle, 'LICENSE'), 'synthetic license fixture');
@@ -110,7 +153,7 @@ describe('prebuilt backend', () => {
         expect((await manager.checkUpdate()).updateAvailable).toBe(false);
         await manager.update(() => {}); // Reinstall identical bytes safely.
       } else {
-        await expect(manager.update(() => {})).rejects.toThrow();
+        await expect(manager.update(() => {})).rejects.toThrow(scenario==='missing-system-library'?'D-Bus runtime library is missing':undefined);
         expect(await fs.readFile(path.join(managed, 'current.json'), 'utf8')).toBe(old);
       }
       expect(manager.current.updating).toBe(false);

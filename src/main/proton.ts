@@ -4,6 +4,10 @@ import path from 'node:path';
 import { run } from './process.js';
 import { installedEacRuntime } from './anti-cheat.js';
 import { prepareManagedPrefix } from './managed-prefix.js';
+import { systemGameLocale } from './game-locale.js';
+import { windowsGameLocale } from '../shared/game-language.js';
+import { prepareShaderCache } from './shader-cache.js';
+import { DEFAULT_SHADER_CACHE_GIB, shaderCacheLimits } from '../shared/shader-cache.js';
 
 function shellQuote(value: string): string {
   return `'${value.replace(/'/g, `'"'"'`)}'`;
@@ -85,29 +89,93 @@ async function rebaseRuntimeSymlinks(prefix: string, protonRoot: string): Promis
 export async function prefixUserLocale(prefix: string): Promise<string | undefined> {
   try {
     const userReg = await fs.readFile(path.join(prefix, 'user.reg'), 'latin1');
-    return userReg.match(/"LocaleName"="([^"]*)"/)?.[1];
+    const section = userReg.split(/\r?\n(?=\[)/).find(part => /^\[Control Panel\\\\International\]/m.test(part));
+    return section?.match(/^"LocaleName"="([^"]*)"/m)?.[1];
   } catch { return undefined; }
 }
 
 export async function syncPrefixUserLocale(
   wineCommand: string,
   prefix: string,
-  locale: string,
+  locale: string | undefined,
   env: NodeJS.ProcessEnv,
   onLine: (line: string) => void,
 ): Promise<void> {
-  if (!locale.includes('-')) return;
+  try { await synchronizePrefixUserLocale(wineCommand, prefix, locale, env, onLine); }
+  catch {
+    // An optional language override must not prevent an otherwise valid game
+    // from starting because its locale marker or registry tool is unavailable.
+    onLine('The prefix user locale could not be synchronized; the game may use the previous language.');
+  }
+}
+
+async function synchronizePrefixUserLocale(
+  wineCommand: string,
+  prefix: string,
+  locale: string | undefined,
+  env: NodeJS.ProcessEnv,
+  onLine: (line: string) => void,
+): Promise<void> {
+  const marker = path.join(prefix, '.nexus-user-locale.json');
+  let managed: { schema: number; applied: string } | undefined;
+  try {
+    const handle = await fs.open(marker, constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK);
+    try {
+      const stat = await handle.stat();
+      if (!stat.isFile() || stat.size > 512 || stat.nlink !== 1) throw Error('Invalid locale marker.');
+      const buffer = Buffer.alloc(513);
+      const { bytesRead } = await handle.read(buffer, 0, buffer.length, 0);
+      if (bytesRead > 512) throw Error('Invalid locale marker.');
+      const value = JSON.parse(buffer.subarray(0, bytesRead).toString('utf8'));
+      if (value?.schema !== 1 || typeof value.applied !== 'string' || windowsGameLocale(value.applied) !== value.applied) throw Error('Invalid locale marker.');
+      managed = value;
+    } finally { await handle.close(); }
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code !== 'ENOENT') {
+      onLine('The managed game-language record is unavailable; leaving the prefix locale unchanged.');
+      return;
+    }
+  }
+  if (!locale && !managed) return;
   const current = await prefixUserLocale(prefix);
-  if (current === locale) return;
-  onLine(`Updating the Windows user locale of the game prefix from ${current ?? 'unset'} to ${locale}.`);
+  if (!locale && current && current !== managed!.applied) {
+    // Another tool or the user changed it after Nexus. Do not reset their work.
+    await fs.unlink(marker);
+    return;
+  }
+  const target = locale ? windowsGameLocale(locale) : systemGameLocale(env);
+  if (!target) {
+    onLine('The system language could not be resolved; leaving the prefix locale unchanged.');
+    return;
+  }
+  if (current === target) {
+    if (!locale) await fs.unlink(marker);
+    return;
+  }
+  onLine(`Updating the Windows user locale of the game prefix from ${current ?? 'unset'} to ${target}.`);
   // Wine pins HKCU\Control Panel\International in the prefix at creation and
   // ignores later LANG changes. Deleting the key makes Wine rebuild it from
   // the launch environment, so titles that read the Windows user locale
   // instead of XPackageGetUserLocale follow the selected game language.
-  const result = await run(wineCommand, ['reg', 'delete', 'HKCU\\Control Panel\\International', '/f'], { env, maxOutput: 100_000 });
+  const result = await run(wineCommand, ['reg', 'delete', 'HKCU\\Control Panel\\International', '/f'], { env: { ...env, WINEUSERLOCALE: target }, maxOutput: 100_000 });
   if (result.code !== 0) {
     onLine(`The prefix user locale could not be updated (reg exited with code ${result.code}); the game may use the previous language.`);
+    return;
   }
+  if (locale) {
+    // The key is recreated by the next Wine process from this launch's locale.
+    await fs.mkdir(prefix, { recursive: true });
+    const temporary = `${marker}.${process.pid}.tmp`;
+    const handle = await fs.open(temporary, 'wx', 0o600);
+    try {
+      await handle.writeFile(JSON.stringify({ schema: 1, applied: target }));
+      await handle.close();
+      await fs.rename(temporary, marker);
+    } finally {
+      await handle.close().catch(() => undefined);
+      await fs.unlink(temporary).catch(() => undefined);
+    }
+  } else await fs.unlink(marker);
 }
 
 function unrealCultureGameIniContent(existing: string, locale: string): string | null {
@@ -260,7 +328,9 @@ export async function syncUnrealCultureGameIni(
           ? `Pinned the Unreal text language to ${locale} via ${path.join(product, 'WinGDK', titleId, 'Saved', 'Config', 'WinGDK', 'Game.ini')}.`
           : `Removed the pinned Unreal text language from ${path.join(product, 'WinGDK', titleId, 'Saved', 'Config', 'WinGDK', 'Game.ini')}.`);
       }
-      if (plan.managed) await fs.chmod(gameIni, 0o444).catch(() => undefined);
+      // Clearing our pin must also release our read-only protection so the
+      // game can save its own language choice again.
+      if (plan.managed && locale !== undefined) await fs.chmod(gameIni, 0o444).catch(() => undefined);
     }
   }
 }
@@ -270,7 +340,9 @@ export async function prepareProtonRunner(
   compatibilityDataPath: string,
   steamRoot: string,
   gameWineCommand = winePath,
+  shaderCacheLimitGiB = DEFAULT_SHADER_CACHE_GIB,
 ): Promise<ProtonRunner | undefined> {
+  const cacheLimits = shaderCacheLimits(shaderCacheLimitGiB);
   const protonRoot = path.resolve(path.dirname(winePath), '..', '..');
   const proton = path.join(protonRoot, 'proton');
   const defaultPrefix = path.join(protonRoot, 'files', 'share', 'default_pfx');
@@ -366,6 +438,13 @@ export async function prepareProtonRunner(
   const wineDllPath = [path.join(files, 'lib', 'vkd3d'), path.join(files, 'lib', 'wine')].join(':');
   const executablePath = [path.join(files, 'bin'), process.env.PATH ?? ''].filter(Boolean).join(':');
   const eacRuntime = await installedEacRuntime(steamRoot);
+  // Keep the caches outside temporary launch views, separately for each prefix.
+  const shaderCaches = await prepareShaderCache(compatibilityDataPath);
+  const defaultEnvironment = (name: string, value: string) => [
+    `if [ "\${${name}+x}" != x ]; then`,
+    `  export ${name}=${shellQuote(value)}`,
+    'fi',
+  ];
   const runner = path.join(compatibilityDataPath, 'xodus-proton-wine');
   const temporary = `${runner}.tmp-${process.pid}`;
   const makeScript = (launchWine: string) => [
@@ -387,6 +466,18 @@ export async function prepareProtonRunner(
     `export PATH=${shellQuote(executablePath)}`,
     `export WINEDLLOVERRIDES='dxgi=n;d3d11=n;d3d10core=n;d3d9=n;d3d12=n;d3d12core=n${http2Runtime ? ';winhttp=b;libnghttp2=n' : ''}${dxvkRuntime ? ';d3d8=n' : ''}'`,
     "export WINE_LARGE_ADDRESS_AWARE='1'",
+    // Preserve each explicit setting, including disabled/empty values. Limits
+    // apply only when selecting our managed driver directory, not a custom one.
+    ...defaultEnvironment('VKD3D_SHADER_CACHE_PATH', shaderCaches.vkd3d),
+    'if [ "${__GL_SHADER_DISK_CACHE_PATH+x}" != x ]; then',
+    `  export __GL_SHADER_DISK_CACHE_PATH=${shellQuote(shaderCaches.nvidia)}`,
+    ...defaultEnvironment('__GL_SHADER_DISK_CACHE', '1'),
+    ...defaultEnvironment('__GL_SHADER_DISK_CACHE_SIZE', cacheLimits.bytes),
+    'fi',
+    'if [ "${MESA_SHADER_CACHE_DIR+x}" != x ]; then',
+    `  export MESA_SHADER_CACHE_DIR=${shellQuote(shaderCaches.mesa)}`,
+    ...defaultEnvironment('MESA_SHADER_CACHE_MAX_SIZE', cacheLimits.mesa),
+    'fi',
     // Use Steam's genuine compatibility bridge when installed. Never force a
     // particular game to load it or replace an explicit user configuration.
     ...(eacRuntime ? [

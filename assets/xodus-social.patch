@@ -1,0 +1,331 @@
+diff --git a/crates/xodus-cli/src/commands.rs b/crates/xodus-cli/src/commands.rs
+index 5a66715..1e0e96d 100644
+--- a/crates/xodus-cli/src/commands.rs
++++ b/crates/xodus-cli/src/commands.rs
+@@ -6,6 +6,7 @@ pub mod license;
+ pub mod login;
+ pub mod logout;
+ pub mod profile;
++pub mod social;
+ pub mod game_activity;
+ pub mod achievements;
+ pub mod subscription;
+diff --git a/crates/xodus-cli/src/commands/profile.rs b/crates/xodus-cli/src/commands/profile.rs
+index bab4e91..2f8a2a9 100644
+--- a/crates/xodus-cli/src/commands/profile.rs
++++ b/crates/xodus-cli/src/commands/profile.rs
+@@ -18,7 +18,7 @@ pub(super) async fn bounded(mut response: reqwest::Response, limit: usize) -> Re
+     Ok(bytes)
+ }
+ 
+-fn picture_url(text: &str) -> Option<reqwest::Url> {
++pub(super) fn picture_url(text: &str) -> Option<reqwest::Url> {
+     let url = reqwest::Url::parse(text).ok()?;
+     let host = url.host_str()?;
+     if url.scheme() != "https" || !url.username().is_empty() || url.password().is_some() || url.port().is_some()
+diff --git a/crates/xodus-cli/src/commands/social.rs b/crates/xodus-cli/src/commands/social.rs
+new file mode 100644
+index 0000000..5e9d73c
+--- /dev/null
++++ b/crates/xodus-cli/src/commands/social.rs
+@@ -0,0 +1,268 @@
++//! Explicit friend/chat operations. No background presence, account provisioning,
++//! inbox read markers, automatic retries, invite fabrication or token output.
++use std::{io::{self, Read}, process::ExitCode, time::Duration};
++use serde_json::{Value, json};
++use xodus::tokens::TokenManager;
++
++const PEOPLE: &str = "https://peoplehub.xboxlive.com/users/me/people/friends/decoration/presenceDetail";
++const MESSAGES: &str = "https://xblmessaging.xboxlive.com/network/Xbox/users/me/conversations/users/";
++const LIMIT: usize = 2 * 1024 * 1024;
++
++enum Operation { Friends, Conversation(String), Send(String, String) }
++struct Plan { url: String, contract: &'static str, body: Option<Value> }
++
++fn xuid(value: &Value) -> Result<String, &'static str> {
++    let text = value.as_str().ok_or("invalid-user")?;
++    if text.is_empty() || text.len() > 20 || !text.bytes().all(|c| c.is_ascii_digit())
++        || text.starts_with('0') || text.parse::<u64>().ok().filter(|n| *n > 0).is_none() { return Err("invalid-user"); }
++    Ok(text.to_owned())
++}
++fn text(value: &Value, limit: usize) -> Option<&str> {
++    value.as_str().filter(|s| s.chars().count() <= limit && !s.chars().any(|c| c.is_control() && c != '\n' && c != '\t'))
++}
++fn operation(value: &Value) -> Result<Operation, &'static str> {
++    let object = value.as_object().ok_or("invalid-request")?;
++    let expected = match value["op"].as_str() {
++        Some("friends") => 1, Some("conversation") => 2, Some("send") => 3, _ => return Err("invalid-request"),
++    };
++    if object.len() != expected { return Err("invalid-request"); }
++    match value["op"].as_str() {
++        Some("friends") => Ok(Operation::Friends),
++        Some("conversation") => Ok(Operation::Conversation(xuid(&value["xuid"])?)),
++        Some("send") => {
++            let message = text(&value["text"], 256).filter(|s| !s.trim().is_empty()).ok_or("invalid-message")?;
++            Ok(Operation::Send(xuid(&value["xuid"])?, message.to_owned()))
++        },
++        _ => Err("invalid-request"),
++    }
++}
++fn plan(op: &Operation) -> Plan {
++    match op {
++        Operation::Friends => Plan { url: PEOPLE.into(), contract: "7", body: None },
++        Operation::Conversation(user) => Plan { url: format!("{MESSAGES}xuid({user})?maxItems=100"), contract: "1", body: None },
++        Operation::Send(user, message) => Plan { url: format!("{MESSAGES}xuid({user})"), contract: "1",
++            body: Some(json!({"parts":[{"contentType":"text","version":0,"text":message}]})) },
++    }
++}
++fn friends(value: &Value) -> Result<Value, &'static str> {
++    let people = value["people"].as_array().filter(|p| p.len() <= 1000).ok_or("friends-response")?;
++    let mut result = Vec::new();
++    let mut seen = std::collections::HashSet::new();
++    for person in people {
++        let id = xuid(&person["xuid"]).map_err(|_| "friends-response")?;
++        if !seen.insert(id.clone()) { return Err("friends-response"); }
++        let gamertag = text(&person["gamertag"], 128).filter(|s| !s.trim().is_empty()).ok_or("friends-response")?;
++        let presence = match person["presenceState"].as_str() { Some("Online") => "online", Some("Offline") => "offline", _ => "unknown" };
++        let avatar = person["displayPicRaw"].as_str().filter(|url| url.len() <= 4096)
++            .and_then(super::profile::picture_url).map(|url|url.to_string());
++        result.push(json!({"xuid":id,"gamertag":gamertag,"presence":presence,
++            "activity":text(&person["presenceText"],512),"avatarUrl":avatar}));
++    }
++    Ok(json!({"friends":result}))
++}
++fn conversation(value: &Value, expected: &str) -> Result<Value, &'static str> {
++    if value["networkId"] != "Xbox" || value["type"] != "OneToOne" { return Err("conversation-response"); }
++    let empty = Vec::new();
++    let messages = if value["messages"].is_null() { &empty } else { value["messages"].as_array().ok_or("conversation-response")? };
++    if messages.len() > 100 { return Err("conversation-response"); }
++    // Xbox omits participants for a successful, empty one-to-one thread.
++    // Do not invent members or relax sender validation for nonempty threads.
++    let members = if value["participants"].is_null() && messages.is_empty() { &empty }
++        else { value["participants"].as_array().ok_or("conversation-response")? };
++    if !value["participants"].is_null() || !messages.is_empty() {
++        if members.len() != 2 || !members.iter().any(|p| p.as_str() == Some(expected))
++            || members.iter().any(|p| xuid(p).is_err()) || members[0] == members[1] { return Err("conversation-response"); }
++    }
++    let mut result = Vec::new();
++    let mut seen = std::collections::HashSet::new();
++    for message in messages {
++        let sender = xuid(&message["sender"]).map_err(|_| "conversation-response")?;
++        if !members.iter().any(|p| p.as_str() == Some(&sender)) { return Err("conversation-response"); }
++        let id = text(&message["messageId"],128).filter(|s| !s.is_empty()).ok_or("conversation-response")?;
++        if !seen.insert(id) || (!message["networkId"].is_null() && message["networkId"] != "Xbox") { return Err("conversation-response"); }
++        let at = message["timestamp"].as_str().filter(|s| chrono::DateTime::parse_from_rfc3339(s).is_ok()).ok_or("conversation-response")?;
++        let parts = message["contentPayload"]["content"]["parts"].as_array();
++        let hidden = message["isDeleted"].as_bool().ok_or("conversation-response")?
++            || parts.is_none_or(|parts| parts.is_empty() || parts.len() > 16 || parts.iter().any(|p|
++                p["contentType"] != "text" || (!p["unsuitableFor"].is_null() && p["unsuitableFor"].as_array().is_none_or(|a| !a.is_empty())) || text(&p["text"],16384).is_none()));
++        let content = if hidden { None } else { Some(parts.unwrap().iter().filter_map(|p| p["text"].as_str()).collect::<Vec<_>>().join("\n")) };
++        result.push(json!({"id":id,"sender":sender,"at":at,"text":content,"hidden":hidden}));
++    }
++    Ok(json!({"xuid":expected,"messages":result,"hasMore":value["continuationToken"].as_str().is_some_and(|s| !s.is_empty())}))
++}
++fn payload(op: &Operation, value: &Value) -> Result<Value, &'static str> {
++    match op {
++        Operation::Friends => friends(value),
++        Operation::Conversation(user) => conversation(value,user),
++        Operation::Send(_,_) => {
++            if text(&value["messageId"],128).is_none_or(str::is_empty) { return Err("send-unconfirmed"); }
++            Ok(json!({"sent":true}))
++        },
++    }
++}
++async fn execute(tokens: &TokenManager, op: &Operation) -> Result<Value, &'static str> {
++    // Existing bounded, silent Xbox session path; no new client identity or login.
++    let (client, authorization, account) = super::profile::xbox_session(tokens).await?;
++    if tokens.get_user().map_err(|_| "account-changed")?.username != account { return Err("account-changed"); }
++    let value = call(&client,&authorization,op,plan(op)).await?;
++    if tokens.get_user().map_err(|_| "account-changed")?.username != account { return Err("account-changed"); }
++    Ok(json!({"schema":1,"account":account,"result":value}))
++}
++async fn call(client: &reqwest::Client, authorization: &str, op: &Operation, plan: Plan) -> Result<Value, &'static str> {
++    let mut request = if plan.body.is_some() { client.post(&plan.url) } else { client.get(&plan.url) };
++    request = request.header("Authorization",authorization).header("x-xbl-contract-version",plan.contract).header("Accept-Language","en-US");
++    if let Some(body) = plan.body { request = request.json(&body); }
++    let response = request.send().await.map_err(|_| "request-unconfirmed")?;
++    let status = response.status().as_u16();
++    let scope=match op {Operation::Friends=>"friends-http",Operation::Conversation(_)=>"conversation-http",Operation::Send(_,_)=>"send-http"};
++    eprintln!("NEXUS_SOCIAL_DIAGNOSTIC_V1 {scope} {status}");
++    if status != 200 && status != 201 { return Err(match status {
++        401 => "sign-in-required", 403 => "privacy-or-access-denied", 404 => "not-found", 429 => "rate-limited", _ => "service-unavailable",
++    }); }
++    let bytes = super::profile::bounded(response,LIMIT).await?;
++    let value: Value = serde_json::from_slice(&bytes).map_err(|_| "invalid-response")?;
++    payload(op,&value)
++}
++pub async fn run(tokens: &TokenManager) -> ExitCode {
++    let mut bytes = Vec::new();
++    if io::stdin().lock().take(16385).read_to_end(&mut bytes).is_err() || bytes.len() > 16384 {
++        eprintln!("NEXUS_SOCIAL_ERROR_V1 invalid-request"); return ExitCode::FAILURE;
++    }
++    let op = serde_json::from_slice(&bytes).map_err(|_| "invalid-request").and_then(|v| operation(&v));
++    let result = match op {
++        Ok(op) => tokio::time::timeout(Duration::from_secs(55),execute(tokens,&op)).await.unwrap_or(Err("request-unconfirmed")),
++        Err(stage) => Err(stage),
++    };
++    match result {
++        Ok(value) => { println!("{value}"); ExitCode::SUCCESS },
++        Err(stage) => { eprintln!("NEXUS_SOCIAL_ERROR_V1 {stage}"); ExitCode::FAILURE },
++    }
++}
++
++#[cfg(test)]
++mod tests {
++    use super::*;
++    #[test]
++    fn social_empty_conversation_can_omit_participants_without_inventing_messages_or_identity() {
++        for value in [json!({"networkId":"Xbox","type":"OneToOne","participants":null,"messages":[]}),
++            json!({"networkId":"Xbox","type":"OneToOne","messages":[]})] {
++            assert_eq!(conversation(&value,"42").unwrap(),json!({"xuid":"42","messages":[],"hasMore":false}));
++        }
++        for value in [json!({"networkId":"other","type":"OneToOne","messages":[]}),
++            json!({"networkId":"Xbox","type":"Group","messages":[]}),
++            json!({"networkId":"Xbox","type":"OneToOne","participants":["43","44"],"messages":[]}),
++            json!({"networkId":"Xbox","type":"OneToOne","participants":[],"messages":[]}),
++            json!({"networkId":"Xbox","type":"OneToOne","messages":[{"sender":"42"}]})] {
++            assert!(conversation(&value,"42").is_err());
++        }
++    }
++    #[test]
++    fn social_input_rejects_arbitrary_endpoints_and_invalid_ids_before_authentication() {
++        for v in [json!({}),json!({"op":"invite"}),json!({"op":"friends","url":"https://evil.invalid"}),
++            json!({"op":"conversation","xuid":"../escape"}),json!({"op":"conversation","xuid":42}),
++            json!({"op":"conversation","xuid":"18446744073709551616"}),json!({"op":"conversation","xuid":"0"}),
++            json!({"op":"conversation","xuid":"01"}),json!({"op":"send","xuid":"42","text":"  "}),
++            json!({"op":"send","xuid":"42","text":"bad\u{0}text"}),json!({"op":"send","xuid":"42","text":"x".repeat(257)})] { assert!(operation(&v).is_err()); }
++    }
++    #[test]
++    fn social_plans_use_only_exact_https_hosts_and_no_retry_or_identity_impersonation() {
++        assert_eq!(plan(&Operation::Friends).url,PEOPLE);
++        let p=plan(&operation(&json!({"op":"send","xuid":"42","text":"Hi 🐱"})).unwrap());
++        assert_eq!(p.url,format!("{MESSAGES}xuid(42)"));assert_eq!(p.contract,"1");
++        assert_eq!(p.body.unwrap(),json!({"parts":[{"contentType":"text","version":0,"text":"Hi 🐱"}]}));
++        assert!(operation(&json!({"op":"send","xuid":"42","text":"🐱".repeat(256)})).is_ok());
++    }
++    #[test]
++    fn social_friends_keep_unknown_presence_honest_and_drop_private_server_fields() {
++        let value=json!({"people":[{"xuid":"42","gamertag":"Example","presenceState":"Away","realName":"PRIVATE","presenceText":"In menu"}]});
++        let result=friends(&value).unwrap();assert_eq!(result["friends"][0]["presence"],"unknown");
++        assert!(!result.to_string().contains("PRIVATE"));assert!(friends(&json!({"people":[{},{}]})).is_err());
++        let mut duplicate=value.clone();duplicate["people"].as_array_mut().unwrap().push(value["people"][0].clone());assert!(friends(&duplicate).is_err());
++    }
++    #[test]
++    fn social_friend_picture_is_optional_and_only_uses_exact_trusted_image_hosts() {
++        for (url, allowed) in [("https://images-eds-ssl.xboxlive.com/image?format=png",true),
++            ("https://gamerpic.xboxlive.com/avatar.png",true),("http://images-eds-ssl.xboxlive.com/a",false),
++            ("https://images-eds-ssl.xboxlive.com.evil.test/a",false),("file:///private",false),
++            ("https://secret@images-eds-ssl.xboxlive.com/a",false),("https://127.0.0.1/a",false)] {
++            let value=json!({"people":[{"xuid":"42","gamertag":"Example","displayPicRaw":url}]});
++            let result=friends(&value).unwrap();
++            assert_eq!(result["friends"][0]["avatarUrl"].is_string(),allowed);
++        }
++    }
++    #[test]
++    fn social_chat_preserves_safety_filters_and_never_fetches_media() {
++        let mut v=json!({"networkId":"Xbox","type":"OneToOne","participants":["42","43"],"messages":[{
++            "messageId":"example","sender":"42","timestamp":"2026-10-25T00:00:00Z","isDeleted":false,
++            "contentPayload":{"content":{"parts":[{"contentType":"text","text":"<script>plain text</script>","unsuitableFor":[]}]}}
++        }]});
++        assert_eq!(conversation(&v,"42").unwrap()["messages"][0]["text"],"<script>plain text</script>");
++        v["messages"][0]["contentPayload"]["content"]["parts"][0]["unsuitableFor"]=json!(["viewer"]);
++        let r=conversation(&v,"42").unwrap();assert!(r["messages"][0]["text"].is_null());assert_eq!(r["messages"][0]["hidden"],true);
++        v["messages"][0]["sender"]=json!("99");assert!(conversation(&v,"42").is_err());
++        assert!(conversation(&v,"99").is_err());
++    }
++    #[test]
++    fn social_send_success_requires_actual_service_acknowledgement() {
++        let op=Operation::Send("42".into(),"hello".into());
++        assert!(payload(&op,&json!({})).is_err());assert!(payload(&op,&json!({"messageId":"example"})).unwrap()["sent"].as_bool().unwrap());
++    }
++    #[tokio::test]
++    async fn social_http_uses_one_explicit_request_and_honors_denials_without_retry() {
++        use std::{net::TcpListener, io::{Read,Write}, thread};
++        for (status, body) in [(200,"{\"messageId\":\"synthetic\"}"),(403,"{}"),(429,"{}"),(302,"{}"),(200,"not-json")] {
++            let listener=TcpListener::bind("127.0.0.1:0").unwrap();
++            let address=listener.local_addr().unwrap();
++            let task=thread::spawn(move||{
++                let (mut socket,_)=listener.accept().unwrap();socket.set_read_timeout(Some(Duration::from_secs(2))).unwrap();
++                let mut bytes=Vec::new();let mut chunk=[0u8;2048];
++                loop {
++                    let n=socket.read(&mut chunk).unwrap();if n==0 {break;} bytes.extend_from_slice(&chunk[..n]);
++                    if let Some(end)=bytes.windows(4).position(|s|s==b"\r\n\r\n") {
++                        let headers=String::from_utf8_lossy(&bytes[..end]).to_ascii_lowercase();
++                        let length=headers.lines().find_map(|s|s.strip_prefix("content-length: ").and_then(|n|n.parse::<usize>().ok())).unwrap_or(0);
++                        if bytes.len()>=end+4+length {break;}
++                    }
++                    assert!(bytes.len()<16384);
++                }
++                let reply=format!("HTTP/1.1 {status} Test\r\nContent-Length: {}\r\nLocation: http://127.0.0.1:1/not-allowed\r\nConnection: close\r\n\r\n{body}",body.len());
++                socket.write_all(reply.as_bytes()).unwrap();String::from_utf8(bytes).unwrap()
++            });
++            let client=reqwest::Client::builder().redirect(reqwest::redirect::Policy::none()).timeout(Duration::from_secs(2)).build().unwrap();
++            let op=Operation::Send("42".into(),"synthetic-only".into());
++            let result=call(&client,"SYNTHETIC_NO_TOKEN",&op,Plan{url:format!("http://{address}/fixture"),contract:"1",body:plan(&op).body}).await;
++            let captured=task.join().unwrap();
++            assert!(captured.starts_with("POST /fixture HTTP/1.1"));
++            assert!(captured.to_ascii_lowercase().contains("authorization: synthetic_no_token"));
++            assert!(captured.to_ascii_lowercase().contains("x-xbl-contract-version: 1"));
++            let request_body=captured.split_once("\r\n\r\n").unwrap().1;
++            assert_eq!(serde_json::from_str::<Value>(request_body).unwrap(),plan(&op).body.unwrap());
++            match (status,body) {
++                (200,"not-json")=>assert_eq!(result.unwrap_err(),"invalid-response"),
++                (200,_)=>assert_eq!(result.unwrap()["sent"],true),
++                (403,_)=>assert_eq!(result.unwrap_err(),"privacy-or-access-denied"),
++                (429,_)=>assert_eq!(result.unwrap_err(),"rate-limited"),
++                _=>assert_eq!(result.unwrap_err(),"service-unavailable"),
++            }
++        }
++    }
++    #[tokio::test]
++    async fn social_http_accepts_empty_thread_without_participants_and_never_posts_a_read_marker() {
++        use std::{net::TcpListener,io::{Read,Write},thread};
++        let listener=TcpListener::bind("127.0.0.1:0").unwrap();let address=listener.local_addr().unwrap();
++        let task=thread::spawn(move||{
++            let(mut socket,_)=listener.accept().unwrap();socket.set_read_timeout(Some(Duration::from_secs(2))).unwrap();
++            let mut bytes=Vec::new();let mut chunk=[0;1024];
++            while !bytes.windows(4).any(|b|b==b"\r\n\r\n") {let n=socket.read(&mut chunk).unwrap();assert!(n>0);bytes.extend_from_slice(&chunk[..n]);assert!(bytes.len()<4096);}
++            let body=r#"{"networkId":"Xbox","type":"OneToOne","participants":null,"messages":[]}"#;
++            write!(socket,"HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",body.len()).unwrap();
++            String::from_utf8(bytes).unwrap()
++        });
++        let op=Operation::Conversation("42".into());
++        let client=reqwest::Client::builder().redirect(reqwest::redirect::Policy::none()).timeout(Duration::from_secs(2)).build().unwrap();
++        let result=call(&client,"SYNTHETIC_NO_TOKEN",&op,Plan{url:format!("http://{address}/thread?maxItems=100"),contract:"1",body:None}).await.unwrap();
++        assert_eq!(result,json!({"xuid":"42","messages":[],"hasMore":false}));
++        let captured=task.join().unwrap();assert!(captured.starts_with("GET /thread?maxItems=100 HTTP/1.1\r\n"));
++        assert!(!captured.contains("horizon"));assert!(!captured.contains("parts"));
++    }
++}
+diff --git a/crates/xodus-cli/src/main.rs b/crates/xodus-cli/src/main.rs
+index 48e8878..ea6f6d9 100644
+--- a/crates/xodus-cli/src/main.rs
++++ b/crates/xodus-cli/src/main.rs
+@@ -93,6 +93,11 @@ enum SubCommand {
+         #[arg(long, default_value_t = false)]
+         json: bool,
+     },
++    #[command(about = "Explicit Xbox friends and text chat, JSON request on standard input")]
++    Social {
++        #[arg(long, required = true)]
++        json: bool,
++    },
+     #[command(about = "Read Xbox time played and last activity for one title without starting sign-in")]
+     GameActivity {
+         title_id: u32,
+@@ -287,6 +292,7 @@ async fn main() -> ExitCode {
+         args.command,
+         SubCommand::Account { .. }
+             | SubCommand::Profile { .. }
++            | SubCommand::Social { .. }
+             | SubCommand::GameActivity { .. }
+             | SubCommand::Achievements { .. }
+             | SubCommand::Library { .. }
+@@ -358,6 +364,7 @@ async fn main() -> ExitCode {
+             }
+         },
+         SubCommand::Profile { json } => commands::profile::run(&tokens, json).await,
++        SubCommand::Social { .. } => commands::social::run(&tokens).await,
+         SubCommand::GameActivity { title_id, json } => commands::game_activity::run(&tokens, title_id, json).await,
+         SubCommand::Achievements { title_id, json } => commands::achievements::run(&tokens, title_id, json).await,
+         SubCommand::Login => commands::login::run(&client, &tokens).await,

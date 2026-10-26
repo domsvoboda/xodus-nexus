@@ -8,7 +8,7 @@ import { AuthBrowserNotFoundError } from './auth-browser.js';
 const folder = path.dirname(fileURLToPath(import.meta.url));
 const USER_AGENT = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64; MSAppHost/3.0) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/70.0.3538.102 Safari/537.36 Edge/18.26100';
 
-export function authViewFactory(parent?: BrowserWindow, testSession?: Session, requestBrowser?: () => Promise<void>): AuthViewFactory {
+export function authViewFactory(parent?: BrowserWindow, testSession?: Session, requestBrowser?: () => Promise<void>, localize: (text: string) => string = text => text): AuthViewFactory {
   return (send, cancel, fail): AuthView => {
     // No persist: prefix. Cookies are shared only between this attempt's steps.
     const isolated = testSession ?? session.fromPartition(`nexus-auth-${randomUUID()}`, { cache: false });
@@ -39,8 +39,14 @@ export function authViewFactory(parent?: BrowserWindow, testSession?: Session, r
         if (disposed || !trustedAuthUrl(frame.url)) throw Error('Unsupported sign-in URL.');
         close(); id = frame.session;
         const current = new BrowserWindow({
-          width: 580, height: 760, parent, show: false, title: 'Xodus sign in', autoHideMenuBar: true,
+          width: 580, height: 760, parent, show: false, title: localize('Xodus sign in'), autoHideMenuBar: true,
           webPreferences: { session: isolated, preload: path.join(folder, '../preload/auth.cjs'), nodeIntegration: false, contextIsolation: true,
+            additionalArguments: ['--nexus-auth-ui=' + JSON.stringify({
+              label: localize('Xodus Nexus passkey help'), title: localize('Passkey taking too long?'),
+              help: localize('If your account uses a passkey or security key, continue in Google Chrome. Or cancel this request to choose another method.'),
+              browser: localize('Continue in browser'), cancel: localize('Cancel passkey request'),
+              error: localize('Could not open browser sign-in. Google Chrome must be installed. Try again or choose another method.'),
+            })].filter(argument => Buffer.byteLength(argument, 'utf8') <= 16000),
             sandbox: true, webSecurity: true, allowRunningInsecureContent: false, webviewTag: false, devTools: false, navigateOnDragDrop: false },
         });
         window = current; current.webContents.setUserAgent(USER_AGENT);

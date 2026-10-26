@@ -3,6 +3,7 @@ import type { KeyringStatus } from '../shared/types.js';
 import { externalLauncherEnvironment } from './launcher-environment.js';
 import { secretServiceProvider, type SecretServiceProvider } from './keyring-provider.js';
 import { startSessionKeyring, type KdeProvider } from './keyring-session.js';
+import { keyringCommandFailure, KeyringMetadataError, keyringStep, type KeyringDiagnostic } from './keyring-diagnostic.js';
 
 export type KeyringActions = {
   startProvider?: (provider: KdeProvider, env: NodeJS.ProcessEnv, owned: () => Promise<boolean>) => Promise<void>;
@@ -10,6 +11,7 @@ export type KeyringActions = {
   unlock?: () => Promise<string>;
   canCreate?: () => boolean;
   create?: () => Promise<string>;
+  diagnostic?: (value: KeyringDiagnostic) => void;
 };
 
 type Execute = (command: string, args: string[]) => Promise<string>;
@@ -35,9 +37,9 @@ export class KeyringSupport {
     this.environment = env;
     this.identifyProvider = identifyProvider ?? (() => secretServiceProvider(env));
     this.execute = execute ?? ((command, args) => new Promise((resolve, reject) => {
-      execFile(command, args, { env, timeout: 3500, killSignal: 'SIGKILL', maxBuffer: 128_000 }, (error, stdout) => {
+      execFile(command, args, { env, timeout: 3500, killSignal: 'SIGKILL', maxBuffer: 128_000 }, (error, stdout, stderr) => {
         // Provider stderr and config paths never cross the renderer boundary.
-        if (error) reject(new Error('Keyring metadata check unavailable.'));
+        if (error) reject(keyringCommandFailure(error, stderr));
         else resolve(stdout);
       });
     }));
@@ -127,10 +129,30 @@ export class KeyringSupport {
   }
 
   private async bus(type: string, args: string[]): Promise<unknown> {
-    const raw = await this.execute('busctl', ['--user', '--json=short', '--auto-start=no', '--allow-interactive-authorization=no', '--timeout=2s', 'call', ...args]);
-    const response = JSON.parse(raw) as { type?: unknown; data?: unknown };
-    if (response.type !== type || !Array.isArray(response.data) || response.data.length !== 1) throw Error('Unexpected metadata reply');
-    return response.data[0];
+    const start = performance.now(), step = keyringStep(args);
+    try {
+      const raw = await this.execute('busctl', ['--user', '--json=short', '--auto-start=no', '--allow-interactive-authorization=no', '--timeout=2s', 'call', ...args]);
+      let response: { type?: unknown; data?: unknown };
+      try { response = JSON.parse(raw); } catch { throw new KeyringMetadataError('invalid-response'); }
+      if (!response || response.type !== type || !Array.isArray(response.data) || response.data.length !== 1)
+        throw new KeyringMetadataError('invalid-response');
+      const value = response.data[0];
+      const objectPath = (p: unknown) => typeof p === 'string' && /^\/(?:[A-Za-z0-9_]+\/?)*$/.test(p);
+      const variant = value as { type?: unknown; data?: unknown } | null;
+      const valid = step === 'NameHasOwner' ? typeof value === 'boolean'
+        : step === 'ReadAlias' ? objectPath(value)
+        : step === 'ListActivatableNames' ? Array.isArray(value) && value.every(v => typeof v === 'string')
+        : step === 'StartServiceByName' ? value === 1 || value === 2
+        : step === 'Locked' ? variant?.type === 'b' && typeof variant.data === 'boolean'
+        : variant?.type === 'ao' && Array.isArray(variant.data) && variant.data.every(objectPath);
+      if (!valid) throw new KeyringMetadataError('invalid-response');
+      return value;
+    } catch (error) {
+      const failure = error instanceof KeyringMetadataError ? error : new KeyringMetadataError('unavailable');
+      try { this.actions.diagnostic?.({ step, failure: failure.failure, dbusError: failure.dbusError, elapsedMs: performance.now() - start }); }
+      catch { /* Logging must not alter wallet or authentication behavior. */ }
+      throw failure;
+    }
   }
 
   private async inspect(): Promise<{ status: KeyringStatus; target?: string; provider?: SecretServiceProvider; autoStartAllowed?: boolean }> {
@@ -185,8 +207,10 @@ export class KeyringSupport {
       }
       if (target) return { target, provider, autoStartAllowed: configurationKnown && (provider === 'kwallet' || provider === 'ksecretd'), status: this.status('stopped', 'Start the installed keyring for this session. Its own password window may appear; wallet security settings are unchanged.', true) };
       return { status: this.status('missing', 'No compatible Secret Service is running or available for activation. Install or enable your desktop keyring provider, then check again.') };
-    } catch {
-      return { status: this.status('unavailable', 'Keyring status could not be checked. Ensure your user D-Bus session and busctl are available, and that your desktop wallet is enabled and unlocked.') };
+    } catch (error) {
+      return { status: this.status('unavailable', error instanceof KeyringMetadataError && error.failure === 'timeout'
+        ? 'The wallet service did not answer in time. Check your desktop wallet service, then try again. See the backend diagnostic log for details.'
+        : 'Keyring status could not be checked. Ensure your user D-Bus session and busctl are available, and that your desktop wallet is enabled and unlocked. See the backend diagnostic log for details.') };
     }
   }
 }

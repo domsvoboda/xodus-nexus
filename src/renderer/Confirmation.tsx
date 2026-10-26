@@ -1,3 +1,4 @@
+import { ui } from './i18n';
 import { createContext, useContext, useEffect, useRef, useState, type ReactNode } from 'react';
 
 type Question = { title: string; message: string; confirmLabel?: string };
@@ -38,8 +39,8 @@ export function ConfirmationProvider({ children }: { children: ReactNode }) {
   return <Confirmation.Provider value={ask}>{children}{question ? <div className="dialog-backdrop" onMouseDown={event => { if (event.target === event.currentTarget) choose(false); }}>
     <section ref={dialog} className="game-dialog" role="dialog" aria-modal="true" aria-label={question.title}>
       <h2>{question.title}</h2><p>{question.message}</p>
-      <div className="dialog-actions"><button className="secondary" data-gamepad-cancel onClick={() => choose(false)}>Cancel</button>
-        <button className="primary" onClick={() => choose(true)}>{question.confirmLabel ?? 'Continue'}</button></div>
+      <div className="dialog-actions"><button className="secondary" data-gamepad-cancel onClick={() => choose(false)}>{ui("ui.cancel_19766ed")}</button>
+        <button className="primary" onClick={() => choose(true)}>{question.confirmLabel ?? ui("ui.continue_31fbef1")}</button></div>
     </section>
   </div> : null}</Confirmation.Provider>;
 }

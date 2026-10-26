@@ -1,0 +1,40 @@
+diff --git a/crates/xodus-cli/src/commands/social.rs b/crates/xodus-cli/src/commands/social.rs
+--- a/crates/xodus-cli/src/commands/social.rs
++++ b/crates/xodus-cli/src/commands/social.rs
+@@ -93,8 +93,21 @@ fn payload(op: &Operation, value: &Value) -> Result<Value, &'static str> {
+         Operation::Friends => friends(value),
+         Operation::Conversation(user) => conversation(value,user),
+         Operation::Send(_,_) => {
+-            if text(&value["messageId"],128).is_none_or(str::is_empty) { return Err("send-unconfirmed"); }
+-            Ok(json!({"sent":true}))
++            let identifier = |v:&Value| text(v,128).is_some_and(|s| !s.trim().is_empty() && !s.chars().any(char::is_control));
++            let nudge = match value.get("nudgeUser") {
++                None | Some(Value::Null) => 0,
++                Some(Value::Bool(false)) => 1,
++                Some(Value::Bool(true)) => 2,
++                _ => 3,
++            };
++            // Fixed shape flags only, never identifiers, text or raw service errors.
++            eprintln!("NEXUS_SOCIAL_RECEIPT_V1 {} {} {nudge} {}",u8::from(identifier(&value["messageId"])),
++                u8::from(identifier(&value["conversationId"])),u8::from(!value["error"].is_null() || !value["errors"].is_null()));
++            let id = text(&value["messageId"],128).filter(|s| !s.trim().is_empty() && !s.chars().any(char::is_control)).ok_or("send-unconfirmed")?;
++            // Acceptance is not recipient delivery. Return the real server ID so
++            // the caller can reconcile it with history without inventing a message
++            // or automatically repeating a non-idempotent send.
++            Ok(json!({"sent":true,"messageId":id}))
+         },
+     }
+ }
+@@ -209,6 +222,11 @@ mod tests {
+     fn social_send_success_requires_actual_service_acknowledgement() {
+         let op=Operation::Send("42".into(),"hello".into());
+-        assert!(payload(&op,&json!({})).is_err());assert!(payload(&op,&json!({"messageId":"example"})).unwrap()["sent"].as_bool().unwrap());
++        for value in [json!({}),json!({"messageId":null}),json!({"messageId":42}),
++            json!({"messageId":""}),json!({"messageId":" "}),json!({"messageId":"bad\n"}),
++            json!({"messageId":"x".repeat(129)})] {
++            assert_eq!(payload(&op,&value).unwrap_err(),"send-unconfirmed");
++        }
++        assert_eq!(payload(&op,&json!({"messageId":"example","private":"ignored"})).unwrap(),json!({"sent":true,"messageId":"example"}));
+     }
+     #[tokio::test]
+     async fn social_http_uses_one_explicit_request_and_honors_denials_without_retry() {

@@ -21,12 +21,16 @@ npm run test:ci-tools
 
 Keep one shared runtime. Use disposable test directories, never a user's active
 game installation, saves or Xodus checkout. Keep credentials, raw diagnostics,
-prefixes and agent handoffs outside Git. Include redacted reproduction steps,
+prefixes and private work records outside Git. Include redacted reproduction steps,
 versions and actual test results in bug reports and PRs.
 
 Develop and pull requests run source checks without distribution builds. Only
 main builds launcher/backend/runtime candidates, once per relevant source change.
 Promotion reuses those exact files without rebuilding.
+Use `[source-only]` in the main integration commit subject when only source
+publication is intended. Source checks still run, but launcher packaging and
+backend compilation are skipped. A normal main integration or explicit workflow
+dispatch retains the usual candidate build behavior.
 Stable publication requires explicit maintainer approval
 for the exact tested artifact, with no rebuild after validation. The approval
 record is [release-validation.json](.github/release-validation.json).
@@ -34,3 +38,6 @@ record is [release-validation.json](.github/release-validation.json).
 Detailed guides are prepared for the [wiki](https://github.com/domsvoboda/xodus-nexus/wiki)
 (currently pending). Runtime reconstruction instructions and source/license
 locks remain alongside the [build scripts](scripts/SHARED_RUNTIME.md).
+
+For interface translations and Tolgee import/export, see
+[Translating the launcher](docs/TRANSLATING.md).

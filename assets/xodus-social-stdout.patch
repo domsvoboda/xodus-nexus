@@ -1,0 +1,92 @@
+diff --git a/crates/xodus-cli/src/commands/social_session.rs b/crates/xodus-cli/src/commands/social_session.rs
+index b8fef8e..10b9a53 100644
+--- a/crates/xodus-cli/src/commands/social_session.rs
++++ b/crates/xodus-cli/src/commands/social_session.rs
+@@ -85,6 +85,24 @@ async fn response(response: reqwest::Response, stage: &'static str, created: boo
+     serde_json::from_slice(&super::super::profile::bounded(response, super::LIMIT).await?).map_err(|_| "invalid-response")
+ }
+ 
++async fn messaging_relying_party(cache: &mut SignaturePolicyCache) -> Result<Option<String>, &'static str> {
++    // The pinned XAL audience helper unconditionally prints endpoint details to
++    // stdout. Keep the same selection against the already fetched typed NSAL
++    // response, but reserve stdout for the one account-bound JSON result.
++    // Signing and verification still use the unmodified XAL policy cache.
++    let url = reqwest::Url::parse(super::MESSAGES).map_err(|_| "chat-policy-response")?;
++    let endpoints = cache.get_endpoints().ok_or("chat-policy-response")?;
++    Ok(endpoints.end_points.iter().filter(|endpoint| {
++        endpoint.protocol.eq_ignore_ascii_case(url.scheme())
++            && url.host_str().is_some_and(|host| match endpoint.host_type.as_str() {
++                "fqdn" => host.eq_ignore_ascii_case(&endpoint.host),
++                "wildcard" => host.ends_with(endpoint.host.trim_start_matches('*')),
++                _ => false,
++            })
++            && endpoint.path.as_ref().is_none_or(|path| url.path() == path)
++    }).max_by_key(|endpoint| endpoint.host.len()).and_then(|endpoint| endpoint.relying_party.clone()))
++}
++
+ impl Session {
+     async fn new(tokens: &TokenManager) -> Result<Self, &'static str> {
+         let client = Client::builder().redirect(reqwest::redirect::Policy::none())
+@@ -109,7 +127,7 @@ impl Session {
+         let endpoints = serde_json::from_value(endpoints).map_err(|_| "chat-policy-response")?;
+         let mut signer = RequestSigner::new();
+         signer.signature_policy_cache = SignaturePolicyCache::new(endpoints);
+-        let rp = signer.signature_policy_cache.find_relying_party_for_url(super::MESSAGES).await.map_err(|_| "chat-policy-response")?
++        let rp = messaging_relying_party(&mut signer.signature_policy_cache).await?
+             .ok_or("chat-policy-missing")?;
+         if rp != RP { return Err("chat-policy-audience"); }
+         let request = client.post(DEVICE).header("x-xbl-contract-version", "1").json(&json!({
+@@ -179,6 +197,53 @@ mod tests {
+         for (name, value) in request.headers() { builder = builder.header(name.as_str(), value.as_bytes()); }
+         builder.body(request.body().and_then(|v| v.as_bytes()).unwrap_or(&[]).to_vec()).unwrap()
+     }
++    #[test]
++    fn chat_session_policy_lookup_keeps_stdout_machine_readable() {
++        const CHILD: &str = "NEXUS_TEST_CHAT_POLICY_STDOUT";
++        if std::env::var_os(CHILD).is_some() {
++            let endpoints = serde_json::from_value(json!({"EndPoints":[{
++                "Protocol":"https","Host":"xblmessaging.xboxlive.com","HostType":"fqdn","RelyingParty":RP
++            }]})).unwrap();
++            let mut cache = SignaturePolicyCache::new(endpoints);
++            println!("NEXUS_TEST_FRAME_BEGIN");
++            let value = tokio::runtime::Runtime::new().unwrap().block_on(messaging_relying_party(&mut cache)).unwrap();
++            println!("{}", json!({"audience":value}));
++            println!("NEXUS_TEST_FRAME_END");
++            return;
++        }
++        let child = std::process::Command::new(std::env::current_exe().unwrap())
++            .args(["--exact","commands::social::chat_session::tests::chat_session_policy_lookup_keeps_stdout_machine_readable","--nocapture"])
++            .env(CHILD, "1").output().unwrap();
++        assert!(child.status.success());
++        let stdout = String::from_utf8(child.stdout).unwrap();
++        let frame = stdout.split_once("NEXUS_TEST_FRAME_BEGIN\n").unwrap().1
++            .split_once("\nNEXUS_TEST_FRAME_END").unwrap().0;
++        let value: Value = serde_json::from_str(frame).expect("policy lookup must not mix diagnostics with JSON stdout");
++        assert_eq!(value, json!({"audience":RP}));
++    }
++    #[tokio::test]
++    async fn chat_session_quiet_audience_matches_pinned_policy_selection_without_fallback() {
++        let endpoint = |host: &str, kind: &str, rp: &str| json!({
++            "Protocol":"https","Host":host,"HostType":kind,"RelyingParty":rp
++        });
++        let exact = endpoint("xblmessaging.xboxlive.com", "fqdn", RP);
++        let wildcard = endpoint("*.xboxlive.com", "wildcard", "synthetic-broad");
++        let mut wrong_path = exact.clone(); wrong_path["Path"] = json!("/other");
++        let mut matching_path = exact.clone(); matching_path["Path"] = json!("/network/Xbox/users/me/conversations/users/");
++        let mut wrong_protocol = exact.clone(); wrong_protocol["Protocol"] = json!("http");
++        for entries in [
++            vec![], vec![exact.clone()], vec![wildcard.clone(), exact.clone()], vec![exact, wildcard],
++            vec![endpoint("XBLMESSAGING.XBOXLIVE.COM", "fqdn", RP)], vec![matching_path], vec![wrong_path],
++            vec![wrong_protocol], vec![endpoint("xblmessaging.xboxlive.com.evil.test", "fqdn", RP)],
++            vec![endpoint("xblmessaging.xboxlive.com", "unknown", RP)],
++            vec![endpoint("xblmessaging.xboxlive.com", "fqdn", "synthetic-wrong-audience")],
++        ] {
++            let mut cache = SignaturePolicyCache::new(serde_json::from_value(json!({"EndPoints":entries})).unwrap());
++            assert_eq!(messaging_relying_party(&mut cache).await.unwrap(),
++                cache.find_relying_party_for_url(super::super::MESSAGES).await.unwrap());
++        }
++        assert_eq!(messaging_relying_party(&mut SignaturePolicyCache::default()).await.unwrap_err(), "chat-policy-response");
++    }
+     #[tokio::test]
+     async fn chat_session_signature_preserves_exact_bytes_and_rejects_tampering() {
+         let mut signer = policy("fixture.invalid", "https");

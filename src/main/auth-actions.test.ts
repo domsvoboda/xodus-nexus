@@ -13,6 +13,7 @@ function fixture(code = 0) {
   const context = createContext({
     ensureIdle: vi.fn(), requireBackend: vi.fn(() => '/synthetic/backend'), randomUUID: () => 'synthetic',
     accountRefresh: { invalidate: vi.fn() }, accountLibrary: { reset: vi.fn() },
+    xboxSocial: { close: vi.fn() },
     gameActivities: { select: vi.fn() }, gameAchievements: { select: vi.fn() },
     authState: { running: false, stored: true }, emitSnapshot: vi.fn(),
     backend: { current: { capabilities: { externalAuth: true } } },
@@ -35,6 +36,7 @@ describe('explicit account actions', () => {
     expect(context.startAuthTransport).not.toHaveBeenCalled();
     expect(context.prepareSystemWallet).not.toHaveBeenCalled();
     expect(context.accountLibrary.reset).toHaveBeenCalledOnce();
+    expect(context.xboxSocial.close).toHaveBeenCalledOnce();
     expect(context.gameActivities.select).toHaveBeenCalledOnce();
     expect(context.gameAchievements.select).toHaveBeenCalledOnce();
     expect(context.refreshAccount).toHaveBeenCalledWith(false, true);
@@ -57,6 +59,7 @@ describe('explicit account actions', () => {
     await runInContext("requestAuth('login')", context);
     expect(context.prepareSystemWallet).toHaveBeenCalledOnce();
     expect(context.startAuthTransport).toHaveBeenCalledOnce();
+    expect(context.xboxSocial.close).toHaveBeenCalledOnce();
     expect(context.startAuthTransport).toHaveBeenCalledWith('/synthetic/backend', expect.any(Object));
     expect(context.spawnTracked).not.toHaveBeenCalled();
     expect(context.authState).toMatchObject({ running: false, lastAction: 'login', lastResult: 'success' });
@@ -67,6 +70,7 @@ describe('explicit account actions', () => {
     await expect(runInContext("requestAuth('logout')", context)).rejects.toThrow('A game is running');
     expect(context.spawnTracked).not.toHaveBeenCalled();
     expect(context.accountLibrary.reset).not.toHaveBeenCalled();
+    expect(context.xboxSocial.close).not.toHaveBeenCalled();
     expect(context.authJob).toBeUndefined();
   });
   it('does not spawn logout if the launcher starts closing while account caches clear', async () => {

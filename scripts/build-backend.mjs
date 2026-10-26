@@ -52,6 +52,7 @@ command('cargo', ['test', '--locked', ...offline, ...features, '-p', 'xodus', 'c
 command('cargo', ['test', '--locked', ...offline, ...features, '-p', 'xodus', 'content_ticket_']);
 command('cargo', ['test', '--locked', ...offline, ...features, '-p', 'xodus', 'ticket_diagnostic_']);
 command('cargo', ['test', '--locked', ...offline, '-p', 'xodus-service', 'store_']);
+command('cargo', ['test', '--locked', ...offline, '-p', 'xodus-service', 'account_metadata_']);
 command('cargo', ['test', '--locked', ...offline, ...features, '-p', 'msixvc', 'streaming_']);
 command('cargo', ['test', '--locked', ...offline, ...features, '-p', 'msixvc', 'streaming::tests']);
 // Aggregate HTTP probes mutate the process-wide limiter, so run them serially.
@@ -62,10 +63,11 @@ const cli = path.join(target, 'release/xodus-cli');
 const help = command(cli, ['--help'], true);
 if (authUi === 'electron' && !help.includes('--external-webview-stdio')) throw Error('External sign-in capability missing');
 if (authUi === 'electron' && /lib(?:gtk|webkit|soup|javascriptcore)/i.test(command('readelf', ['-d', cli], true))) throw Error('Headless CLI links a native webview library');
-for (const name of ['account', 'login', 'logout', 'download', 'streaming', 'run', 'resolve-package', 'game-activity', 'achievements', 'keyring-unlock', 'keyring-create', 'keyring-session-stop']) {
+for (const name of ['account', 'login', 'logout', 'download', 'streaming', 'run', 'resolve-package', 'game-activity', 'achievements', 'social', 'keyring-unlock', 'keyring-create', 'keyring-session-stop']) {
   if (!new RegExp(`^\\s{2}${name}\\s{2,}`, 'm').test(help)) throw Error(`Backend lacks ${name}`);
 }
 if (!command(cli, ['run', '--help'], true).includes('--materialize-chain')) throw Error('Launch-chain support missing');
+if (!command(cli, ['resolve-package', '--help'], true).includes('--include-dlc')) throw Error('Managed DLC selection capability missing');
 const streamingHelp = command(cli, ['streaming', '--help'], true);
 for (const flag of ['--progress-json', '--control-stdin', '--selected-content-id', '--download-limit-kib']) {
   if (!streamingHelp.includes(flag)) throw Error(`Structured download capability missing: ${flag}`);

@@ -1,0 +1,54 @@
+.friends-dialog { width:min(880px,94vw); max-height:90vh; display:flex; flex-direction:column; overflow:auto; background:var(--panel,#202428); border:1px solid #485058; border-radius:8px; padding:22px; box-shadow:0 20px 80px #0009; }
+.friends-dialog>header { display:flex; align-items:center; justify-content:space-between; gap:16px; }
+.friends-dialog>header,.friends-dialog>.friends-tools,.friends-dialog>.friends-invitations,.friends-dialog>.friends-columns { flex-shrink:0; }
+.friends-dialog>header h2 { margin:0; }
+.friends-dialog>header { padding-bottom:18px; border-bottom:1px solid #ffffff12; margin-bottom:14px; }
+.friends-dialog>header h2 { flex:1; font-size:22px; }
+.friends-loading { display:flex; align-items:center; color:#aeb7bf; }
+.friends-loading .sr-only { position:absolute; width:1px; height:1px; padding:0; margin:-1px; overflow:hidden; clip-path:inset(50%); white-space:nowrap; border:0; }
+.friends-empty { flex:1; display:flex; flex-direction:column; justify-content:center; align-items:center; text-align:center; padding:24px; color:#aeb7bf; }
+.friends-empty>svg { width:36px; height:36px; margin-bottom:14px; opacity:.65; }
+.friends-empty h3 { margin:0 0 8px; font-size:16px; color:var(--text,#f1f2f4); }
+.friends-empty p { margin:0; font-size:13px; line-height:1.5; }
+.friends-dialog button { display:inline-flex; gap:8px; align-items:center; border:1px solid #51575f; border-radius:4px; padding:8px 12px; background:#30353b; color:var(--text,#f1f2f4); font:inherit; font-size:12px; cursor:pointer; }
+.friends-dialog button:hover:not(:disabled) { background:#41474e; }
+.friends-dialog button:disabled { opacity:.5; cursor:default; }
+.friends-dialog>header button { border:0; padding:6px; background:transparent; }
+.friends-dialog svg { width:18px; height:18px; }
+.friends-tools { display:flex; align-items:center; gap:16px; margin:16px 0; }
+.friends-tools>span { display:flex; align-items:center; gap:8px; }
+.friends-columns { display:grid; grid-template-columns:minmax(170px,1fr) minmax(250px,2fr); gap:18px; min-height:350px; }
+.friends-columns>aside { overflow:auto; max-height:450px; border-right:1px solid #485058; padding-right:12px; }
+.friends-columns>aside button { display:flex; align-items:center; width:100%; text-align:left; margin-bottom:5px; overflow-wrap:anywhere; border-color:transparent; background:transparent; padding:12px 10px; gap:12px; }
+.friend-details strong { line-height:1.35; }
+.friend-details small { line-height:1.4; }
+.friend-details { display:flex; flex-direction:column; gap:5px; min-width:0; }
+.friend-avatar { width:38px; height:38px; border-radius:50%; flex-shrink:0; overflow:hidden; display:grid; place-items:center; background:#394047; }
+.friend-avatar img { width:100%; height:100%; object-fit:cover; }
+.friend-avatar svg { width:22px; height:22px; }
+.friends-columns>aside button.selected { border-color:#638456; background:#2d392a; }
+.friends-dialog small { color:#b0b8c0; }
+.friends-chat { min-width:0; display:flex; flex-direction:column; }
+.friends-chat h3 { margin:0 0 12px; display:flex; gap:10px; align-items:center; }
+.friends-messages { overflow:auto; min-height:180px; max-height:300px; flex:1; }
+.friends-messages article { padding:10px 0; border-bottom:1px solid #ffffff12; }
+.friends-messages article p { white-space:pre-wrap; overflow-wrap:anywhere; margin:6px 0; }
+.friends-chat form { display:grid; grid-template-columns:1fr auto; gap:8px; margin-top:12px; }
+.friends-chat label,.friends-chat textarea { grid-column:1/-1; }
+.friends-chat textarea { min-height:70px; width:100%; resize:vertical; border:1px solid #5b626b; border-radius:4px; background:#1c1f23; color:#f4f4f4; padding:9px 10px; font:inherit; font-size:13px; }
+.friends-chat form button { background:#348b32; border-color:#348b32; }
+.friends-error { color:#f1bf85; }
+.friends-invitations { max-height:180px; overflow:auto; margin-top:12px; }
+.friends-invitations article { display:flex; flex-wrap:wrap; align-items:center; gap:8px; padding:10px; background:#2a3528; border:1px solid #53624c; border-radius:5px; margin-bottom:8px; }
+.friends-invitations article>div { flex:1; min-width:180px; display:flex; flex-direction:column; gap:4px; }
+.friends-dock { position:fixed; right:24px; bottom:0; z-index:60; width:320px; }
+.friends-dock-toggle { display:flex; align-items:center; gap:12px; width:100%; min-height:60px; padding:12px 16px; border:1px solid #44494e; border-bottom:0; border-radius:8px 8px 0 0; background:#25292e; color:#f4f4f4; text-align:left; box-shadow:0 -4px 20px #0003; cursor:pointer; }
+.friends-dock-toggle>svg { width:20px; height:20px; flex-shrink:0; }
+.friends-dock-toggle>span { flex:1; display:flex; flex-direction:column; gap:4px; }
+.friends-dock-toggle small { color:#afb8c0; font-size:12px; }
+.friends-dock-toggle>svg:last-child { transform:rotate(-90deg); }
+.friends-dock-toggle>svg.expanded { transform:rotate(90deg); }
+.friends-docked { position:absolute; bottom:62px; right:0; }
+.friends-docked .friends-dialog { width:min(780px,calc(100vw - 48px)); max-height:calc(100vh - 100px); }
+@media(max-width:650px) { .friends-dock { right:12px; width:270px; } .friends-docked .friends-dialog { width:calc(100vw - 24px); padding:14px; } }
+@media(max-width:650px) { .friends-columns { grid-template-columns:1fr; } .friends-columns>aside { max-height:130px; border-right:0; } }

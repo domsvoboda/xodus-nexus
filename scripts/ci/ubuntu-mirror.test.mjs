@@ -8,6 +8,13 @@ import { spawnSync } from 'node:child_process';
 import { configureUbuntuMirrors, officialUbuntuMirrors } from './ubuntu-mirror.mjs';
 const yaml = createRequire(import.meta.url)('js-yaml');
 
+test('the separate runtime fork owns automatic SDK builds; legacy build is manual only', async () => {
+  const runtime = yaml.load(await fs.readFile('.github/workflows/runtime.yml', 'utf8'));
+  assert.deepEqual(Object.keys(runtime.on), ['workflow_dispatch']);
+  assert.equal(runtime.jobs.changes.if, "github.ref == 'refs/heads/main'");
+  assert.ok(runtime.jobs.build.steps.some(step => step.run?.includes('build-shared-runtime.mjs')));
+});
+
 test('Ubuntu mirror replacement preserves suites, signing keys and other repositories', () => {
   const source = 'Types: deb\nURIs: http://azure.archive.ubuntu.com/ubuntu/\nSuites: noble noble-updates\nComponents: main universe\nSigned-By: /usr/share/keyrings/ubuntu-archive-keyring.gpg\n\n' +
     'deb http://security.ubuntu.com/ubuntu noble-security main\n' +

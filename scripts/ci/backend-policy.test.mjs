@@ -8,6 +8,71 @@ import path from 'node:path';
 import os from 'node:os';
 import { backendSourceArchiveArgs } from '../backend-source-archive.mjs';
 
+test('manifest-selected plain package executables keep licensing and encrypted-library handling (#239)',async()=>{
+  const lock=JSON.parse(await fs.readFile('assets/backend-source.lock.json','utf8'));
+  const entry=lock.patches.find(value=>value.file==='xodus-plain-launch-entry.patch');assert.ok(entry);
+  const patch=await fs.readFile('assets/'+entry.file,'utf8');
+  assert.equal(createHash('sha256').update(patch).digest('hex'),entry.sha256);
+  assert.ok(lock.patches.findIndex(value=>value.file===entry.file)>lock.patches.findIndex(value=>value.file==='xodus-launch-filesystem.patch'));
+  assert.deepEqual([...patch.matchAll(/^diff --git a\/(\S+) b\/\S+$/gm)].map(value=>value[1]),['crates/xodus-cli/src/commands/run.rs']);
+  for(const name of ['plain_launch_entry_uses_only_declared_package_images_and_preserves_sources',
+    'plain_launch_entry_never_treats_an_encrypted_or_undeclared_file_as_plaintext',
+    'plain_launch_entry_rejects_ambiguous_metadata_and_outside_package_links',
+    'launch_entry_prefers_exact_case_and_refuses_ambiguous_case_fallbacks'])assert.ok(patch.includes(name),name);
+  const added=patch.split('\n').filter(line=>line.startsWith('+')&&!line.startsWith('+++')).join('\n');
+  assert.match(added,/if content\.keep_encrypted \{ return Ok\(None\); \}/);
+  assert.match(added,/resolve_package_file\(source, name\)/);
+  assert.match(added,/open_launch_image\(&source\.join\(relative\), &actual_name, content\)/);
+  assert.match(added,/inherit_launch_image\(file, &actual_name\)/);
+  assert.match(added,/ambiguous package launch images/);
+  assert.doesNotMatch(added,/get_license|tokens\.|full_key|Command::|set_permissions|mount_mem_fd|\.unpack\(/);
+});
+
+test('launch views require actual symbolic-link support and fall back only once (#341)',async()=>{
+  const lock=JSON.parse(await fs.readFile('assets/backend-source.lock.json','utf8'));
+  const entry=lock.patches.find(value=>value.file==='xodus-launch-filesystem.patch');assert.ok(entry);
+  const patch=await fs.readFile('assets/'+entry.file,'utf8');
+  assert.equal(createHash('sha256').update(patch).digest('hex'),entry.sha256);
+  assert.deepEqual([...patch.matchAll(/^diff --git a\/(\S+) b\/\S+$/gm)].map(value=>value[1]),['crates/xodus-cli/src/commands/run.rs']);
+  for(const name of ['probe_launch_view_links','launch_directory_falls_back_when_install_filesystem_cannot_create_links',
+    'launch_directory_keeps_supported_install_filesystem_and_cleans_probe','launch_directory_does_not_hide_unrelated_io_failures_or_retry_forever'])assert.ok(patch.includes(name),name);
+  const added=patch.split('\n').filter(line=>line.startsWith('+')&&!line.startsWith('+++')).join('\n');
+  assert.match(added,/nix::libc::EPERM \| nix::libc::EOPNOTSUPP \| nix::libc::ENOSYS/);
+  assert.match(added,/launch_view_directory\(source_root, "\.xodus-chain-"\)/);
+  assert.match(added,/launch_view_directory\(source_root, "\.xodus-offline-"\)/);
+  assert.doesNotMatch(added,/get_license|tokens\.|full_key|Command::|set_permissions|mount\(|chmod|copy\(/);
+});
+
+test('Xbox friends/chat is explicit and account-bound without modifying login, saves or license paths', async () => {
+  const lock=JSON.parse(await fs.readFile('assets/backend-source.lock.json','utf8'));
+  const entry=lock.patches.find(p=>p.file==='xodus-social.patch');assert.ok(entry);
+  const patch=await fs.readFile('assets/'+entry.file,'utf8');
+  assert.equal(createHash('sha256').update(patch).digest('hex'),entry.sha256);
+  assert.ok(lock.patches.findIndex(p=>p.file===entry.file)>lock.patches.findIndex(p=>p.file==='xodus-session-recovery.patch'));
+  assert.deepEqual([...patch.matchAll(/^diff --git a\/(\S+) b\/\S+$/gm)].map(m=>m[1]).sort(),[
+    'crates/xodus-cli/src/commands.rs','crates/xodus-cli/src/commands/profile.rs','crates/xodus-cli/src/commands/social.rs','crates/xodus-cli/src/main.rs',
+  ]);
+  for(const name of ['social_input_rejects_arbitrary_endpoints_and_invalid_ids_before_authentication',
+    'social_plans_use_only_exact_https_hosts_and_no_retry_or_identity_impersonation',
+    'social_friends_keep_unknown_presence_honest_and_drop_private_server_fields',
+    'social_chat_preserves_safety_filters_and_never_fetches_media',
+    'social_send_success_requires_actual_service_acknowledgement',
+    'social_http_uses_one_explicit_request_and_honors_denials_without_retry',
+    'social_empty_conversation_can_omit_participants_without_inventing_messages_or_identity',
+    'social_friend_picture_is_optional_and_only_uses_exact_trusted_image_hosts',
+    'social_http_accepts_empty_thread_without_participants_and_never_posts_a_read_marker'])assert.ok(patch.includes(name),name);
+  const production=patch.split('+#[cfg(test)]')[0];
+  assert.ok(production.includes('super::profile::xbox_session(tokens)'));
+  assert.ok(production.includes('username != account'));
+  assert.ok(production.includes('16385'));
+  assert.ok(production.includes('unsuitableFor'));
+  assert.ok(production.includes('value["participants"].is_null() && messages.is_empty()'));
+  assert.ok(production.includes('NEXUS_SOCIAL_DIAGNOSTIC_V1 {scope} {status}'));
+  assert.ok(!patch.includes('NEXUS_PRIVATE_SOCIAL_SHAPE'));
+  assert.doesNotMatch(production,/\.read_to_string\(|allow_invalid|danger_accept|mark.read|readHorizon|\.delete\(|ensure_device_credentials|NEXUS_.*token/i);
+  assert.ok((await fs.readFile('scripts/build-backend.mjs','utf8')).includes("'social'"));
+});
+
 test('bundle resolution follows declared contents and preserves contributor regressions (#273, #298)', async () => {
   const lock = JSON.parse(await fs.readFile('assets/backend-source.lock.json', 'utf8'));
   const entry = lock.patches.find(p => p.file === 'xodus-bundle-membership.patch');
@@ -184,6 +249,16 @@ test('backend source and ordered patch hashes are locked', async () => {
   }
 });
 
+test('social send retains a genuine server receipt without changing authentication or automatically retrying', async () => {
+  const lock=JSON.parse(await fs.readFile('assets/backend-source.lock.json','utf8'));
+  assert.ok(lock.patches.findIndex(p=>p.file==='xodus-social-send-receipt.patch')>lock.patches.findIndex(p=>p.file==='xodus-social.patch'));
+  const patch=await fs.readFile('assets/xodus-social-send-receipt.patch','utf8');
+  assert.ok(patch.includes('"messageId":id'));
+  assert.ok(patch.includes('NEXUS_SOCIAL_RECEIPT_V1 {} {} {nudge} {}'));
+  assert.doesNotMatch(patch,/diff --git a\/.*(?:tokens\/|login\.rs|run\.rs|streaming\.rs|license\.rs)/);
+  assert.doesNotMatch(patch,/^\+.*(?:client\.(?:post|put|delete)|request\.send\(|sleep\()/m);
+});
+
 test('first wallet creation is explicit, native-prompt only and preserves existing collections', async () => {
   const lock = JSON.parse(await fs.readFile('assets/backend-source.lock.json', 'utf8'));
   const index = lock.patches.findIndex(p => p.file === 'xodus-keyring-create.patch');
@@ -269,6 +344,25 @@ test('backend build runs account-free credential persistence regressions', async
     lock.patches.findIndex(p => p.file === 'xodus-keyring-encoding.patch'));
 });
 
+test('authenticated account metadata remains bound, additive and covered by backend regressions', async () => {
+  const lock = JSON.parse(await fs.readFile('assets/backend-source.lock.json', 'utf8'));
+  const metadata=lock.patches.findIndex(p=>p.file==='xodus-authenticated-account-metadata.patch');
+  assert.ok(metadata>lock.patches.findIndex(p=>p.file==='xodus-content-device-limit.patch'));
+  assert.equal(lock.patches[metadata+1].file,'xodus-social.patch');
+  const patch = await fs.readFile('assets/xodus-authenticated-account-metadata.patch', 'utf8');
+  for (const expected of ['get_user_sts_session', 'self.user_session()?', 'bound_ids',
+    'credential_account_metadata_snapshot_is_atomic_and_logout_removes_it',
+    'credential_account_metadata_never_pairs_different_sessions_under_concurrent_reads',
+    'account_metadata_uses_real_session_ids_and_rejects_mixed_accounts',
+    'account_metadata_rejects_placeholder_malformed_and_empty_ids',
+    'account_metadata_xml_is_additive_and_omitted_for_unbound_sessions',
+    'skip_serializing_if = "Option::is_none"']) assert.ok(patch.includes(expected), expected);
+  assert.doesNotMatch(patch, /diff --git a\/.*(?:login\.rs|license\.rs|streaming\.rs|run\.rs)/);
+  assert.doesNotMatch(patch, /^\+.*(?:println!|tracing::).*puid/m);
+  const build = await fs.readFile('scripts/build-backend.mjs', 'utf8');
+  assert.ok(build.includes("'-p', 'xodus-service', 'account_metadata_'"));
+});
+
 test('GNOME textual keyring regression uses only in-memory synthetic data', { skip: process.platform !== 'linux' }, () => {
   execFileSync('python3', ['scripts/keyring-textual-roundtrip.test.py'], { stdio: 'pipe' });
 });
@@ -340,4 +434,110 @@ test('corresponding-source archive preserves nested target source directories', 
     assert.match(build, /command\('tar', backendSourceArchiveArgs\(/);
     assert.match(build, /copyFile\(path.join\(root, 'scripts\/backend-source-archive.mjs'\)/);
   } finally { await fs.rm(root, { recursive: true, force: true }); }
+});
+test('Durable package selection is opt-in, parent-bound and preserves legacy automatic game downloads',async()=>{
+  const lock=JSON.parse(await fs.readFile('assets/backend-source.lock.json','utf8'));
+  const entry=lock.patches.find(p=>p.file==='xodus-durable-content.patch');assert.ok(entry);
+  const patch=await fs.readFile('assets/'+entry.file,'utf8');assert.equal(createHash('sha256').update(patch).digest('hex'),entry.sha256);
+  for(const expected of ['include_dlc: bool','without_durable_selection','parentProductId','mainPackageFamilyName',
+    'durable_pc_package_requires_explicit_selection_and_verified_parent_metadata',
+    'durable_missing_foreign_or_ambiguous_parent_and_non_pc_formats_stay_unsupported'])assert.ok(patch.includes(expected),expected);
+  const files=[...patch.matchAll(/^diff --git a\/(\S+) b\/\S+$/gm)].map(match=>match[1]).sort();
+  assert.deepEqual(files,['crates/xodus-cli/src/commands/streaming.rs','crates/xodus-cli/src/main.rs','crates/xodus-cli/src/package_plan.rs']);
+  assert.doesNotMatch(patch,/^[+-].*(?:ensure_device|init_secrets|\.get_packages|\.get_license|\.save_|\.remove_)/m);
+  const main=await fs.readFile('src/main/index.ts','utf8');
+  assert.ok(main.includes('contentParentForChoice(choice, store.games)'));assert.ok(main.includes("if (updateGame && choice.kind === 'Durable')"));
+  const build=await fs.readFile('scripts/build-backend.mjs','utf8');assert.ok(build.includes("['resolve-package', '--help']"));
+});
+
+test('conditional entitlement provenance is typed without changing account, download or launch code', async () => {
+  const lock = JSON.parse(await fs.readFile('assets/backend-source.lock.json', 'utf8'));
+  const entry = lock.patches.find(patch => patch.file === 'xodus-conditional-entitlements.patch');
+  assert.ok(entry);
+  const patch = await fs.readFile('assets/' + entry.file, 'utf8');
+  assert.equal(createHash('sha256').update(patch).digest('hex'), entry.sha256);
+  const files = [...patch.matchAll(/^diff --git a\/(\S+) b\/\S+$/gm)].map(match => match[1]);
+  assert.deepEqual(files, ['crates/xodus-cli/src/commands/library.rs']);
+  for (const expected of ['and_then(Value::as_bool) == Some(true)', '"isPositron":positron',
+    'positron_provenance_is_explicit_boolean_and_never_copied_from_untrusted_fields',
+    'conflicting_positron_and_unknown_special_rows_quarantine_their_children', 'positron_normalized_protocol_fixture'])
+    assert.ok(patch.includes(expected), expected);
+  assert.doesNotMatch(patch, /^[+-].*(?:store_session|\.get_user|\.get_license|Authorization|\.send\(|\.save_|\.remove_)/m);
+});
+
+test('Store device-limit guidance is a bounded response-only change with the official management URL', async () => {
+  const lock = JSON.parse(await fs.readFile('assets/backend-source.lock.json', 'utf8'));
+  const entry = lock.patches.find(patch => patch.file === 'xodus-content-device-limit.patch');
+  assert.ok(entry);
+  const patch = await fs.readFile('assets/' + entry.file, 'utf8');
+  assert.equal(createHash('sha256').update(patch).digest('hex'), entry.sha256);
+  assert.deepEqual([...patch.matchAll(/^diff --git a\/(\S+) b\/\S+$/gm)].map(match => match[1]), [
+    'crates/xodus/src/licensing/content_response.rs', 'crates/xodus/src/licensing/content_response_tests.rs',
+  ]);
+  for (const text of ['satisfaction_failure.code == 501', 'content-device-limit',
+    'https://account.microsoft.com/devices/content', 'content_license_device_limit_http_is_not_an_http501_and_never_retries'])
+    assert.ok(patch.includes(text), text);
+  assert.doesNotMatch(patch, /^[+-].*(?:\.send\(|\.post\(|Authorization|\.save_|\.remove_|ensure_device|init_secrets)/m);
+});
+
+test('outgoing chat reuses the current login identity with server-issued context and exact request signatures',async()=>{
+  const lock=JSON.parse(await fs.readFile('assets/backend-source.lock.json','utf8'));
+  const entry=lock.patches.find(value=>value.file==='xodus-social-session.patch');assert.ok(entry);
+  const patch=await fs.readFile('assets/'+entry.file,'utf8');
+  assert.equal(createHash('sha256').update(patch).digest('hex'),entry.sha256);
+  assert.ok(lock.patches.findIndex(value=>value.file===entry.file)>lock.patches.findIndex(value=>value.file==='xodus-social-send-receipt.patch'));
+  const sections=patch.split(/(?=^diff --git )/m).filter(Boolean);
+  assert.deepEqual([...patch.matchAll(/^diff --git a\/(\S+) b\/\S+$/gm)].map(value=>value[1]).sort(),[
+    'crates/xodus-cli/src/commands/login.rs','crates/xodus-cli/src/commands/social.rs','crates/xodus-cli/src/commands/social_session.rs',
+  ]);
+  const login=sections.find(value=>value.includes(' b/crates/xodus-cli/src/commands/login.rs\n'));
+  const changes=login.split('\n').filter(value=>/^[+-]/.test(value)&&!/^\+\+\+|^---/.test(value));
+  assert.equal(changes.length,2);assert.equal(changes[1].replace('+pub(super) ','-'),changes[0]);
+  const session=sections.find(value=>value.includes(' b/crates/xodus-cli/src/commands/social_session.rs\n'));
+  const production=session.split('+#[cfg(test)]')[0];
+  for(const name of ['chat_session_signature_preserves_exact_bytes_and_rejects_tampering',
+    'chat_session_issued_tickets_keep_the_server_type_and_require_fresh_lifetimes',
+    'chat_session_xsts_requires_one_real_user_communications_and_unexpired_token',
+    'chat_session_writes_require_atomic_identity_and_reject_same_name_different_principal',
+    'chat_session_post_is_signed_once_without_retries_redirects_or_error_payloads'])assert.ok(session.includes(name),name);
+  for(const value of ['super::super::login::CLIENT_ID','get_user_sts_session()',
+    'find_relying_party_for_url(super::MESSAGES)','signer.sign_request(legacy, None)',
+    'signer.verify(signed)','"ProofKey":signer.get_proof_key()',
+    '"TitleToken":title_token','"DeviceToken":device_token','"UserTokens":[user_token]',
+    '"CommunicateUsingText"','value["isAllowed"] != true','super::payload(&op, &value)?'])assert.ok(production.includes(value),value);
+  assert.doesNotMatch(production,/\.save_|ensure_device_credentials|start_new_session|do_sisu\(|danger_accept|readHorizon|mark.read|\.delete\(|\/tmp\/|NEXUS_CHAT_(?:DIAG|BOUND)/i);
+  assert.ok(sections.find(value=>value.includes(' b/crates/xodus-cli/src/commands/social.rs\n')).includes('chat_session::send(tokens, peer, message)'));
+});
+
+test('installation estimates are public metadata only and never replace actual download space checks (#247)', async () => {
+  const lock=JSON.parse(await fs.readFile('assets/backend-source.lock.json','utf8'));
+  const entry=lock.patches.find(value=>value.file==='xodus-package-storage.patch');assert.ok(entry);
+  const patch=await fs.readFile('assets/'+entry.file,'utf8');
+  assert.equal(createHash('sha256').update(patch).digest('hex'),entry.sha256);
+  assert.deepEqual([...patch.matchAll(/^diff --git a\/(\S+) b\/\S+$/gm)].map(value=>value[1]),['crates/xodus-cli/src/package_plan.rs']);
+  for(const name of ['MaxDownloadSizeInBytes','MaxInstallSizeInBytes','9_007_199_254_740_991',
+    'package_storage_estimates_are_optional_positive_and_bound_to_the_selected_content',
+    'package_storage_estimates_merge_retail_duplicates_without_using_trial_or_foreign_sizes'])assert.ok(patch.includes(name),name);
+  const added=patch.split('\n').filter(line=>line.startsWith('+')&&!line.startsWith('+++')).join('\n');
+  assert.doesNotMatch(added,/get_license|tokens\.|Authorization|\.send\(|\.save_|\.remove_|required_free_space|available_free_space/);
+  const storage=await fs.readFile('src/main/install-storage.ts','utf8');
+  assert.ok(storage.includes('fs.statfs(current, { bigint: true })'));
+  assert.doesNotMatch(storage,/\.mkdir\(|\.writeFile\(|\.rm\(|\.unlink\(/);
+});
+
+test('chat JSON output remains strict and uses quiet equivalent policy selection without changing identity or sending', async () => {
+  const lock=JSON.parse(await fs.readFile('assets/backend-source.lock.json','utf8'));
+  const entry=lock.patches.find(value=>value.file==='xodus-social-stdout.patch');assert.ok(entry);
+  const patch=await fs.readFile('assets/'+entry.file,'utf8');
+  assert.equal(createHash('sha256').update(patch).digest('hex'),entry.sha256);
+  assert.ok(lock.patches.findIndex(value=>value.file===entry.file)>lock.patches.findIndex(value=>value.file==='xodus-social-session.patch'));
+  assert.deepEqual([...patch.matchAll(/^diff --git a\/(\S+) b\/\S+$/gm)].map(value=>value[1]),['crates/xodus-cli/src/commands/social_session.rs']);
+  const production=patch.split('chat_session_policy_lookup_keeps_stdout_machine_readable')[0];
+  for(const name of ['cache.get_endpoints()','endpoint.protocol.eq_ignore_ascii_case','host.eq_ignore_ascii_case',
+    'host.ends_with(endpoint.host.trim_start_matches','url.path() == path','max_by_key','endpoint.relying_party.clone()'])assert.ok(production.includes(name),name);
+  for(const name of ['chat_session_policy_lookup_keeps_stdout_machine_readable',
+    'chat_session_quiet_audience_matches_pinned_policy_selection_without_fallback'])assert.ok(patch.includes(name),name);
+  const added=production.split('\n').filter(line=>line.startsWith('+')&&!line.startsWith('+++')).join('\n');
+  assert.doesNotMatch(added,/println!|\.post\(|\.send\(|\.save_|ensure_device_credentials|\.header\(|\.json\(/);
+  assert.ok((await fs.readFile('src/main/xbox-social.ts','utf8')).includes('JSON.parse(output)'));
 });

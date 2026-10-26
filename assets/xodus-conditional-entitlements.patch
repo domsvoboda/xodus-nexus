@@ -1,0 +1,77 @@
+diff --git a/crates/xodus-cli/src/commands/library.rs b/crates/xodus-cli/src/commands/library.rs
+index 77c6238..8cf87c6 100644
+--- a/crates/xodus-cli/src/commands/library.rs
++++ b/crates/xodus-cli/src/commands/library.rs
+@@ -23,10 +23,13 @@ fn entry(id: &str, item: &Value) -> Result<Value, &'static str> {
+             Some(Value::String(id)) if product_id(id) => Some(id.as_str()),
+             _ => return Err("entitlement-parent"),
+         };
++        // Preserve typed Positron provenance for conditional library access.
+         // Unknown special licensing flags never become permanent ownership.
+         let special = item.get("isPositron").map(|v|v.as_bool()!=Some(false)).unwrap_or(false);
++        let positron = item.get("isPositron").and_then(Value::as_bool) == Some(true);
+         Ok(json!({"productId":id,"status":status,"isTrial":trial,
+-            "sharingSource":sharing,"endDate":expiry,"satisfiedByProductId":parent,"special":special}))
++            "sharingSource":sharing,"endDate":expiry,"satisfiedByProductId":parent,
++            "special":special,"isPositron":positron}))
+ }
+ 
+ // A malformed row is not ownership. Quarantine that ID across all pages and
+@@ -206,6 +209,57 @@ mod tests {
+     fn valid() -> Value {
+         json!({"status":"Active","isTrial":false,"sharingSource":"None","endDate":"2099-01-01T00:00:00Z"})
+     }
++
++    #[test]
++    fn positron_provenance_is_explicit_boolean_and_never_copied_from_untrusted_fields() {
++        for flag in [None, Some(json!(false)), Some(json!(true)), Some(Value::Null),
++            Some(json!("true")), Some(json!(1)), Some(json!({"value":true}))] {
++            let mut raw = valid();
++            if let Some(ref value) = flag { raw["isPositron"] = value.clone(); }
++            raw["special"] = json!(false);
++            raw["licenseSource"] = json!("owned");
++            let parsed = entry(A, &raw).unwrap();
++            assert_eq!(parsed["isPositron"], flag.as_ref().and_then(Value::as_bool) == Some(true));
++            assert_eq!(parsed["special"], flag.as_ref().is_some_and(|v| v.as_bool() != Some(false)));
++            assert!(parsed.get("licenseSource").is_none());
++        }
++    }
++
++    #[test]
++    fn conflicting_positron_and_unknown_special_rows_quarantine_their_children() {
++        for changed in [json!(false), json!("true"), Value::Null] {
++            let mut first = valid(); first["isPositron"] = json!(true);
++            let mut second = valid(); second["isPositron"] = changed;
++            let mut child = valid(); child["satisfiedByProductId"] = json!(A);
++            let mut result = Entitlements::default();
++            result.add(&page(vec![(A, first), (B, child), (C, valid())])).unwrap();
++            result.add(&page(vec![(A, second)])).unwrap();
++            result.finish();
++            assert_eq!(result.entries.keys().cloned().collect::<Vec<_>>(), vec![C.to_owned()]);
++            assert_eq!(result.skipped, 3);
++        }
++    }
++
++    #[test]
++    fn positron_normalized_protocol_fixture() {
++        let mut rows = Vec::new();
++        for (id, flag, status, parent) in [
++            (A, json!(true), "Active", None),
++            (B, json!(false), "Active", Some(A)),
++            (C, json!(false), "Active", None),
++            ("9DDDDDDDDDDD", json!("true"), "Active", None),
++            ("9EEEEEEEEEEE", json!(true), "Revoked", None),
++        ] {
++            let mut raw = valid(); raw["isPositron"] = flag; raw["status"] = json!(status);
++            if let Some(parent) = parent { raw["satisfiedByProductId"] = json!(parent); }
++            rows.push(entry(id, &raw).unwrap());
++        }
++        assert_eq!(rows[0]["isPositron"], true);
++        assert_eq!(rows[3]["isPositron"], false);
++        // Synthetic account only. Also exercises the compiled launcher reader.
++        println!("{}", json!({"schema":1,"account":"fixture@example.test","market":"US",
++            "checkedAt":chrono::Utc::now().to_rfc3339(),"skippedEntitlements":0,"entitlements":rows}));
++    }
+     fn page(rows: Vec<(&str, Value)>) -> Value {
+         json!({"entitlements": rows.into_iter().map(|(id, row)| (id.to_owned(), row)).collect::<serde_json::Map<String, Value>>()})
+     }

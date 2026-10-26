@@ -6,6 +6,95 @@ import { spawn } from 'node:child_process';
 import { BackendDiagnostics, BackendDiagnosticReader, observeBackendChild, setBackendDiagnostics } from './backend-diagnostics.js';
 import { spawnTracked } from './process.js';
 
+it('records social HTTP status and fixed failure stages without friends, message bodies or tokens',()=>{
+  const records:unknown[]=[];const reader=new BackendDiagnosticReader('social',r=>records.push(r));
+  reader.push(Buffer.from('NEXUS_SOCIAL_DIAGNOSTIC_V1 conversation-http 200\nNEXUS_SOCIAL_ERROR_V1 conversation-response\n'));
+  reader.push(Buffer.from('NEXUS_SOCIAL_ERROR_V1 private-peer\nNEXUS_SOCIAL_DIAGNOSTIC_V1 conversation-http 200 private-token\nPRIVATE MESSAGE\n'));
+  expect(records).toEqual([{operation:'social',event:'diagnostic',stage:'conversation-http',status:200,skipped:undefined,serviceCode:undefined},
+    {operation:'social',event:'diagnostic',stage:'conversation-response',status:undefined,skipped:undefined,serviceCode:undefined}]);
+  const wrong:unknown[]=[];new BackendDiagnosticReader('run',r=>wrong.push(r)).push(Buffer.from('NEXUS_SOCIAL_ERROR_V1 conversation-response\n'));expect(wrong).toEqual([]);
+});
+
+it('retains bounded outgoing-session stages without credentials, app IDs or policy payloads',()=>{
+  const frames=['chat-policy-http','chat-device-http','chat-context-http','chat-xsts-http'];
+  const failures=['chat-ticket-lifetime','chat-token-expired','chat-request-signature','chat-policy-audience','chat-privacy-request'];
+  const records:unknown[]=[];
+  const reader=new BackendDiagnosticReader('social',r=>records.push(r));
+  for(const byte of Buffer.from(frames.map(stage=>'NEXUS_SOCIAL_DIAGNOSTIC_V1 '+stage+' 200\r\n').join('')+
+    failures.map(stage=>'NEXUS_SOCIAL_ERROR_V1 '+stage+'\n').join('')))reader.push(Buffer.from([byte]));
+  expect(records).toHaveLength(frames.length+failures.length);
+  for(const frame of ['NEXUS_SOCIAL_DIAGNOSTIC_V1 chat-context-http 200 PRIVATE_TOKEN',
+    'NEXUS_SOCIAL_ERROR_V1 chat-secret-private','NEXUS_SOCIAL_DIAGNOSTIC_V1 chat-xsts-http 999'])reader.push(Buffer.from(frame+'\n'));
+  expect(records).toHaveLength(frames.length+failures.length);expect(JSON.stringify(records)).not.toContain('PRIVATE_TOKEN');
+  const wrong:unknown[]=[];
+  new BackendDiagnosticReader('run',r=>wrong.push(r)).push(Buffer.from('NEXUS_SOCIAL_DIAGNOSTIC_V1 chat-context-http 200\nNEXUS_SOCIAL_ERROR_V1 chat-token-expired\n'));
+  expect(wrong).toEqual([]);
+});
+
+it('records a fixed loader category without exposing the local binary path or missing library text (#328)',()=>{
+  const records:unknown[]=[];const reader=new BackendDiagnosticReader('probe',r=>records.push(r));
+  const lines=[
+    '/private/user/xodus-cli: error while loading shared libraries: libssl.so.3: cannot open shared object file: No such file or directory',
+    '/private/user/xodus-cli: error while loading shared libraries: libdbus-1.so.3: cannot open shared object file: No such file or directory',
+    "/private/user/xodus-cli: /lib/libc.so.6: version `GLIBC_2.38' not found (required by /private/user/xodus-cli)",
+  ];
+  for(const byte of Buffer.from(lines.join('\n')+'\n'))reader.push(Buffer.from([byte]));
+  expect(records.map((v:any)=>v.stage)).toEqual(['loader-openssl','loader-dbus','loader-glibc']);
+  expect(JSON.stringify(records)).not.toMatch(/private|libssl|libdbus|GLIBC_2/);
+});
+
+it('accepts only fixed receipt shape flags, never message IDs, payloads or raw error text',async()=>{
+  const root=await fs.mkdtemp(path.join(os.tmpdir(),'nexus-receipt-diagnostic-'));
+  try{
+    const log=new BackendDiagnostics(root),records:unknown[]=[];
+    const reader=new BackendDiagnosticReader('social',value=>{records.push(value);log.record(value);});
+    reader.push(Buffer.from('NEXUS_SOCIAL_RECEIPT_V1 1 1 2 0\n'));
+    for(const frame of ['1 1 4 0','1 1 true 0','1 1 2 0 PRIVATE_TOKEN','private-id 1 0 0'])
+      reader.push(Buffer.from('NEXUS_SOCIAL_RECEIPT_V1 '+frame+'\n'));
+    new BackendDiagnosticReader('run',value=>records.push(value)).push(Buffer.from('NEXUS_SOCIAL_RECEIPT_V1 1 1 2 0\n'));
+    expect(records).toEqual([{operation:'social',event:'diagnostic',stage:'send-receipt',socialReceipt:{hasMessageId:true,hasConversationId:true,nudge:'true',hasError:false}}]);
+    log.record({operation:'social',event:'diagnostic',stage:'send-receipt',socialReceipt:{hasMessageId:true,hasConversationId:true,nudge:'false',hasError:false,secret:'PRIVATE_TOKEN'} as never});
+    const {content}=await log.read();expect(content).not.toContain('PRIVATE_TOKEN');
+    expect(content.trim().split('\n').map(s=>JSON.parse(s).socialReceipt)).toEqual([
+      {hasMessageId:true,hasConversationId:true,nudge:'true',hasError:false},
+      {hasMessageId:true,hasConversationId:true,nudge:'false',hasError:false}]);
+  }finally{await fs.rm(root,{recursive:true,force:true});}
+});
+
+it('records only fixed keyring failure metadata, never collection paths or provider text (#329)', async () => {
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), 'nexus-keyring-diagnostic-'));
+  try {
+    const log = new BackendDiagnostics(root);
+    log.record({operation:'keyring',event:'diagnostic',elapsedMs:2042,keyring:{step:'ReadAlias',failure:'timeout',dbusError:'org.freedesktop.DBus.Error.NoReply',elapsedMs:2042}});
+    log.record({operation:'keyring',event:'diagnostic',keyring:{step:'Locked',failure:'dbus-error',dbusError:'org.freedesktop.DBus.Error.AccessDenied',elapsedMs:1}});
+    const privateData={step:'/private_collection',failure:'secret password',dbusError:'org.freedesktop.DBus.Error.PrivateAccount',elapsedMs:1};
+    log.record({operation:'keyring',event:'diagnostic',keyring:privateData as never});
+    log.record({operation:'keyring',event:'diagnostic',keyring:{...privateData,step:'ReadAlias',failure:'unavailable'} as never});
+    log.record({operation:'login',event:'diagnostic',keyring:{step:'Locked',failure:'timeout',elapsedMs:1}});
+    const {content}=await log.read(), records=content.trim().split('\n').map(s=>JSON.parse(s));
+    expect(records.filter(r=>r.keyringStep)).toHaveLength(3);
+    expect(records.filter(r=>r.dbusError)).toHaveLength(2);
+    expect(records[0]).toMatchObject({operation:'keyring',keyringStep:'ReadAlias',keyringFailure:'timeout',elapsedMs:2042});
+    expect(content).not.toMatch(/private_collection|secret password|PrivateAccount/);
+    expect((await fs.stat(path.join(root,'backend-diagnostics','backend.log'))).mode & 0o777).toBe(0o600);
+  } finally { await fs.rm(root,{recursive:true,force:true}); }
+});
+
+it('records bounded access-resolution reasons without product IDs, account data or arbitrary text', async () => {
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), 'nexus-access-diagnostic-'));
+  try {
+    const log = new BackendDiagnostics(root);
+    for (const stage of ['access-unresolved', 'access-conditional', 'access-special', 'access-parent-unavailable', 'access-cycle', 'access-depth'])
+      log.record({ operation: 'library', event: 'validation', stage, skipped: 3 });
+    log.record({ operation: 'library', event: 'validation', stage: 'CFQ7TTBZT8LN private@example.test', skipped: 300_000 });
+    const content = (await log.read()).content;
+    const records = content.trim().split('\n').map(line => JSON.parse(line));
+    expect(records.filter(row => row.stage)).toHaveLength(6);
+    expect(records.filter(row => row.skipped === 3)).toHaveLength(6);
+    expect(content).not.toMatch(/CFQ7TTBZT8LN|private@example.test|300000/);
+  } finally { await fs.rm(root, { recursive: true, force: true }); }
+});
+
 it('accepts only a bounded ticket error code for profile/library and never stores fault text or URLs', async () => {
   const root = await fs.mkdtemp(path.join(os.tmpdir(), 'nexus-ticket-diagnostic-'));
   try {
@@ -49,20 +138,21 @@ it('records allowlisted content-license stages/status only for licensing operati
   for (const operation of ['streaming', 'download', 'license', 'run']) {
     const events: unknown[] = [];
     const reader = new BackendDiagnosticReader(operation, event => events.push(event));
-    const input = Buffer.from('private@example.test token=SECRET\nNEXUS_CONTENT_LICENSE_DIAGNOSTIC_V1 content-http 403\r\nNEXUS_CONTENT_LICENSE_DIAGNOSTIC_V1 content-schema 200\n');
+    const input = Buffer.from('private@example.test token=SECRET\nNEXUS_CONTENT_LICENSE_DIAGNOSTIC_V1 content-http 403\r\nNEXUS_CONTENT_LICENSE_DIAGNOSTIC_V1 content-schema 200\nNEXUS_CONTENT_LICENSE_DIAGNOSTIC_V1 content-device-limit 200\n');
     for (const byte of input) reader.push(Buffer.from([byte]));
     expect(events).toEqual([
       { operation, event: 'diagnostic', stage: 'content-http', status: 403, skipped: undefined },
       { operation, event: 'diagnostic', stage: 'content-schema', status: 200, skipped: undefined },
+      { operation, event: 'diagnostic', stage: 'content-device-limit', status: 200, skipped: undefined },
     ]);
     for (const line of ['NEXUS_CONTENT_LICENSE_DIAGNOSTIC_V1 unknown 403',
       'prefix NEXUS_CONTENT_LICENSE_DIAGNOSTIC_V1 content-http 403', 'NEXUS_CONTENT_LICENSE_DIAGNOSTIC_V1 content-http 403 private-secret',
       'NEXUS_CONTENT_LICENSE_DIAGNOSTIC_V1 content-http 999']) reader.push(Buffer.from(line+'\n'));
-    expect(events).toHaveLength(2); expect(JSON.stringify(events)).not.toMatch(/SECRET|example.test|private-secret/);
+    expect(events).toHaveLength(3); expect(JSON.stringify(events)).not.toMatch(/SECRET|example.test|private-secret/);
   }
   for (const operation of ['profile', 'login', 'library']) {
     const events: unknown[] = [];
-    new BackendDiagnosticReader(operation, event => events.push(event)).push(Buffer.from('NEXUS_CONTENT_LICENSE_DIAGNOSTIC_V1 content-http 403\n'));
+    new BackendDiagnosticReader(operation, event => events.push(event)).push(Buffer.from('NEXUS_CONTENT_LICENSE_DIAGNOSTIC_V1 content-http 403\nNEXUS_CONTENT_LICENSE_DIAGNOSTIC_V1 content-device-limit 200\n'));
     expect(events).toHaveLength(0);
   }
 });

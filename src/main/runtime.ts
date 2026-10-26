@@ -10,6 +10,7 @@ const REPOSITORY = 'xodus-gaming/Proton';
 const BRANCH = 'xodus/bleeding-edge';
 const REPOSITORY_URL = 'https://github.com/xodus-gaming/Proton.git';
 const NEXUS_REPOSITORY = 'domsvoboda/xodus-nexus';
+const NEXUS_RUNTIME_REPOSITORY = 'domsvoboda/nexus-runtime';
 
 interface RuntimePointer {
   name: string;
@@ -234,7 +235,7 @@ export class RuntimeManager {
         throw new Error('The archive contains unsafe paths.');
       }
       const top = entries[0].split('/')[0];
-      if (!/^(proton-xodus-|xodus-nexus-runtime-)/.test(top) || entries.some((entry) => entry.split('/')[0] !== top)) {
+      if (!/^(proton-xodus-|xodus-nexus-runtime-|nexus-runtime-)/.test(top) || entries.some((entry) => entry.split('/')[0] !== top)) {
         throw new Error('Unexpected Xodus Proton runtime structure.');
       }
 
@@ -270,54 +271,58 @@ export class RuntimeManager {
     }
   }
 
-  // The Nexus runtime is the official Proton snapshot with our
-  // xgameruntime compatibility patches, published as a release asset. It is
-  // a plain HTTPS download; no GitHub CLI authentication is needed. Launcher
-  // AppImage releases share the same repository, so the newest release
-  // carrying a runtime archive wins, not the overall latest release.
+  // Only published releases are installable here, never unapproved CI artifacts.
+  // The complete fork has its own release repository. Keep the existing release
+  // source as a fallback until a complete new runtime is explicitly published.
   async checkNexus(): Promise<RuntimeStatus> {
     this.status.nexusChecking = true;
     this.status.nexusError = undefined;
     try {
-      const response = await this.fetcher(`https://api.github.com/repos/${NEXUS_REPOSITORY}/releases?per_page=30`, {
-        headers: { Accept: 'application/vnd.github+json' },
-        signal: AbortSignal.timeout(20_000),
-      });
-      if (!response.ok) throw new Error('The Xodus Nexus release list could not be read.');
-      const releases = await response.json() as Array<{ tag_name?: unknown; published_at?: unknown; draft?: boolean; prerelease?: boolean; assets?: Array<{ name?: unknown; browser_download_url?: unknown }> }>;
-      let found: { version: string; archive: { name: string; url: string }; checksum: { name: string; url: string } } | undefined;
-      let newestPublication = -Infinity;
-      for (const release of releases) {
-        if (release.draft || release.prerelease) continue;
-        const version = typeof release.tag_name === 'string' && release.tag_name.trim() ? release.tag_name.trim() : '';
-        const assets = (release.assets ?? []).map((asset) => ({
-          name: typeof asset.name === 'string' ? asset.name : '',
-          url: typeof asset.browser_download_url === 'string' ? asset.browser_download_url : '',
-        }));
-        const archive = assets.find((asset) => /^xodus-nexus-runtime-[A-Za-z0-9._-]+-x86_64\.tar\.xz$/.test(asset.name) &&
-          /^https:\/\//.test(asset.url) && assets.some((sum) => sum.name === asset.name.replace(/\.tar\.xz$/, '.sha512sum') && /^https:\/\//.test(sum.url)));
-        const checksum = archive && assets.find((asset) => asset.name === archive.name.replace(/\.tar\.xz$/, '.sha512sum'));
-        if (archive && checksum) {
-          // GitHub's list order is not necessarily publication order, and the
-          // commit suffix in runtime tags is not a sortable version number.
-          const parsed = typeof release.published_at === 'string' ? Date.parse(release.published_at) : NaN;
-          const publication = Number.isFinite(parsed) ? parsed : -Infinity;
-          // Keep an undated fallback only when no dated candidate is available.
-          if (!found || publication > newestPublication) {
-            found = { version, archive, checksum };
-            newestPublication = publication;
+      for (const repository of [NEXUS_RUNTIME_REPOSITORY, NEXUS_REPOSITORY]) {
+        const response = await this.fetcher(`https://api.github.com/repos/${repository}/releases?per_page=30`, {
+          headers: { Accept: 'application/vnd.github+json' },
+          signal: AbortSignal.timeout(20_000),
+        });
+        if (response.status === 404 && repository === NEXUS_RUNTIME_REPOSITORY) continue;
+        if (!response.ok) throw new Error('The Nexus runtime release list could not be read.');
+        const releases = await response.json() as Array<{ tag_name?: unknown; published_at?: unknown; draft?: boolean; prerelease?: boolean; assets?: Array<{ name?: unknown; browser_download_url?: unknown }> }>;
+        let found: { version: string; archive: { name: string; url: string }; checksum: { name: string; url: string } } | undefined;
+        let newestPublication = -Infinity;
+        for (const release of releases) {
+          if (release.draft || release.prerelease) continue;
+          const version = typeof release.tag_name === 'string' && release.tag_name.trim() ? release.tag_name.trim() : '';
+          const assets = (release.assets ?? []).map((asset) => ({
+            name: typeof asset.name === 'string' ? asset.name : '',
+            url: typeof asset.browser_download_url === 'string' ? asset.browser_download_url : '',
+          }));
+          const pattern = repository === NEXUS_RUNTIME_REPOSITORY ? /^nexus-runtime-[A-Za-z0-9._-]+-x86_64\.tar\.xz$/ : /^xodus-nexus-runtime-[A-Za-z0-9._-]+-x86_64\.tar\.xz$/;
+          const archive = assets.find((asset) => pattern.test(asset.name) &&
+            /^https:\/\//.test(asset.url) && assets.some((sum) => sum.name === asset.name.replace(/\.tar\.xz$/, '.sha512sum') && /^https:\/\//.test(sum.url)));
+          const checksum = archive && assets.find((asset) => asset.name === archive.name.replace(/\.tar\.xz$/, '.sha512sum'));
+          if (archive && checksum) {
+            // GitHub's list order is not necessarily publication order, and the
+            // commit suffix in runtime tags is not a sortable version number.
+            const parsed = typeof release.published_at === 'string' ? Date.parse(release.published_at) : NaN;
+            const publication = Number.isFinite(parsed) ? parsed : -Infinity;
+            // Keep an undated fallback only when no dated candidate is available.
+            if (!found || publication > newestPublication) {
+              found = { version, archive, checksum };
+              newestPublication = publication;
+            }
           }
         }
+        if (!found && repository === NEXUS_RUNTIME_REPOSITORY) continue;
+        if (!found) throw new Error('No Nexus runtime release has been published yet.');
+        this.nexusArtifact = {
+          version: found.version,
+          name: found.archive.name,
+          url: found.archive.url,
+          checksumName: found.checksum.name,
+          checksumUrl: found.checksum.url,
+        };
+        Object.assign(this.status, { nexusAvailable: true, nexusName: found.archive.name, nexusVersion: found.version, nexusError: undefined });
+        break;
       }
-      if (!found) throw new Error('No Nexus runtime release has been published yet.');
-      this.nexusArtifact = {
-        version: found.version,
-        name: found.archive.name,
-        url: found.archive.url,
-        checksumName: found.checksum.name,
-        checksumUrl: found.checksum.url,
-      };
-      Object.assign(this.status, { nexusAvailable: true, nexusName: found.archive.name, nexusVersion: found.version, nexusError: undefined });
     } catch (error) {
       this.nexusArtifact = undefined;
       Object.assign(this.status, { nexusAvailable: false, nexusName: undefined, nexusVersion: undefined, nexusError: (error as Error).message });

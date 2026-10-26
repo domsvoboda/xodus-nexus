@@ -1,0 +1,84 @@
+diff --git a/crates/xodus/src/licensing/content_response.rs b/crates/xodus/src/licensing/content_response.rs
+index 06a4545..162b137 100644
+--- a/crates/xodus/src/licensing/content_response.rs
++++ b/crates/xodus/src/licensing/content_response.rs
+@@ -49,6 +49,10 @@ pub enum LicenseContentError {
+         "Microsoft did not grant a license for this account and package. Check the purchased edition, subscription and Store region."
+     )]
+     NotEntitled,
++    #[error(
++        "Microsoft Store device limit reached. Open https://account.microsoft.com/devices/content, unlink an old device you no longer use, then try again. You do not need to sign out or reset the wallet."
++    )]
++    DeviceLimit,
+     #[error(
+         "Microsoft returned a content license without a key. Share the backend diagnostic log."
+     )]
+@@ -82,6 +86,7 @@ impl LicenseContentError {
+             Self::Json => "content-json",
+             Self::Schema => "content-schema",
+             Self::NotEntitled => "content-not-entitled",
++            Self::DeviceLimit => "content-device-limit",
+             Self::EmptyKeys => "content-empty-keys",
+             Self::Base64 => "content-base64",
+             Self::Utf8 => "content-utf8",
+@@ -180,8 +185,14 @@ fn parse(bytes: &[u8]) -> Result<(LicenseContent, License), LicenseContentError>
+         serde_json::from_value(value).map_err(|_| LicenseContentError::Schema)?;
+     let content = match response {
+         LicenseContentResponse::Success { license } => license,
+-        LicenseContentResponse::SatisfactionFailure { .. } => {
+-            return Err(LicenseContentError::NotEntitled);
++        LicenseContentResponse::SatisfactionFailure { satisfaction_failure } => {
++            // This is a licensing reason code, not an HTTP status. Never use
++            // provider text, remediation URLs or alternate content as guidance.
++            return Err(if satisfaction_failure.code == 501 {
++                LicenseContentError::DeviceLimit
++            } else {
++                LicenseContentError::NotEntitled
++            });
+         }
+     };
+     // Preserve the first-key selection used by successful downloads.
+diff --git a/crates/xodus/src/licensing/content_response_tests.rs b/crates/xodus/src/licensing/content_response_tests.rs
+index 0784ed7..205aab3 100644
+--- a/crates/xodus/src/licensing/content_response_tests.rs
++++ b/crates/xodus/src/licensing/content_response_tests.rs
+@@ -94,6 +94,39 @@ fn stage(value: serde_json::Value) -> String {
+         .into()
+ }
+ 
++#[test]
++fn content_license_device_limit_is_code_based_and_never_echoes_provider_data() {
++    let denial = |code| json!({"satisfactionFailure":{"code":code,
++        "description":"private@example.test token=SECRET https://private.invalid/",
++        "alternateContentIds":["never-retry"],"remediationAction":"https://private.invalid/"}});
++    let error = parse(&serde_json::to_vec(&denial(501i64)).unwrap()).err().unwrap();
++    assert_eq!(error.stage(), "content-device-limit");
++    assert!(error.to_string().contains("Microsoft Store device limit reached"));
++    assert!(error.to_string().contains("https://account.microsoft.com/devices/content"));
++    assert!(!format!("{error:?} {error}").contains("SECRET"));
++    assert!(!error.to_string().contains("private"));
++    for code in [i64::MIN, -1, 0, 1, 500, 502, i64::MAX] {
++        assert_eq!(stage(denial(code)), "content-not-entitled");
++    }
++    for code in [json!("501"), json!(501.0), json!(null)] {
++        assert_eq!(stage(json!({"satisfactionFailure":{"code":code,"description":"private"}})), "content-schema");
++    }
++    let mut ambiguous = success(); ambiguous["satisfactionFailure"] = denial(501)["satisfactionFailure"].clone();
++    assert_eq!(stage(ambiguous), "content-schema");
++}
++
++#[tokio::test]
++async fn content_license_device_limit_http_is_not_an_http501_and_never_retries() {
++    let body = serde_json::to_vec(&json!({"satisfactionFailure":{"code":501,"description":"private"}})).unwrap();
++    for (status, expected) in [(200, "content-device-limit"), (501, "content-http"), (401, "content-http")] {
++        let (url, server) = server(format!("HTTP/1.1 {status} Fixture\r\nContent-Length: {}\r\nConnection: close\r\n\r\n", body.len()), body.clone()).await;
++        let error = fetch(reqwest::Client::new().get(url)).await.err().unwrap();
++        assert_eq!(error.stage(), expected);
++        assert!(!error.to_string().contains("private"));
++        assert_eq!(server.await.unwrap(), 1);
++    }
++}
++
+ #[test]
+ fn content_license_success_preserves_existing_first_key_and_extra_fields() {
+     let mut fixture = success();

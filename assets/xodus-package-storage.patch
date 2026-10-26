@@ -1,0 +1,115 @@
+diff --git a/crates/xodus-cli/src/package_plan.rs b/crates/xodus-cli/src/package_plan.rs
+index 97f0d18..6187d56 100644
+--- a/crates/xodus-cli/src/package_plan.rs
++++ b/crates/xodus-cli/src/package_plan.rs
+@@ -22,9 +22,24 @@ pub struct Choice {
+     pub supported: bool,
+     pub parent_product_id: Option<String>,
+     pub main_package_family_name: Option<String>,
++    pub download_bytes: Option<u64>,
++    pub install_bytes: Option<u64>,
+ }
+ pub struct Plan { pub choices: Vec<Choice> }
+ 
++fn size(package: &Value, key: &str) -> Option<u64> {
++    package[key].as_u64().filter(|n| *n > 0 && *n <= 9_007_199_254_740_991)
++}
++
++impl Choice {
++    fn merge_estimates(&mut self, other: &Self) {
++        // Catalog duplicates can disagree. Keep the largest eligible estimate,
++        // never a trial/preorder or another content package's advertised size.
++        self.download_bytes = self.download_bytes.max(other.download_bytes);
++        self.install_bytes = self.install_bytes.max(other.install_bytes);
++    }
++}
++
+ fn product_id(id: &str) -> bool {
+     id.len() == 12 && id.bytes().all(|c| c.is_ascii_uppercase() || c.is_ascii_digit())
+ }
+@@ -87,10 +102,14 @@ fn inspect(product: &Value, id: &str) -> Result<(Vec<Choice>, Vec<String>), Stri
+             let choice = Choice {
+                 product_id: id.to_string(), content_id, title: title.clone(), platform, format, kind: kind.clone(), supported,
+                 parent_product_id: parent_product_id.clone(), main_package_family_name,
++                download_bytes: size(package,"MaxDownloadSizeInBytes"),
++                install_bytes: size(package,"MaxInstallSizeInBytes"),
+             };
+             // The same package can appear in preorder, retail and trial SKUs.
+             // Preserve an eligible retail SKU regardless of catalog ordering.
+-            if !choices.get(&key).is_some_and(|old| old.supported) { choices.insert(key, choice); }
++            if let Some(old) = choices.get_mut(&key).filter(|old| old.supported) {
++                if choice.supported { old.merge_estimates(&choice); }
++            } else { choices.insert(key, choice); }
+         }
+         for reference in list(properties, "BundledSkus") {
+             if let Some(child) = reference["BigId"].as_str().filter(|v| product_id(v)) { bundled.insert(child.to_string()); }
+@@ -115,7 +134,9 @@ pub fn from_products(root: &str, products: &BTreeMap<String, Value>) -> Result<P
+         let (direct, children) = inspect(product, id)?;
+         for choice in direct {
+             let key = choice.content_id.clone();
+-            if !choices.get(&key).is_some_and(|old| old.supported) { choices.insert(key, choice); }
++            if let Some(old) = choices.get_mut(&key).filter(|old| old.supported) {
++                if choice.supported { old.merge_estimates(&choice); }
++            } else { choices.insert(key, choice); }
+         }
+         if choices.len() > MAX_CHOICES { return Err("Too many Store packages".into()); }
+         for child in children { walk(&child, products, path, seen, choices, depth + 1)?; }
+@@ -150,7 +171,8 @@ impl Plan {
+             "status":if self.automatic().is_some() {"ready"} else if self.choices.iter().any(|c| c.supported) {"choice"} else {"unavailable"},
+             "choices":self.choices.iter().map(|c| json!({"productId":c.product_id,"contentId":c.content_id,"title":c.title,
+                 "platform":c.platform,"packageFormat":c.format,"kind":c.kind,"supported":c.supported,
+-                "parentProductId":c.parent_product_id,"mainPackageFamilyName":c.main_package_family_name})).collect::<Vec<_>>()})
++                "parentProductId":c.parent_product_id,"mainPackageFamilyName":c.main_package_family_name,
++                "downloadBytes":c.download_bytes,"installBytes":c.install_bytes})).collect::<Vec<_>>()})
+     }
+ }
+ 
+@@ -196,6 +218,48 @@ async fn resolve_from(client: &reqwest::Client, root: &str, market: &str, catalo
+ #[cfg(test)]
+ mod tests {
+     use super::*;
++    #[test]
++    fn package_storage_estimates_are_optional_positive_and_bound_to_the_selected_content() {
++        let mut product = package(ROOT,"Windows.Desktop","MSIXVC");
++        let p = &mut product["DisplaySkuAvailabilities"][0]["Sku"]["Properties"]["Packages"][0];
++        p["MaxDownloadSizeInBytes"] = json!(2_069_975_040u64);
++        p["MaxInstallSizeInBytes"] = json!(3_000_000_000u64);
++        let plan = from_products(ROOT,&BTreeMap::from([(ROOT.into(),product.clone())])).unwrap();
++        let choice = &plan.json(ROOT,"US")["choices"][0];
++        assert_eq!(choice["downloadBytes"],2_069_975_040u64);
++        assert_eq!(choice["installBytes"],3_000_000_000u64);
++        assert_eq!(plan.select(None).unwrap(),CID);
++        for value in [Value::Null,json!(0),json!(-1),json!(1.5),json!("100"),json!(9_007_199_254_740_992u64)] {
++            let p = &mut product["DisplaySkuAvailabilities"][0]["Sku"]["Properties"]["Packages"][0];
++            p["MaxDownloadSizeInBytes"] = value.clone();p["MaxInstallSizeInBytes"] = value;
++            let plan = from_products(ROOT,&BTreeMap::from([(ROOT.into(),product.clone())])).unwrap();
++            let choice = &plan.json(ROOT,"US")["choices"][0];
++            assert!(choice["downloadBytes"].is_null());assert!(choice["installBytes"].is_null());
++            assert_eq!(plan.select(None).unwrap(),CID);
++        }
++    }
++
++    #[test]
++    fn package_storage_estimates_merge_retail_duplicates_without_using_trial_or_foreign_sizes() {
++        let mut product = package(ROOT,"Windows.Desktop","MSIXVC");
++        product["DisplaySkuAvailabilities"][0]["Sku"]["Properties"]["Packages"][0]["MaxDownloadSizeInBytes"] = json!(100);
++        let mut retail = product["DisplaySkuAvailabilities"][0].clone();
++        retail["Sku"]["Properties"]["Packages"][0]["MaxDownloadSizeInBytes"] = json!(200);
++        let mut trial = retail.clone();trial["Sku"]["Properties"]["IsTrial"] = json!(true);
++        trial["Sku"]["Properties"]["Packages"][0]["MaxDownloadSizeInBytes"] = json!(999);
++        let mut other = retail.clone();other["Sku"]["Properties"]["Packages"][0]["ContentId"] = json!("22222222-2222-4222-8222-222222222222");
++        other["Sku"]["Properties"]["Packages"][0]["MaxDownloadSizeInBytes"] = json!(500);
++        for reversed in [false,true] {
++            let base = product["DisplaySkuAvailabilities"][0].clone();
++            let mut skus = vec![base,retail.clone(),trial.clone(),other.clone()];if reversed {skus.reverse();}
++            product["DisplaySkuAvailabilities"] = json!(skus);
++            let plan = from_products(ROOT,&BTreeMap::from([(ROOT.into(),product.clone())])).unwrap();
++            let choices = plan.json(ROOT,"US")["choices"].as_array().unwrap().clone();
++            assert_eq!(choices.len(),2);
++            assert_eq!(choices.iter().find(|c|c["contentId"]==CID).unwrap()["downloadBytes"],200);
++            assert_eq!(choices.iter().find(|c|c["contentId"]!=CID).unwrap()["downloadBytes"],500);
++        }
++    }
+     const ROOT: &str = "9AAAAAAAAAAA";
+     const CHILD: &str = "9BBBBBBBBBBB";
+     const CID: &str = "11111111-1111-4111-8111-111111111111";

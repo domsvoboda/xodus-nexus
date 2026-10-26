@@ -4,6 +4,8 @@ import os from 'node:os';
 import path from 'node:path';
 import type { DownloadTask, Game, Settings } from '../shared/types.js';
 import { downloadLimitKiB } from '../shared/download-bandwidth.js';
+import { DEFAULT_SHADER_CACHE_GIB, shaderCacheLimits } from '../shared/shader-cache.js';
+import { interfaceLanguagePreference } from '../shared/interface-language.js';
 import { resolvePackageFile } from './windows-path.js';
 import { parsePackageXml } from './package-xml.js';
 import { manifestAttr as attr, manifestText as text, manifestElements, manifestAttribute } from './manifest-xml.js';
@@ -16,10 +18,12 @@ interface PersistedState {
 
 const defaultDataRoot = path.join(os.homedir(), '.local', 'share', 'xodus-nexus');
 const defaultSettings: Settings = {
+  interfaceLanguage: 'system',
   installRoot: path.join(os.homedir(), 'Games', 'Xodus Nexus'),
   market: 'neutral',
   parallelDownloads: 4,
   downloadLimitMiB: 0,
+  shaderCacheLimitGiB: DEFAULT_SHADER_CACHE_GIB,
   winePath: '',
   externalXodusRoot: '',
   runtimeRoot: path.join(defaultDataRoot, 'runtimes'),
@@ -40,6 +44,8 @@ export class StateStore {
       const parsed = JSON.parse(await fs.readFile(this.file, 'utf8')) as Partial<PersistedState>;
       let downloadLimitMiB = 0;
       try { downloadLimitKiB(parsed.settings?.downloadLimitMiB); downloadLimitMiB = parsed.settings?.downloadLimitMiB ?? 0; } catch { /* Ignore invalid saved preference; show the default in Settings. */ }
+      let shaderCacheLimitGiB = DEFAULT_SHADER_CACHE_GIB;
+      try { shaderCacheLimitGiB = shaderCacheLimits(parsed.settings?.shaderCacheLimitGiB).gib; } catch { /* Invalid legacy values use the finite default. */ }
       this.state = {
         games: Array.isArray(parsed.games) ? parsed.games.map((game) => {
           // Remove obsolete route/compatibility claims from existing profiles.
@@ -53,7 +59,7 @@ export class StateStore {
             ...task, status: 'paused' as const, canPause: true, controlPending: false,
             transferRate: undefined, phase: 'Paused — resume to reconnect and restore saved download checkpoints',
           } : task) : [],
-        settings: Object.fromEntries(Object.entries({ ...defaultSettings, ...parsed.settings, downloadLimitMiB }).filter(([key]) => key !== 'separateGameProcess')) as unknown as Settings,
+        settings: Object.fromEntries(Object.entries({ ...defaultSettings, ...parsed.settings, downloadLimitMiB, shaderCacheLimitGiB, interfaceLanguage: interfaceLanguagePreference(parsed.settings?.interfaceLanguage) }).filter(([key]) => key !== 'separateGameProcess')) as unknown as Settings,
       };
     } catch (error) {
       if ((error as NodeJS.ErrnoException).code !== 'ENOENT') console.warn('State could not be loaded', error);
@@ -77,7 +83,9 @@ export class StateStore {
   }
 
   async setSettings(patch: Partial<Settings>): Promise<Settings> {
+    if (patch.interfaceLanguage !== undefined && interfaceLanguagePreference(patch.interfaceLanguage) !== patch.interfaceLanguage) throw Error('Invalid interface language.');
     if (patch.downloadLimitMiB !== undefined) downloadLimitKiB(patch.downloadLimitMiB);
+    if (patch.shaderCacheLimitGiB !== undefined) shaderCacheLimits(patch.shaderCacheLimitGiB);
     this.state.settings = { ...this.state.settings, ...patch };
     await this.save();
     return this.state.settings;

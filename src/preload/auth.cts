@@ -6,7 +6,7 @@ const hosts = ['login.live.com', 'account.live.com', 'login.microsoftonline.com'
 // Runs in the page's main world. It can only cancel this page's own active
 // WebAuthn requests or explicitly request the browser fallback. Never authenticate,
 // choose a credential, alter verification results or expose Node.
-function installPasskeyCancellation(): void {
+function installPasskeyCancellation(strings: Record<string, string> = {}): void {
   const credentials = navigator.credentials;
   if (!credentials || typeof credentials.get !== 'function') return;
   const original = credentials.get;
@@ -34,6 +34,13 @@ function installPasskeyCancellation(): void {
       <div class="copy"><div class="brand">XODUS NEXUS</div><h2>Passkey taking too long?</h2>
       <p>If your account uses a passkey or security key, continue in Google Chrome. Or cancel this request to choose another method.</p><p class="error" role="status" hidden></p></div>
       <div class="actions"><button type="button" class="browser" data-browser>Continue in browser</button><button type="button" data-cancel>Cancel passkey request</button></div></section>`;
+    // Translations are assigned as text, never inserted into the remote page as HTML.
+    for (const [key, selector] of Object.entries({label:'section',title:'h2',help:'.copy > p:not(.error)',browser:'[data-browser]',cancel:'[data-cancel]'})) {
+      if (typeof strings[key] !== 'string' || strings[key].length > 12000) continue;
+      const element = shadow.querySelector(selector);
+      if (key === 'label') element?.setAttribute('aria-label', strings[key]);
+      else if (element) element.textContent = strings[key];
+    }
     shadow.querySelector('[data-cancel]')!.addEventListener('click', () => {
       for (const controller of active) controller.abort();
       hide();
@@ -47,7 +54,7 @@ function installPasskeyCancellation(): void {
         if (!result?.ok) throw Error('Browser unavailable');
       } catch {
         button.disabled = false;
-        error.textContent = 'Could not open browser sign-in. Google Chrome must be installed. Try again or choose another method.';
+        error.textContent = strings.error ?? 'Could not open browser sign-in. Google Chrome must be installed. Try again or choose another method.';
         error.hidden = false;
       }
     });
@@ -76,6 +83,19 @@ function installPasskeyCancellation(): void {
 }
 
 if (window === window.top && location.protocol === 'https:' && !location.port && hosts.includes(location.hostname)) {
+  let strings: Record<string, string> = {};
+  try {
+    const argument = typeof process === 'undefined' ? undefined : process.argv.find(value => value.startsWith('--nexus-auth-ui='));
+    if (argument && argument.length < 80_000) {
+      const parsed: unknown = JSON.parse(argument.slice('--nexus-auth-ui='.length));
+      if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
+        for (const key of ['label','title','help','browser','cancel','error']) {
+          const value = (parsed as Record<string, unknown>)[key];
+          if (typeof value === 'string' && value.length <= 12000) strings[key] = value;
+        }
+      }
+    }
+  } catch { /* English controls remain usable with a malformed optional resource. */ }
   contextBridge.exposeInMainWorld('__nexusAuth', {
     continueInBrowser: () => ipcRenderer.invoke('nexus-auth:browser'),
     notify: (payload: unknown) => {
@@ -88,5 +108,5 @@ if (window === window.top && location.protocol === 'https:' && !location.port &&
     value: payload => globalThis.__nexusAuth.notify(payload),
     configurable: false,
     writable: false
-  }); (${installPasskeyCancellation.toString()})();`);
+  }); (${installPasskeyCancellation.toString()})(${JSON.stringify(strings)});`);
 }

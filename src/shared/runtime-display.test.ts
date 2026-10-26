@@ -17,6 +17,10 @@ describe('runtimeDisplay', () => {
     runtime.nexusVersion = 'runtime-11.0-newer';
     expect(runtimeDisplay(runtime)).toEqual({ title: 'Nexus runtime', source: 'Nexus runtime', version: '11.0-20261011-g3fd4ae10' });
   });
+  it('recognizes the independent Experimental Nexus runtime without changing legacy names', () => {
+    const runtime = { ...demoSnapshot().runtime, name: 'nexus-runtime-11.0-experimental-g0d1ed78b' };
+    expect(runtimeDisplay(runtime)).toEqual({ title: 'Nexus runtime', source: 'Nexus runtime', version: '11.0-experimental-g0d1ed78b' });
+  });
   it.each(['proton-xodus-af521bf3-eac-bridge-v1', 'proton-xodus-af521bf3-xgamesave-pr28-0123456789-bridge-v1'])('identifies a legacy patched runtime: %s', name => {
     expect(runtimeDisplay({ ...demoSnapshot().runtime, name }).source).toBe('Nexus runtime');
   });

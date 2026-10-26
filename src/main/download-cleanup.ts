@@ -60,6 +60,21 @@ export class DownloadCleanup {
       await fs.writeFile(this.file(task.id), JSON.stringify(proof), { flag: 'wx', mode: 0o600 });
     } catch { /* Download can continue, but automatic deletion stays unavailable. */ }
   }
+  /** Internal resume admission only. Carry an existing private proof forward,
+   * never claim a directory just because a new queue entry names it. Retain the
+   * old proof until admission succeeds so a failed resume remains cancellable. */
+  async inheritResume(previous: DownloadTask, next: DownloadTask): Promise<void> {
+    if (previous.status !== 'paused' || next.status !== 'queued' || previous.id === next.id
+      || previous.kind !== 'install' || next.kind !== 'install' || previous.gameId || next.gameId
+      || previous.productId !== next.productId || previous.destination !== next.destination
+      || previous.selectedContentId !== next.selectedContentId || previous.selectionMarket !== next.selectionMarket) return;
+    try {
+      const proof = await this.proof(previous);
+      if (await fs.realpath(previous.destination) !== previous.destination) return;
+      await this.verify(previous.destination, proof);
+      await fs.writeFile(this.file(next.id), JSON.stringify({ ...proof, id: next.id }), { flag: 'wx', mode: 0o600 });
+    } catch { /* Missing, stale or untracked proof stays fail-closed, without blocking resume. */ }
+  }
   async options(task: DownloadTask, locked: string[], roots: string[]): Promise<DownloadCancelOptions> {
     if (task.kind !== 'install' || task.gameId) return denied('Updates and DLC keep their files to protect the installed game.');
     if (task.status === 'complete') return denied('Completed installations cannot be deleted by cancelling a download.');

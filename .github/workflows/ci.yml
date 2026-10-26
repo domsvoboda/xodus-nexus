@@ -33,21 +33,21 @@ jobs:
           sudo apt-get -o Acquire::Retries=2 -o Acquire::http::Timeout=30 -o Acquire::https::Timeout=30 update
           sudo apt-get -o Acquire::Retries=2 -o Acquire::http::Timeout=30 -o Acquire::https::Timeout=30 install -y gcc-mingw-w64-x86-64
       - name: Check source without compiling a distribution candidate
-        if: github.ref != 'refs/heads/main'
-        run: npm run typecheck && npm run test
+        if: github.ref != 'refs/heads/main' || contains(github.event.head_commit.message, '[source-only]')
+        run: npm run i18n:check && npm run typecheck && npm run test
       - name: Build and check the main candidate once
-        if: github.ref == 'refs/heads/main'
+        if: github.ref == 'refs/heads/main' && !contains(github.event.head_commit.message, '[source-only]')
         run: npm run build
       - run: npm run test:runtime-tools
       - run: npm run test:ci-tools
       - name: Build launcher candidate (never publish)
-        if: github.ref == 'refs/heads/main'
+        if: github.ref == 'refs/heads/main' && !contains(github.event.head_commit.message, '[source-only]')
         run: npx --no-install electron-builder --linux AppImage --publish never
       - name: Bind candidate to source and checksums
-        if: github.ref == 'refs/heads/main'
+        if: github.ref == 'refs/heads/main' && !contains(github.event.head_commit.message, '[source-only]')
         run: node scripts/ci/artifact-manifest.mjs write launcher release
       - uses: actions/upload-artifact@v4
-        if: github.ref == 'refs/heads/main'
+        if: github.ref == 'refs/heads/main' && !contains(github.event.head_commit.message, '[source-only]')
         with:
           name: launcher-candidate
           path: |

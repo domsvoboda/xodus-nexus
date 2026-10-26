@@ -1,6 +1,6 @@
 {
   "name": "xodus-nexus",
-  "version": "0.3.11",
+  "version": "0.4.0",
   "description": "Xbox-inspired Microsoft Store game launcher for Linux",
   "license": "MIT",
   "author": "Xodus Nexus contributors",
@@ -11,19 +11,27 @@
     "dev:electron": "wait-on tcp:5173 && tsc -p tsconfig.electron.json && VITE_DEV_SERVER_URL=http://localhost:5173 electron .",
     "clean": "node -e \"for (const p of ['dist','dist-electron']) require('node:fs').rmSync(p,{recursive:true,force:true})\"",
     "typecheck": "tsc --noEmit && tsc -p tsconfig.electron.json --noEmit",
+    "i18n:check": "node scripts/localization.mjs check",
+    "i18n:export": "node scripts/localization.mjs export",
+    "i18n:import": "node scripts/localization.mjs import",
+    "i18n:push": "npm run i18n:check && tolgee push --error-on-unresolved-conflict yes --override-mode ALL",
+    "i18n:pull": "node scripts/tolgee-pull.mjs",
     "test": "vitest run",
     "test:runtime-tools": "node --test scripts/eac-trace-summary.test.mjs scripts/wine-exception-metadata.test.mjs scripts/assemble-shared-runtime.test.mjs scripts/build-runtime-dxvk.test.mjs scripts/verify-runtime-base.test.mjs scripts/runtime-compat/staging.test.mjs scripts/runtime-tests/build-store-probes.test.mjs scripts/runtime-tests/build-user-privilege-probe.test.mjs scripts/runtime-tests/build-gamesave-sync-probe.test.mjs scripts/runtime-tests/build-user-audio-probe.test.mjs",
     "test:ci-tools": "node --test scripts/ci/*.test.mjs",
-    "build": "npm run clean && npm run typecheck && npm run test && vite build && tsc -p tsconfig.electron.json",
+    "build": "npm run clean && npm run i18n:check && npm run typecheck && npm run test && vite build && tsc -p tsconfig.electron.json",
     "dist": "npm run build && electron-builder --linux AppImage --publish never",
     "pack": "npm run build && electron-builder --linux dir --publish never"
   },
   "dependencies": {
+    "i18next": "26.5.11",
     "lucide-react": "^0.468.0",
     "react": "^18.3.1",
-    "react-dom": "^18.3.1"
+    "react-dom": "^18.3.1",
+    "react-i18next": "17.1.9"
   },
   "devDependencies": {
+    "@tolgee/cli": "2.21.0",
     "@types/node": "^22.10.2",
     "@types/react": "^18.3.18",
     "@types/react-dom": "^18.3.5",
@@ -51,7 +59,12 @@
       "package.json",
       "LICENSE"
     ],
-    "extraResources": [{ "from": "assets/fonts", "to": "fonts" }],
+    "extraResources": [
+      {
+        "from": "assets/fonts",
+        "to": "fonts"
+      }
+    ],
     "afterPack": "scripts/launcher-fonts-after-pack.cjs",
     "linux": {
       "category": "Game",

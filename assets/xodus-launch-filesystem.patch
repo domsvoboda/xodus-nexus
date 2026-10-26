@@ -1,0 +1,134 @@
+diff --git a/crates/xodus-cli/src/commands/run.rs b/crates/xodus-cli/src/commands/run.rs
+index bb0b9e7..2e995f9 100644
+--- a/crates/xodus-cli/src/commands/run.rs
++++ b/crates/xodus-cli/src/commands/run.rs
+@@ -220,6 +220,40 @@ fn populate_launch_view(
+     Ok(())
+ }
+ 
++fn probe_launch_view_links(directory: &Path) -> std::io::Result<()> {
++    let probe = directory.join(".xodus-link-probe");
++    symlink(".", &probe)?;
++    std::fs::remove_file(probe)
++}
++
++fn launch_view_directory_with(
++    source_root: &Path,
++    fallback: &Path,
++    prefix: &str,
++    mut probe: impl FnMut(&Path) -> std::io::Result<()>,
++) -> std::io::Result<TempDir> {
++    let parent = source_root.parent().unwrap_or(fallback);
++    if let Ok(directory) = Builder::new().prefix(prefix).tempdir_in(parent) {
++        match probe(directory.path()) {
++            Ok(()) => return Ok(directory),
++            Err(error) if matches!(error.raw_os_error(), Some(nix::libc::EPERM | nix::libc::EOPNOTSUPP | nix::libc::ENOSYS)) => {
++                // Some install filesystems allow directories but not symlinks.
++                // Drop only this private empty view, then try the ordinary temp
++                // directory once. Never change mount/security settings or copy
++                // the whole game as a substitute for the links.
++            }
++            Err(error) => return Err(error),
++        }
++    }
++    let directory = Builder::new().prefix(prefix.trim_start_matches('.')).tempdir_in(fallback)?;
++    probe(directory.path())?;
++    Ok(directory)
++}
++
++fn launch_view_directory(source_root: &Path, prefix: &str) -> std::io::Result<TempDir> {
++    launch_view_directory_with(source_root, &std::env::temp_dir(), prefix, probe_launch_view_links)
++}
++
+ fn create_launch_chain_mirror(
+     source_root: &Path,
+     entry_suffix: &str,
+@@ -250,11 +284,7 @@ fn create_launch_chain_mirror(
+         }
+     }
+     let decrypted_files: HashSet<PathBuf> = decrypted.keys().cloned().collect();
+-    let parent = source_root.parent().unwrap_or_else(|| Path::new("/tmp"));
+-    let mirror = Builder::new()
+-        .prefix(".xodus-chain-")
+-        .tempdir_in(parent)
+-        .or_else(|_| Builder::new().prefix("xodus-chain-").tempdir())?;
++    let mirror = launch_view_directory(source_root, ".xodus-chain-")?;
+     populate_launch_view(
+         source_root,
+         mirror.path(),
+@@ -275,11 +305,7 @@ fn create_launch_mirror(
+     source_root: &Path,
+     entry_suffix: &str,
+ ) -> std::io::Result<(TempDir, PathBuf)> {
+-    let parent = source_root.parent().unwrap_or_else(|| Path::new("/tmp"));
+-    let mirror = Builder::new()
+-        .prefix(".xodus-offline-")
+-        .tempdir_in(parent)
+-        .or_else(|_| Builder::new().prefix("xodus-offline-").tempdir())?;
++    let mirror = launch_view_directory(source_root, ".xodus-offline-")?;
+     let components: Vec<&str> = entry_suffix
+         .split(['\\', '/'])
+         .filter(|component| !component.is_empty())
+@@ -873,6 +899,62 @@ mod tests {
+         assert!(checked_relative_path("..\\outside.exe").is_err());
+     }
+ 
++    #[test]
++    fn launch_directory_falls_back_when_install_filesystem_cannot_create_links() {
++        for code in [nix::libc::EPERM, nix::libc::EOPNOTSUPP, nix::libc::ENOSYS] {
++            let root = tempfile::tempdir().unwrap();
++            let parent = root.path().join("non-link-filesystem");
++            let fallback = root.path().join("normal temporary filesystem");
++            std::fs::create_dir_all(parent.join("game")).unwrap();
++            std::fs::create_dir(&fallback).unwrap();
++            std::fs::write(parent.join("game/original.bin"), b"unchanged").unwrap();
++            let mut attempts = Vec::new();
++            let result = launch_view_directory_with(&parent.join("game"), &fallback, ".xodus-chain-", |path| {
++                attempts.push(path.to_owned());
++                if path.parent() == Some(parent.as_path()) { return Err(std::io::Error::from_raw_os_error(code)); }
++                probe_launch_view_links(path)
++            }).unwrap();
++            assert_eq!(attempts.len(), 2);
++            assert_eq!(result.path().parent(), Some(fallback.as_path()));
++            assert!(!attempts[0].exists());
++            assert_eq!(std::fs::read(parent.join("game/original.bin")).unwrap(), b"unchanged");
++            assert_eq!(std::fs::read_dir(result.path()).unwrap().count(), 0);
++            let path = result.path().to_owned(); drop(result); assert!(!path.exists());
++        }
++    }
++
++    #[test]
++    fn launch_directory_keeps_supported_install_filesystem_and_cleans_probe() {
++        let root = tempfile::tempdir().unwrap();
++        let fallback = tempfile::tempdir().unwrap();
++        std::fs::create_dir(root.path().join("game")).unwrap();
++        let directory = launch_view_directory_with(&root.path().join("game"), fallback.path(), ".xodus-chain-", probe_launch_view_links).unwrap();
++        assert_eq!(directory.path().parent(), Some(root.path()));
++        assert_eq!(std::fs::read_dir(directory.path()).unwrap().count(), 0);
++        assert_eq!(std::fs::read_dir(fallback.path()).unwrap().count(), 0);
++    }
++
++    #[test]
++    fn launch_directory_does_not_hide_unrelated_io_failures_or_retry_forever() {
++        let root = tempfile::tempdir().unwrap();
++        let fallback = tempfile::tempdir().unwrap();
++        std::fs::create_dir(root.path().join("game")).unwrap();
++        let mut calls = 0;
++        let error = launch_view_directory_with(&root.path().join("game"), fallback.path(), ".xodus-chain-", |_| {
++            calls += 1; Err(std::io::Error::from_raw_os_error(nix::libc::EIO))
++        }).unwrap_err();
++        assert_eq!(error.raw_os_error(), Some(nix::libc::EIO));
++        assert_eq!(calls, 1);
++        assert_eq!(std::fs::read_dir(fallback.path()).unwrap().count(), 0);
++        let mut calls = 0;
++        let error = launch_view_directory_with(&root.path().join("game"), fallback.path(), ".xodus-chain-", |_| {
++            calls += 1; Err(std::io::Error::from_raw_os_error(nix::libc::EPERM))
++        }).unwrap_err();
++        assert_eq!(error.raw_os_error(), Some(nix::libc::EPERM));
++        assert_eq!(calls, 2);
++        assert_eq!(std::fs::read_dir(fallback.path()).unwrap().count(), 0);
++    }
++
+     #[test]
+     fn case_resolved_launch_view_keeps_source_files_unchanged() {
+         let root = tempfile::tempdir().unwrap();

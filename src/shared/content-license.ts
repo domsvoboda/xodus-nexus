@@ -1,7 +1,7 @@
 /** Fixed content-licensing metadata only, never provider messages or license data. */
 export const contentLicenseStages = new Set([
   'content-timeout', 'content-request', 'content-http', 'content-size', 'content-read',
-  'content-json', 'content-schema', 'content-not-entitled', 'content-empty-keys',
+  'content-json', 'content-schema', 'content-not-entitled', 'content-device-limit', 'content-empty-keys',
   'content-base64', 'content-utf8', 'content-xml', 'content-license-blob', 'content-parsed',
 ]);
 
@@ -20,6 +20,7 @@ export function contentLicenseFailure(log: string[]): string | undefined {
     if (record) last = record.stage === 'content-parsed' ? undefined : record;
   }
   if (!last) return;
+  if (last.stage === 'content-device-limit') return 'Microsoft Store device limit reached. Open https://account.microsoft.com/devices/content, unlink an old device you no longer use, then try again. You do not need to sign out or reset the wallet.';
   if (last.stage === 'content-http') {
     if (last.status === 401) return 'Microsoft rejected content licensing sign-in (HTTP 401). Sign in again in Settings.';
     if (last.status === 403) return 'Microsoft denied this content-license request (HTTP 403). Check the account, purchased edition and Store region.';

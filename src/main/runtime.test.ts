@@ -96,14 +96,57 @@ describe('previewBaseRelease', () => {
     await expect(manager.installNexus(() => undefined)).rejects.toThrow('while a Xodus operation is active');
   });
 
-  it.each(['valid', 'stderr-warning', 'bad-digest', 'wrong-file', 'unsafe-root', 'mixed-root'])('verifies a downloaded Nexus runtime before activation: %s', async scenario => {
+  it.each(['empty', '404', 'preview', 'incomplete'])('keeps published legacy releases available while the fork is %s', async scenario => {
+    const old = 'xodus-nexus-runtime-tested-x86_64.tar.xz';
+    const next = 'nexus-runtime-tested-x86_64.tar.xz';
+    const pair = (name: string) => [name, name.replace('.tar.xz', '.sha512sum')].map(name => ({ name, browser_download_url: `https://example.com/${name}` }));
+    const calls: string[] = [];
+    const fetcher = (async (input: URL | RequestInfo) => {
+      const url = String(input); calls.push(url);
+      if (url.includes('/nexus-runtime/')) {
+        if (scenario === '404') return new Response('', { status: 404 });
+        return new Response(JSON.stringify(scenario === 'empty' ? [] : [{ tag_name: 'next', prerelease: scenario === 'preview', assets: scenario === 'incomplete' ? pair(next).slice(0, 1) : pair(next) }]));
+      }
+      return new Response(JSON.stringify([{ tag_name: 'previous', assets: pair(old) }]));
+    }) as typeof fetch;
+    const status = await new RuntimeManager('/tmp/unused', () => undefined, () => false, fetcher).checkNexus();
+    expect(status.nexusName).toBe(old);
+    expect(calls).toHaveLength(2);
+  });
+
+  it('prefers the complete published fork release without changing an installed runtime', async () => {
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), 'nexus-discovery-'));
+    try {
+      const previous = { name: 'previous', winePath: '/previous/wine', commit: 'previous', installedAt: 'before' };
+      await fs.writeFile(path.join(root, 'current.json'), JSON.stringify(previous));
+      const name = 'nexus-runtime-11.0-experimental-g12345678-x86_64.tar.xz';
+      let calls = 0;
+      const fetcher = (async (input: URL | RequestInfo) => {
+        expect(String(input)).toContain('/domsvoboda/nexus-runtime/releases?'); calls++;
+        return new Response(JSON.stringify([{ tag_name: 'next', assets: [name, name.replace('.tar.xz', '.sha512sum')].map(name => ({ name, browser_download_url: `https://example.com/${name}` })) }]));
+      }) as typeof fetch;
+      const status = await new RuntimeManager(root, () => undefined, () => false, fetcher).checkNexus();
+      expect(status.nexusName).toBe(name); expect(calls).toBe(1);
+      expect(JSON.parse(await fs.readFile(path.join(root, 'current.json'), 'utf8'))).toEqual(previous);
+      expect(await fs.readdir(root)).toEqual(['current.json']);
+    } finally { await fs.rm(root, { recursive: true, force: true }); }
+  });
+
+  it.each([403, 500])('does not silently downgrade after a fork repository error: %s', async status => {
+    let calls = 0;
+    const fetcher = (async () => { calls++; return new Response('', { status }); }) as typeof fetch;
+    const result = await new RuntimeManager('/tmp/unused', () => undefined, () => false, fetcher).checkNexus();
+    expect(result.nexusAvailable).toBe(false); expect(result.nexusError).toContain('could not be read'); expect(calls).toBe(1);
+  });
+
+  it.each(['valid', 'new-fork', 'stderr-warning', 'bad-digest', 'wrong-file', 'unsafe-root', 'mixed-root'])('verifies a downloaded Nexus runtime before activation: %s', async scenario => {
     // Build a real tar.xz runtime archive with a fake wine binary, publish it
     // through the mocked release API, and run the full install path:
     // download, SHA-512 verification, extraction, canonical naming, pointer.
-    const releaseName = 'xodus-nexus-runtime-11.0-20261011-g3fd4ae10';
+    const releaseName = scenario === 'new-fork' ? 'nexus-runtime-11.0-experimental-g3fd4ae10' : 'xodus-nexus-runtime-11.0-20261011-g3fd4ae10';
     const root = await fs.mkdtemp(path.join(os.tmpdir(), 'xodus-nexus-install-test-'));
     const build = path.join(root, 'build');
-    const top = scenario === 'unsafe-root' ? 'unexpected-root' : 'proton-xodus-bleeding-edge-11.0-20260803-3-g7c0b4354-x86_64';
+    const top = scenario === 'new-fork' ? releaseName : scenario === 'unsafe-root' ? 'unexpected-root' : 'proton-xodus-bleeding-edge-11.0-20260803-3-g7c0b4354-x86_64';
     const wine = path.join(build, top, 'files', 'bin', 'wine');
     await fs.mkdir(path.dirname(wine), { recursive: true });
     await fs.writeFile(wine, '#!/bin/sh\necho wine-11.0-test\n', { mode: 0o755 });
@@ -133,7 +176,7 @@ describe('previewBaseRelease', () => {
       const previous = { name: 'previous', winePath: previousWine, commit: 'previous', installedAt: 'before' };
       await fs.writeFile(path.join(root, 'current.json'), JSON.stringify(previous));
       await manager.refresh(); // detect tar and sha512sum prerequisites
-      if (!['valid', 'stderr-warning'].includes(scenario)) {
+      if (!['valid', 'new-fork', 'stderr-warning'].includes(scenario)) {
         await expect(manager.installNexus(() => undefined)).rejects.toThrow(['unsafe-root', 'mixed-root'].includes(scenario) ? /runtime structure/ : /SHA-512/);
         expect(JSON.parse(await fs.readFile(path.join(root, 'current.json'), 'utf8'))).toEqual(previous);
         expect(manager.current.name).toBe('previous');

@@ -203,7 +203,7 @@ export function installGamepadNavigation(win: Window, options: Options): () => v
     dialog.className = 'gamepad-select-dialog';
     dialog.setAttribute('role', 'dialog'); dialog.setAttribute('aria-modal', 'true');
     const title = doc.createElement('h2');
-    title.textContent = select.getAttribute('aria-label') ?? select.labels?.[0]?.childNodes[0]?.textContent ?? 'Choose an option';
+    title.textContent = select.getAttribute('aria-label') ?? select.labels?.[0]?.childNodes[0]?.textContent ?? ui('gamepad.choose_option');
     dialog.setAttribute('aria-label', title.textContent);
     dialog.append(title);
     const choose = (value: string) => {
@@ -224,7 +224,7 @@ export function installGamepadNavigation(win: Window, options: Options): () => v
       dialog.append(button);
     }
     const cancel = doc.createElement('button');
-    cancel.type = 'button'; cancel.textContent = 'Cancel'; cancel.setAttribute('data-gamepad-cancel', '');
+    cancel.type = 'button'; cancel.textContent = ui('ui.cancel_19766ed'); cancel.setAttribute('data-gamepad-cancel', '');
     cancel.addEventListener('click', () => closePicker(true));
     dialog.append(cancel); backdrop.append(dialog); doc.body.append(backdrop);
     backdrop.addEventListener('pointerdown', event => { if (event.target === backdrop) closePicker(false); });
@@ -414,3 +414,4 @@ export function installGamepadNavigation(win: Window, options: Options): () => v
     win.removeEventListener('blur', blur); doc.removeEventListener('visibilitychange', blur);
   };
 }
+import { ui } from './i18n';

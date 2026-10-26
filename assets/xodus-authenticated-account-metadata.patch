@@ -1,0 +1,182 @@
+diff --git a/crates/xodus/src/tokens/manager.rs b/crates/xodus/src/tokens/manager.rs
+--- a/crates/xodus/src/tokens/manager.rs
++++ b/crates/xodus/src/tokens/manager.rs
+@@ -23,6 +23,40 @@
+ 
+ pub const PASSPORT_STS: &str = "http://Passport.NET/STS";
+ 
++#[cfg(test)]
++mod credential_account_metadata_tests {
++    use super::*;
++    #[test]
++    fn credential_account_metadata_snapshot_is_atomic_and_logout_removes_it() {
++        let manager = TokenManager::with_memory();
++        assert!(manager.get_user_sts_session().unwrap().is_none());
++        manager.save_user(&User { puid: "legacy".into(), username: "legacy".into() }).unwrap();
++        manager.save_user_token(PASSPORT_STS.into(), Token::Compact("legacy-token".into())).unwrap();
++        assert!(manager.get_user_sts_session().unwrap().is_none());
++        manager.save_user_session(User { puid: "0123456789abcdef".into(), username: "synthetic".into() },
++            HashMap::from([(PASSPORT_STS.into(), Token::Compact("synthetic-session-ticket".into()))])).unwrap();
++        let (user, token) = manager.get_user_sts_session().unwrap().unwrap();
++        assert_eq!(user.puid, "0123456789abcdef");
++        assert!(matches!(token, Token::Compact(value) if value == "synthetic-session-ticket"));
++        manager.remove_persistent().unwrap();
++        assert!(manager.get_user_sts_session().unwrap().is_none());
++    }
++    #[test]
++    fn credential_account_metadata_never_pairs_different_sessions_under_concurrent_reads() {
++        let manager = TokenManager::with_memory();
++        let save = |m: &TokenManager, name: &str| m.save_user_session(User { puid: name.into(), username: name.into() },
++            HashMap::from([(PASSPORT_STS.into(), Token::Compact(name.into()))])).unwrap();
++        save(&manager, "a");
++        let writer = manager.clone();
++        let thread = std::thread::spawn(move || for _ in 0..1000 { save(&writer, "b"); save(&writer, "a"); });
++        for _ in 0..10000 {
++            let (user, token) = manager.get_user_sts_session().unwrap().unwrap();
++            assert!(matches!(token, Token::Compact(value) if value == user.puid));
++        }
++        thread.join().unwrap();
++    }
++}
++
+ /// Semantic facade over the two storage tiers: a persistent, keychain-backed tier
+ /// for STS/device/user credentials, and an ephemeral tier for short-lived
+ /// per-relying-party XSTS tokens. Centralizes the read-merge-write pattern that was
+@@ -136,6 +170,14 @@
+ 
+     // ---- User info -----------------------------------------------------------
+ 
++    /// An atomic authenticated user/token pair from the single session record.
++    /// Legacy independent entries are not sufficient for identity projection.
++    pub fn get_user_sts_session(&self) -> Result<Option<(User, Token)>, TokenStoreError> {
++        let Some(mut session) = self.user_session()? else { return Ok(None) };
++        let token = session.tokens.remove(PASSPORT_STS).ok_or(TokenStoreError::NotFound)?;
++        Ok(Some((session.user, token)))
++    }
++
+     pub fn get_user(&self) -> Result<User, TokenStoreError> {
+         if let Some(session) = self.user_session()? {
+             return Ok(session.user);
+diff --git a/crates/xodus/src/models/xgameruntime/xuser.rs b/crates/xodus/src/models/xgameruntime/xuser.rs
+--- a/crates/xodus/src/models/xgameruntime/xuser.rs
++++ b/crates/xodus/src/models/xgameruntime/xuser.rs
+@@ -17,6 +17,10 @@
+     pub expiry: i64,
+     pub device_rps: String,
+     pub device_expiry: i64,
++    #[serde(skip_serializing_if = "Option::is_none")]
++    pub xbox_msa_account_id: Option<String>,
++    #[serde(skip_serializing_if = "Option::is_none")]
++    pub store_msa_account_id: Option<String>,
+ }
+ 
+ #[derive(Deserialize)]
+diff --git a/crates/xodus-service/src/main.rs b/crates/xodus-service/src/main.rs
+--- a/crates/xodus-service/src/main.rs
++++ b/crates/xodus-service/src/main.rs
+@@ -10,6 +10,7 @@
+ use xodus::tokens::TokenManager;
+ 
+ mod connection;
++mod account_metadata;
+ mod simple_context;
+ mod store_license;
+ mod store_updates;
+diff --git a/crates/xodus-service/src/connection/xml.rs b/crates/xodus-service/src/connection/xml.rs
+--- a/crates/xodus-service/src/connection/xml.rs
++++ b/crates/xodus-service/src/connection/xml.rs
+@@ -54,7 +54,12 @@
+             let string_buf = std::str::from_utf8(&buffer)?;
+             tracing::debug!("String buffer: {string_buf:?}");
+             let req = quick_xml::de::from_str::<MSATokenRequest>(string_buf)?;
+-            let Token::Legacy(token) = context.tokens().get_user_sts_token()? else {
++            let identity_session = context.tokens().get_user_sts_session()?;
++            let request_token = match &identity_session {
++                Some((_, token)) => token.clone(),
++                None => context.tokens().get_user_sts_token()?,
++            };
++            let Token::Legacy(token) = request_token else {
+                 return Ok(vec![]);
+             };
+             let scope = if req.msa_full_trust {
+@@ -122,10 +127,19 @@
+                     let Token::Compact(user_token) = token else {
+                         return Ok(vec![]);
+                     };
++                    // Store licensing uses this same session facade. Bind the
++                    // Xbox ticket's MSA principal to its current Store account,
++                    // never infer either account identifier from an Xbox XUID.
++                    let current_identity = context.tokens().get_user_sts_session().ok().flatten();
++                    let (xbox_msa_account_id, store_msa_account_id) = crate::account_metadata::bound_ids(
++                        identity_session.as_ref().map(|(user, _)| user),
++                        current_identity.as_ref().map(|(user, _)| user));
+                     let payload = MSATokenResponse {
+                         token: user_token,
+                         expiry: expiry.timestamp(),
+                         device_expiry: ms_device_rps_token.as_ref().map(|(_, r)| *r).unwrap_or(0),
++                        xbox_msa_account_id,
++                        store_msa_account_id,
+                         device_rps: ms_device_rps_token
+                             .map(|(t, _)| t)
+                             .unwrap_or_else(String::new),
+diff --git a/crates/xodus-service/src/account_metadata.rs b/crates/xodus-service/src/account_metadata.rs
+new file mode 100644
+--- /dev/null
++++ b/crates/xodus-service/src/account_metadata.rs
+@@ -0,0 +1,56 @@
++//! Compatibility metadata from authenticated MSA sessions, not an entitlement.
++use xodus::models::secrets::User;
++
++fn account_id(puid: &str) -> Option<String> {
++    if puid.len() != 16 || !puid.bytes().all(|c| c.is_ascii_hexdigit()) || puid.bytes().all(|c| c == b'0') {
++        return None;
++    }
++    Some(puid.to_ascii_lowercase())
++}
++
++pub fn bound_ids(ticket: Option<&User>, store: Option<&User>) -> (Option<String>, Option<String>) {
++    let Some((ticket, store)) = ticket.zip(store) else { return (None, None) };
++    let Some(xbox) = account_id(&ticket.puid) else { return (None, None) };
++    let Some(store_id) = account_id(&store.puid) else { return (None, None) };
++    // A change/logout while exchanging tickets must not publish a mixed pair.
++    if xbox != store_id || ticket.username.is_empty() || !ticket.username.eq_ignore_ascii_case(&store.username) {
++        return (None, None);
++    }
++    (Some(xbox), Some(store_id))
++}
++
++#[cfg(test)]
++mod tests {
++    use super::*;
++    fn user(puid: &str) -> User { User { puid: puid.into(), username: "synthetic@example.invalid".into() } }
++    #[test]
++    fn account_metadata_uses_real_session_ids_and_rejects_mixed_accounts() {
++        let a = user("0123456789ABCDEF");
++        let b = user("fedcba9876543210");
++        assert_eq!(bound_ids(Some(&a), Some(&a)), (Some("0123456789abcdef".into()), Some("0123456789abcdef".into())));
++        assert_eq!(bound_ids(Some(&a), Some(&b)), (None, None));
++        assert_eq!(bound_ids(Some(&a), None), (None, None));
++        assert_eq!(bound_ids(None, Some(&a)), (None, None));
++        let renamed = User { puid: a.puid.clone(), username: "other@example.invalid".into() };
++        assert_eq!(bound_ids(Some(&a), Some(&renamed)), (None, None));
++    }
++    #[test]
++    fn account_metadata_rejects_placeholder_malformed_and_empty_ids() {
++        for value in ["", "0", "0000000000000000", "281474000000000000000", "synthetic", "0123456789abcdeg", "0123456789abcdef\n"] {
++            let bad = user(value);
++            assert_eq!(bound_ids(Some(&bad), Some(&bad)), (None, None));
++        }
++    }
++    #[test]
++    fn account_metadata_xml_is_additive_and_omitted_for_unbound_sessions() {
++        use xodus::models::xgameruntime::xuser::MSATokenResponse;
++        let mut value = MSATokenResponse { token: "synthetic-ticket".into(), expiry: 1, device_rps: "synthetic-device".into(), device_expiry: 2, xbox_msa_account_id: None, store_msa_account_id: None };
++        let xml = quick_xml::se::to_string(&value).unwrap();
++        assert!(!xml.contains("MsaAccountId"));
++        value.xbox_msa_account_id = Some("0123456789abcdef".into());
++        value.store_msa_account_id = Some("0123456789abcdef".into());
++        let xml = quick_xml::se::to_string(&value).unwrap();
++        assert!(xml.contains("<XboxMsaAccountId>0123456789abcdef</XboxMsaAccountId>"));
++        assert!(xml.contains("<StoreMsaAccountId>0123456789abcdef</StoreMsaAccountId>"));
++    }
++}

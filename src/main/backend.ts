@@ -6,6 +6,7 @@ import { parseBackendHelp } from '../shared/utils.js';
 import { run } from './process.js';
 import { backendLock, backendRecipeSha256, backendAssets, compareVersions } from './backend-package.js';
 import { discoverBackend, installBackend, type BackendArtifact } from './backend-releases.js';
+import { BackendPrerequisiteError, backendPrerequisiteFailure } from './backend-prerequisites.js';
 
 const REPOSITORY = backendLock.repository;
 export const LINUX_RUN_PATCH = backendLock.compatibility;
@@ -23,6 +24,7 @@ export class BackendManager {
   private emitLog: (scope: string, line: string) => void;
   private isOperationActive: () => boolean;
   private artifact?: BackendArtifact;
+  private probeFailure?: string;
 
   constructor(
     userData: string,
@@ -59,7 +61,11 @@ export class BackendManager {
     try {
       await fs.access(binaryPath, constants.X_OK);
       const result = await run(binaryPath, ['--help'], { maxOutput: 100_000 });
-      if (result.code !== 0) return null;
+      if (result.code !== 0) {
+        const failure = backendPrerequisiteFailure(result.output);
+        if (failure) throw new BackendPrerequisiteError(failure.message);
+        return null;
+      }
       const capabilities = parseBackendHelp(result.output);
       if (capabilities.streaming) {
         const streaming = await run(binaryPath, ['streaming', '--help'], { maxOutput: 100_000 });
@@ -67,9 +73,13 @@ export class BackendManager {
         capabilities.streamingControls = Boolean(capabilities.streamingProgressJson && /(?:^|\s)--control-stdin(?:\s|$)/m.test(streaming.output));
         capabilities.streamingBandwidthLimit = Boolean(capabilities.streamingControls && /(?:^|\s)--download-limit-kib(?:\s|$)/m.test(streaming.output));
         capabilities.packageSelection = streaming.code === 0 && capabilities.commands.includes('resolve-package') && /(?:^|\s)--selected-content-id(?:\s|$)/m.test(streaming.output);
+        if (capabilities.packageSelection) {
+          const help = await run(binaryPath, ['resolve-package', '--help'], { maxOutput: 100_000 });
+          capabilities.contentPackageSelection = help.code === 0 && /(?:^|\s)--include-dlc(?:\s|$)/m.test(help.output);
+        }
       }
       return capabilities.login && capabilities.streaming ? capabilities : null;
-    } catch { return null; }
+    } catch (error) { if (error instanceof BackendPrerequisiteError) throw error; return null; }
   }
 
   private async gitCommit(root: string): Promise<string | undefined> {
@@ -89,10 +99,16 @@ export class BackendManager {
     ]);
     this.status.prerequisites = { git, cargo, rustc, protoc };
 
+    let validationFailure: string | undefined;
+    const validate = (binary: string) => this.validate(binary).catch(error => {
+      if (error instanceof BackendPrerequisiteError) validationFailure ??= error.message;
+      return null;
+    });
     const pointer = await this.readPointer();
     if (pointer) {
-      const capabilities = await this.validate(pointer.binaryPath);
+      const capabilities = await validate(pointer.binaryPath);
       if (capabilities) {
+        this.probeFailure = undefined;
         Object.assign(this.status, {
           available: true, source: 'managed', binaryPath: pointer.binaryPath,
           commit: pointer.commit, capabilities, blockReason: undefined,
@@ -104,8 +120,9 @@ export class BackendManager {
     }
 
     const externalBinary = path.join(this.status.externalRoot, 'target', 'release', 'xodus-cli');
-    const capabilities = await this.validate(externalBinary);
+    const capabilities = await validate(externalBinary);
     if (capabilities) {
+      this.probeFailure = undefined;
       Object.assign(this.status, {
         available: true, source: 'external', binaryPath: externalBinary,
         commit: await this.gitCommit(this.status.externalRoot), capabilities, blockReason: undefined,
@@ -113,11 +130,12 @@ export class BackendManager {
         version: undefined, delivery: undefined,
       });
     } else {
+      this.probeFailure = validationFailure;
       Object.assign(this.status, {
         available: false, source: 'none', binaryPath: undefined, commit: undefined,
         version: undefined, delivery: undefined, linuxRunPatch: undefined,
         capabilities: EMPTY_CAPABILITIES,
-        blockReason: 'No validated xodus-cli with login and streaming commands was found.',
+        blockReason: validationFailure ?? 'No validated xodus-cli with login and streaming commands was found.',
       });
     }
     return this.current;
@@ -147,7 +165,7 @@ export class BackendManager {
       this.status.releaseVersion = this.artifact.manifest.version;
       this.status.updateAvailable = !this.status.available || pointer?.delivery !== 'release' ||
         !pointer?.version || compareVersions(pointer.version, this.artifact.manifest.version) < 0;
-      this.status.blockReason = undefined;
+      this.status.blockReason = this.status.available ? undefined : this.probeFailure;
     } catch (error) {
       this.artifact = undefined;
       this.status.releaseAvailable = false;

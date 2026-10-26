@@ -9,6 +9,8 @@ Your Microsoft Store PC games, on Linux.
 [![CI](https://github.com/domsvoboda/xodus-nexus/actions/workflows/ci.yml/badge.svg)](https://github.com/domsvoboda/xodus-nexus/actions/workflows/ci.yml)
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 
+**[🌐 Help translate Xodus Nexus on Tolgee](https://app.tolgee.io/projects/36162)**
+
 </div>
 
 > [!CAUTION]
@@ -24,9 +26,20 @@ Browse the Store, install games you own or can access through a subscription,
 and play with one shared runtime. Xbox sign-in and cloud saves are available
 for supported games.
 
-![Xodus Nexus demo](docs/screenshots/demo.gif?v=c2c5cd4c)
+![Xodus Nexus demo](docs/screenshots/demo.gif?v=bb1bc859)
 
 *Preview with sample account data.*
+
+## Community translations
+
+Help make Nexus available in your language. Open our
+[public Tolgee project](https://app.tolgee.io/projects/36162), sign in and suggest
+translations for the launcher interface. No coding or GitHub access is needed.
+Maintainers review suggestions before including them in a release. Missing a
+language? Request it in a [GitHub issue](https://github.com/domsvoboda/xodus-nexus/issues).
+
+[Start translating →](https://app.tolgee.io/projects/36162/translations) ·
+[Translation guide](docs/TRANSLATING.md)
 
 ## Install
 
@@ -38,8 +51,9 @@ For an application-menu installation on supported distributions:
 curl -fsSL https://raw.githubusercontent.com/domsvoboda/xodus-nexus/main/scripts/install.sh | bash
 ```
 
-In **Settings**, install the **Nexus backend** and **Nexus runtime**, then sign in
-with your Microsoft account. A valid game purchase or subscription is required.
+On first startup, the launcher installs and verifies the **Nexus backend** in
+the background so you can sign in during setup. Install the **Nexus runtime**
+from **Settings** before launching games. A valid purchase or subscription is required.
 
 If passkey sign-in gets stuck, choose **Continue in browser** in the sign-in
 window. This option requires Google Chrome, either a native installation or the
@@ -50,10 +64,11 @@ Flatpak version available through Discover. Other browsers are not supported.
 ## Use
 
 - **My Library** combines owned, Game Pass and installed games, with Access, Play state and title filters.
+- In **My Library → In Game Pass**, choose **Recently added to Game Pass** to show games in Microsoft's recent PC collection first.
 - Open a game for its description, categories, screenshot gallery and available Xbox achievements, time played and last activity. Xbox data depends on the account and game.
 - **Store** lets you browse and install supported PC games.
-- Before installing a game, select licensed downloadable add-ons to queue after the base game. DLC discovery uses active account licenses and matching PC package families, including games that omit related-product metadata.
-- **Manage content** supports per-item selection and select-all for batch install, repair or removal. Only validated managed DLC files are removed; base-game files are retained. Downloads and the runtime still verify licenses.
+- New game installations show the estimated download size and free space on the destination drive. The downloader checks exact space requirements.
+- **Manage content** supports selecting add-ons for batch installation, repair and removal. Base game installation can also queue selected licensed DLC after the game is registered.
 - **Install Queue** downloads games one at a time and lets you add more while downloading or playing another game. Pause and resume are supported, including manual resume after restarting the launcher.
 - Cancelling a new installation can keep or delete its partial files. Existing games, updates and DLC keep their files.
 - Right-click an installed game for settings, VC++ prerequisites, shortcuts or removal.
@@ -61,7 +76,9 @@ Flatpak version available through Discover. Other browsers are not supported.
 - Game settings offer an optional **DualSense compatibility mode** if a standard DualSense is not detected. It applies only to that game and may disable advanced haptics and adaptive triggers.
 - Choose **Add to Steam** in the game menu, or **Add Nexus to Steam** in Settings, to create a Non-Steam shortcut with available artwork. Steam can stay running, including in Game Mode. Requires native Linux Steam; Flatpak Steam is not yet supported.
 - Update the launcher, backend and runtime in **Settings**.
+- **Settings → Interface language** selects a bundled translation independently of game language and Store region. Missing translations fall back to English.
 - **Settings → Downloads** sets a combined game download speed limit in MiB/s (0 means unlimited). A supporting Nexus backend is required; saving the limit also applies it to active downloads.
+- **Settings → Shader cache** sets the per-game Mesa/NVIDIA driver cache limit, 4 GiB by default. Changes apply on the next game launch; explicit environment overrides take precedence.
 - For account, library or installation errors, use **Settings → Xodus backend → Open backend diagnostic log**. The local log contains safe error codes and operation results, not credentials. Review it before sharing.
 
 ## Wallet setup and unlocking
@@ -72,6 +89,15 @@ Flatpak version available through Discover. Other browsers are not supported.
 - If no wallet exists, use **Create wallet** and complete the system dialog. On KDE, choose **Classic, blowfish encrypted file** for a normal password-based wallet if you do not have a GPG encryption key. An empty password does not protect stored credentials.
 - If setup or the password dialog does not work in Game Mode, try it in Desktop Mode first. If the problem persists, include the backend diagnostic log in your issue report.
 
+## Microsoft Store device limit
+
+Microsoft Store supports up to 10 linked devices. If downloading or launching a
+game fails with **Microsoft Store device limit reached** (licensing code 501),
+open [Microsoft Store device management](https://account.microsoft.com/devices/content)
+and sign in with the same Microsoft account. Unlink only an old device you no
+longer use, then retry in Nexus. You do not need to sign out or reset the wallet.
+Other license errors can have different causes.
+
 [Documentation](https://github.com/domsvoboda/xodus-nexus/wiki) ·
 [Report an issue](https://github.com/domsvoboda/xodus-nexus/issues)
 
@@ -79,11 +105,21 @@ Flatpak version available through Discover. Other browsers are not supported.
 
 | Component | Role |
 | --- | --- |
-| Xodus Nexus | Store browsing, library, installation queue and launch controls. |
-| Nexus backend | Patched build of [Xodus](https://github.com/xodus-gaming/xodus) for account sign-in, license checks, package downloads and launch preparation. |
-| Nexus runtime | Built on [Xodus Proton](https://github.com/xodus-gaming/Proton) and [Xodus XGameRuntime](https://github.com/xodus-gaming/xgameruntime), with additional Nexus compatibility patches. |
+| Xodus Nexus launcher | The desktop interface for the Store, library, downloads, settings and launching games. |
+| Nexus backend | Our patched build of [Xodus](https://github.com/xodus-gaming/xodus), handling Microsoft account sign-in, genuine license checks, package downloads and launch preparation. |
+| [Nexus Runtime](https://github.com/domsvoboda/nexus-runtime) | Our fork of Valve's Proton Experimental, assembling Wine, XGameRuntime, graphics translation and supporting libraries into one complete runtime. |
+| [Nexus Wine](https://github.com/domsvoboda/nexus-wine) | The matching Wine fork, providing Windows API compatibility and Nexus game fixes. |
+| [Nexus XGameRuntime](https://github.com/domsvoboda/nexus-xgameruntime) | Our fork of the upstream C++ XGameRuntime, providing game-facing account, cloud-save, package and Store/DLC interfaces. API coverage varies by game. |
 
-Every game uses the same launch path and shared runtime.
+The launcher asks the backend to prepare a licensed game, then starts it with
+the shared Nexus Runtime. Wine provides Windows compatibility; XGameRuntime
+connects supported Xbox and Microsoft Store game APIs to the Nexus backend.
+DXVK and VKD3D-Proton translate supported Direct3D graphics to Vulkan.
+
+Install or update the complete runtime through **Settings**. Its Wine and
+XGameRuntime components are built together at matching revisions, so there is
+no need to install the individual forks separately. All games use the same
+shared runtime; compatibility and online services still depend on the game.
 
 ## Compatible games
 
@@ -92,17 +128,19 @@ but have not been verified and may encounter compatibility issues.
 
 | Game | Playable | Status |
 | --- | --- | --- |
-| Gears of War: E-Day | Yes | Playable online. |
+| Gears of War: E-Day | Yes | Playable online; Xbox playing status works. |
 | Deep Rock Galactic | Yes | Playable online. |
 | Minecraft Dungeons | Yes | Playable online with launcher 0.3.5; [ownership failures](https://github.com/domsvoboda/xodus-nexus/issues/80) also reported on other setups. |
 | Minecraft Dungeons II | Yes | Playable online. |
-| Minecraft for Windows | Yes | Playable online. |
+| Minecraft for Windows | Yes | Playable online. For licensing code 501, check the [Store device limit](#microsoft-store-device-limit). |
 | Minecraft Launcher | Yes | Sign-in and Java download/startup work with launcher 0.3.5; Java online unverified. [Login failure](https://github.com/domsvoboda/xodus-nexus/issues/107) also reported on another setup. |
 | No Man's Sky | Yes | Playable online. |
 | Valor Mortis | Yes | Fully playable. |
 | Forza Horizon 6 | Yes | Playable online; some setups need [VC++ prerequisites](https://github.com/domsvoboda/xodus-nexus/issues/96). [Loading failures](https://github.com/domsvoboda/xodus-nexus/issues/13) also reported. |
 | Palworld | Yes | Playable online. |
 | DOOM Eternal | Yes | Playable. |
+| Ori and the Will of the Wisps | Partial | Unreleased Experimental runtime: sign-in and main menu work; gameplay unverified. |
+| Like a Dragon: Infinite Wealth | Partial | Unreleased Experimental runtime: main menu works; gameplay unverified. |
 | DOOM: The Dark Ages | Yes | Playable (user report). |
 | Fallout 76 | Yes | Playable online; [one reported setup](https://github.com/domsvoboda/xodus-nexus/issues/9#issuecomment-6227548598) requires gamescope to display correctly. |
 | The Outer Worlds 2 | Yes | Playable. |
@@ -117,6 +155,7 @@ but have not been verified and may encounter compatibility issues.
 | Tony Hawk's Pro Skater 3 + 4 | Partial | Solo playable; Private Match loads a map. Joining other players and public matchmaking remain unconfirmed. ([#88](https://github.com/domsvoboda/xodus-nexus/issues/88)) |
 | ARC Raiders | No | Launches but cannot connect to online services. ([user report](https://github.com/domsvoboda/xodus-nexus/issues/100)) |
 | Hogwarts Legacy | Yes | Playable. ([user report](https://github.com/domsvoboda/xodus-nexus/issues/110)) |
+| Halo Infinite | Partial | Unreleased Experimental runtime: main menu and campaign start; multiplayer unavailable (offline). |
 | Halo: Campaign Evolved | Yes | Playable; may remain running after quitting. ([user report](https://github.com/domsvoboda/xodus-nexus/issues/97)) |
 | Resonance: A Plague Tale Legacy | Yes | Playable; black screen reported when ending a game on Steam Deck. ([user report](https://docs.google.com/spreadsheets/d/1HD8fr8XotC2o0seA5TRaiZ3TeltdyUv5aWhxSPeD-6s/edit?usp=sharing)) |
 | Resident Evil 2 | Yes | Playable; may remain running after quitting. ([user report](https://github.com/domsvoboda/xodus-nexus/issues/110)) |

@@ -44,6 +44,41 @@ it('retains proof across launcher restarts but never trusts task flags', async (
   await cleanup.complete(task); expect((await available()).deleteFilesAllowed).toBe(false);
   expect(await fs.readdir(task.destination)).toEqual(['partial.bin']);
 });
+it('retains proven folder ownership for the exact resumed package under a new queue ID', async () => {
+  await partial();task.status='paused';task.selectedContentId=randomUUID();task.selectionMarket='US';
+  const resumed={...task,id:randomUUID(),status:'queued' as const};
+  cleanup=new DownloadCleanup(state);
+  expect((await cleanup.options(task,[],[state])).deleteFilesAllowed).toBe(true);
+  await cleanup.inheritResume(task,resumed);
+  await cleanup.prepare(resumed);
+  expect((await cleanup.options(resumed,[],[state])).deleteFilesAllowed).toBe(true);
+  await cleanup.remove(resumed,[],[state]);
+  await expect(fs.access(task.destination)).rejects.toThrow();
+});
+it('does not transfer ownership to a different package, destination, market or update/content task',async()=>{
+  await partial();task.status='paused';task.selectedContentId=randomUUID();task.selectionMarket='US';
+  for(const change of [{productId:'DIFFERENT'},{selectedContentId:randomUUID()},{selectionMarket:'DE'},
+    {destination:path.join(root,'other')},{kind:'update' as const},{kind:'content' as const},{gameId:'existing'}]){
+    const resumed={...task,id:randomUUID(),status:'queued' as const,...change};
+    await cleanup.inheritResume(task,resumed);
+    expect((await cleanup.options(resumed,[],[state])).deleteFilesAllowed).toBe(false);
+  }
+  expect((await available()).deleteFilesAllowed).toBe(true);
+  expect(await fs.readFile(path.join(task.destination,'partial.bin'),'utf8')).toBe('disposable download');
+});
+it('never grants resume ownership to pre-existing/untracked, completed or replaced directories',async()=>{
+  await partial();task.status='paused';
+  const resumed=()=>({...task,id:randomUUID(),status:'queued' as const});
+  const original=path.join(root,'old-owned');await fs.rename(task.destination,original);await fs.mkdir(task.destination);
+  const replaced=resumed();await cleanup.inheritResume(task,replaced);
+  expect((await cleanup.options(replaced,[],[state])).deleteFilesAllowed).toBe(false);
+  await fs.rmdir(task.destination);await fs.rename(original,task.destination);
+  const completed={...task,status:'complete' as const},next=resumed();await cleanup.inheritResume(completed,next);
+  expect((await cleanup.options(next,[],[state])).deleteFilesAllowed).toBe(false);
+  await cleanup.complete(task);
+  const untracked=resumed();await cleanup.inheritResume(task,untracked);
+  expect((await cleanup.options(untracked,[],[state])).deleteFilesAllowed).toBe(false);
+});
 it.each(['directory', 'symlink', 'file', 'missing'])('rejects a %s replacement without touching the old folder or a linked game', async replacement => {
   await partial(); const original = path.join(root, 'original'); await fs.rename(task.destination, original);
   if (replacement === 'directory') await fs.mkdir(task.destination);

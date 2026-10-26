@@ -4,6 +4,14 @@ import { demoSnapshot } from '../shared/demo-data';
 import { SettingsPage } from './App';
 
 describe('Settings diagnostics', () => {
+  it('uses a neutral Wine / Proton binary label and preserves a custom runtime path', () => {
+    const data = demoSnapshot();
+    data.settings.winePath = '/runtime/nexus-runtime-11.0-experimental/files/bin/wine';
+    const html = renderToStaticMarkup(<SettingsPage data={data} toast={() => {}} />);
+    expect(html).toContain('Wine / Proton binary');
+    expect(html).toContain(`value="${data.settings.winePath}"`);
+    expect(html).not.toContain('Wine / Xodus Proton binary');
+  });
   it('explains that explicit sign-out also removes the local device registration', () => {
     const html = renderToStaticMarkup(<SettingsPage data={demoSnapshot()} toast={() => {}} />);
     expect(html).toContain('title="Remove saved sign-in credentials and local device registration. Games and saves are kept."');

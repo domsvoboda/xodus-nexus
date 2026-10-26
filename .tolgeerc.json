@@ -1,0 +1,22 @@
+{
+  "$schema": "https://docs.tolgee.io/cli-schema.json",
+  "projectId": 36162,
+  "apiUrl": "https://app.tolgee.io",
+  "format": "JSON_I18NEXT",
+  "push": {
+    "files": [{ "path": "assets/locales/en.json", "language": "en" }],
+    "languages": ["en"],
+    "forceMode": "OVERRIDE",
+    "overrideKeyDescriptions": false,
+    "convertPlaceholdersToIcu": true,
+    "removeOtherKeys": false
+  },
+  "pull": {
+    "path": "work/tolgee-reviewed",
+    "states": ["REVIEWED"],
+    "delimiter": "",
+    "fileStructureTemplate": "{languageTag}.{extension}",
+    "supportArrays": false,
+    "emptyDir": false
+  }
+}

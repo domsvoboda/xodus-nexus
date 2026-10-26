@@ -4,7 +4,16 @@ import { createConnection, createServer } from 'node:net';
 import os from 'node:os';
 import path from 'node:path';
 import { once } from 'node:events';
-import { selectedWinePath, startXodusBridge, startXodusService, storeContentRuntime } from './xodus-service.js';
+import { gameInviteRuntime, selectedWinePath, startXodusBridge, startXodusService, storeContentRuntime, storeDiscoveryRuntime } from './xodus-service.js';
+
+it('does not enable invitations for an older or unmarked runtime',async()=>{
+  const root=await fs.mkdtemp(path.join(os.tmpdir(),'nexus-invite-runtime-')),wine=path.join(root,'files/bin/wine');
+  try{
+    expect(await gameInviteRuntime(wine)).toBe(false);
+    await fs.writeFile(path.join(root,'XODUS_NEXUS_PATCH.json'),JSON.stringify({features:['xodus-tcp-bridge-v1']}));expect(await gameInviteRuntime(wine)).toBe(false);
+    await fs.writeFile(path.join(root,'XODUS_NEXUS_PATCH.json'),JSON.stringify({features:['xgame-invitations-v1']}));expect(await gameInviteRuntime(wine)).toBe(true);
+  }finally{await fs.rm(root,{recursive:true,force:true});}
+});
 
 it.each(['credential', 'unknown', 'stdout'])('reports only safe service %s errors and cleans its private session directory', async mode => {
   const root = await fs.mkdtemp(path.join(os.tmpdir(), 'nexus-service-error-'));
@@ -32,6 +41,19 @@ it('requires all genuine Store/content/bridge runtime capabilities, not just an 
     await fs.writeFile(path.join(root, 'XODUS_NEXUS_PATCH.json'), JSON.stringify({ features }));
     expect(await storeContentRuntime(wine)).toBe(true);
   } finally { await fs.rm(root, { recursive: true, force: true }); }
+});
+
+it('enables public DLC discovery only with all matching runtime capabilities', async () => {
+  const root=await fs.mkdtemp(path.join(os.tmpdir(),'nexus-discovery-runtime-'));
+  try {
+    const wine=path.join(root,'files/bin/wine');expect(await storeDiscoveryRuntime(wine)).toBe(false);
+    const features=['xstore-related-discovery-v1','xstore-durable-license-v1','xstore-entitlements-v1','xodus-tcp-bridge-v1'];
+    for(const missing of features){
+      await fs.writeFile(path.join(root,'XODUS_NEXUS_PATCH.json'),JSON.stringify({features:features.filter(feature=>feature!==missing)}));
+      expect(await storeDiscoveryRuntime(wine)).toBe(false);
+    }
+    await fs.writeFile(path.join(root,'XODUS_NEXUS_PATCH.json'),JSON.stringify({features}));expect(await storeDiscoveryRuntime(wine)).toBe(true);
+  }finally{await fs.rm(root,{recursive:true,force:true});}
 });
 
 describe('selectedWinePath', () => {

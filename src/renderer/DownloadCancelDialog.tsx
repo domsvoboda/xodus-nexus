@@ -1,3 +1,4 @@
+import { ui, uiText } from './i18n';
 import { useEffect, useRef, useState } from 'react';
 import { Trash2 } from 'lucide-react';
 import type { DownloadCancelOptions, DownloadTask } from '../shared/types';
@@ -26,20 +27,20 @@ export function DownloadCancelDialog({ task, options, loading, busy, error, clos
     return () => { window.removeEventListener('keydown', key, true); if (origin?.isConnected) origin.focus({ preventScroll: true }); };
   }, []);
   return <div className="dialog-backdrop" onMouseDown={event => { if (!busy && event.target === event.currentTarget) close(); }}>
-    <section ref={dialog} className="game-dialog download-cancel-dialog" role="dialog" aria-modal="true" aria-label="Cancel download" aria-busy={busy}>
-      <h2>Cancel {task.title}?</h2>
-      <p>Keep the downloaded files for a later retry, or delete this new installation folder. Pausing a download keeps it in the queue.</p>
+    <section ref={dialog} className="game-dialog download-cancel-dialog" role="dialog" aria-modal="true" aria-label={ui("ui.cancel_download_de5b23e")} aria-busy={busy}>
+      <h2>{ui('common.cancel_game', { game: task.title })}</h2>
+      <p>{ui("ui.keep_the_downloaded_files_for_a_later_retry_or_d_d5003b6")}</p>
       <code className="remove-path">{task.destination}</code>
-      <p>{loading ? 'Checking whether files can be deleted safely…' : task.kind !== 'install' || task.gameId
-        ? 'Updates and DLC keep their files to protect the installed game.' : options?.reason ?? 'Only this new installation folder will be deleted. Other games are not affected.'}</p>
-      {canDelete ? <label className="download-delete-confirm"><input type="checkbox" checked={confirmed} disabled={busy} onChange={event => setConfirmed(event.target.checked)} />Permanently delete this new installation folder and all files inside it. This cannot be undone.</label> : null}
-      {!active && !busy ? <p role="status">This download has already ended.</p> : null}
-      {busy ? <p role="status">Stopping the download. Files will not be removed until it has fully stopped.</p> : null}
-      {error ? <p className="error-text" role="alert">{error}</p> : null}
+      <p>{loading ? ui("ui.checking_whether_files_can_be_deleted_safely_9e24229") : task.kind !== 'install' || task.gameId
+        ? ui("ui.updates_and_dlc_keep_their_files_to_protect_the_22f35d6") : options?.reason ?? ui("ui.only_this_new_installation_folder_will_be_delete_8a2e43b")}</p>
+      {canDelete ? <label className="download-delete-confirm"><input type="checkbox" checked={confirmed} disabled={busy} onChange={event => setConfirmed(event.target.checked)} />{ui("ui.permanently_delete_this_new_installation_folder_c3adf8e")}</label> : null}
+      {!active && !busy ? <p role="status">{ui("ui.this_download_has_already_ended_a8cdae1")}</p> : null}
+      {busy ? <p role="status">{ui("ui.stopping_the_download_files_will_not_be_removed_b89d63d")}</p> : null}
+      {error ? <p className="error-text" role="alert">{uiText(error)}</p> : null}
       <div className="dialog-actions">
-        <button className="secondary" data-gamepad-cancel disabled={busy} onClick={close}>Go back</button>
-        <button className="secondary" data-gamepad-initial disabled={busy || !active} onClick={() => choose('keep')}>Cancel and keep files</button>
-        <button className="secondary danger" disabled={busy || !active || loading || !canDelete || !confirmed} onClick={() => choose('delete-files')}><Trash2 />Cancel and delete files</button>
+        <button className="secondary" data-gamepad-cancel disabled={busy} onClick={close}>{ui("ui.go_back_6aadac2")}</button>
+        <button className="secondary" data-gamepad-initial disabled={busy || !active} onClick={() => choose('keep')}>{ui("ui.cancel_and_keep_files_85a1bb9")}</button>
+        <button className="secondary danger" disabled={busy || !active || loading || !canDelete || !confirmed} onClick={() => choose('delete-files')}><Trash2 />{ui("ui.cancel_and_delete_files_57f80d5")}</button>
       </div>
     </section>
   </div>;

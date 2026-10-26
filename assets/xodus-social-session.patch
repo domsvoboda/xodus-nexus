@@ -1,0 +1,342 @@
+diff --git a/crates/xodus-cli/src/commands/login.rs b/crates/xodus-cli/src/commands/login.rs
+index b6d0935..e28daff 100644
+--- a/crates/xodus-cli/src/commands/login.rs
++++ b/crates/xodus-cli/src/commands/login.rs
+@@ -6,7 +6,7 @@ use xodus::tokens::TokenManager;
+ 
+ use crate::webview;
+ 
+-const CLIENT_ID: &str = "000000004424da1f";
++pub(super) const CLIENT_ID: &str = "000000004424da1f";
+ const LOGIN_MARKET: &str = "en-US";
+ const USER_AUTH_SCOPE: &str = "scope=service::user.auth.xboxlive.com::MBI_SSL&api-version=2.0";
+ 
+diff --git a/crates/xodus-cli/src/commands/social.rs b/crates/xodus-cli/src/commands/social.rs
+index 113c315..7239192 100644
+--- a/crates/xodus-cli/src/commands/social.rs
++++ b/crates/xodus-cli/src/commands/social.rs
+@@ -8,6 +8,9 @@ const PEOPLE: &str = "https://peoplehub.xboxlive.com/users/me/people/friends/dec
+ const MESSAGES: &str = "https://xblmessaging.xboxlive.com/network/Xbox/users/me/conversations/users/";
+ const LIMIT: usize = 2 * 1024 * 1024;
+ 
++#[path = "social_session.rs"]
++mod chat_session;
++
+ enum Operation { Friends, Conversation(String), Send(String, String) }
+ struct Plan { url: String, contract: &'static str, body: Option<Value> }
+ 
+@@ -114,6 +117,10 @@ fn payload(op: &Operation, value: &Value) -> Result<Value, &'static str> {
+     }
+ }
+ async fn execute(tokens: &TokenManager, op: &Operation) -> Result<Value, &'static str> {
++    if let Operation::Send(peer, message) = op {
++        let (value, account) = chat_session::send(tokens, peer, message).await?;
++        return Ok(json!({"schema":1,"account":account,"result":value}));
++    }
+     // Existing bounded, silent Xbox session path; no new client identity or login.
+     let (client, authorization, account) = super::profile::xbox_session(tokens).await?;
+     if tokens.get_user().map_err(|_| "account-changed")?.username != account { return Err("account-changed"); }
+diff --git a/crates/xodus-cli/src/commands/social_session.rs b/crates/xodus-cli/src/commands/social_session.rs
+new file mode 100644
+index 0000000..b8fef8e
+--- /dev/null
++++ b/crates/xodus-cli/src/commands/social_session.rs
+@@ -0,0 +1,298 @@
++//! Outgoing chat uses the existing sign-in's real application/device context.
++//! Short-lived proof keys stay in memory. No interactive sign-in, registration,
++//! credential persistence, fabricated identity or automatic message retries.
++use chrono::{DateTime, Utc};
++use reqwest::{Client, RequestBuilder};
++use serde_json::{Value, json};
++use xodus::{models::{live::ExchangeUserTokenOutcome, secrets::Token, soap}, tokens::TokenManager,
++    xal::{RequestSigner, RequestSigning, RequestVerification, SignaturePolicyCache, oauth2::http}};
++
++const RP: &str = "http://xboxlive.com";
++const POLICY: &str = "https://title.mgt.xboxlive.com/titles/default/endpoints?type=1";
++const DEVICE: &str = "https://device.auth.xboxlive.com/device/authenticate";
++const SISU: &str = "https://sisu.xboxlive.com/authorize";
++const XSTS: &str = "https://xsts.auth.xboxlive.com/xsts/authorize";
++
++struct Session {
++    client: Client,
++    signer: RequestSigner,
++    authorization: String,
++    account: String,
++    principal: String,
++}
++
++fn account_unchanged(tokens: &TokenManager, account: &str, principal: &str) -> Result<(), &'static str> {
++    let Some((user, _)) = tokens.get_user_sts_session().map_err(|_| "account-changed")? else { return Err("account-changed"); };
++    if user.username != account || user.puid != principal { return Err("account-changed"); }
++    Ok(())
++}
++
++fn ticket(outcome: ExchangeUserTokenOutcome, now: DateTime<Utc>) -> Result<String, &'static str> {
++    if let Some(stage) = super::super::session::rejection(&outcome) { return Err(stage); }
++    let response = match outcome {
++        ExchangeUserTokenOutcome::Issued(soap::BodyContent::RequestSecurityTokenResponseCollection(mut values)) if values.security_tokens.len() == 1 => values.security_tokens.remove(0),
++        ExchangeUserTokenOutcome::Issued(soap::BodyContent::RequestSecurityTokenResponse(value)) => *value,
++        _ => return Err("chat-ticket-response"),
++    };
++    let created = DateTime::parse_from_rfc3339(&response.lifetime.created).map_err(|_| "chat-ticket-lifetime")?;
++    let expires = DateTime::parse_from_rfc3339(&response.lifetime.expires).map_err(|_| "chat-ticket-lifetime")?;
++    if expires <= now || expires <= created || created > now + chrono::Duration::minutes(5) { return Err("chat-ticket-lifetime"); }
++    let Token::Compact(value) = Token::try_from(response).map_err(|_| "chat-ticket-parse")? else { return Err("chat-ticket-type"); };
++    if value.is_empty() { return Err("chat-ticket-empty"); }
++    Ok(value)
++}
++
++fn fresh_token(value: &Value, now: DateTime<Utc>) -> Result<&str, &'static str> {
++    let expires = value["NotAfter"].as_str().and_then(|v| DateTime::parse_from_rfc3339(v).ok()).ok_or("chat-token-lifetime")?;
++    if expires <= now { return Err("chat-token-expired"); }
++    value["Token"].as_str().filter(|v| !v.is_empty()).ok_or("chat-token-empty")
++}
++
++fn authorization(value: Value, now: DateTime<Utc>) -> Result<String, &'static str> {
++    fresh_token(&value, now)?;
++    let claims = value["DisplayClaims"]["xui"].as_array().filter(|v| v.len() == 1).ok_or("chat-token-claims")?;
++    super::xuid(&claims[0]["xid"]).map_err(|_| "chat-token-claims")?;
++    if !claims[0]["prv"].as_str().is_some_and(|v| v.split_ascii_whitespace().any(|v| v == "252")) {
++        return Err("privacy-or-access-denied");
++    }
++    let token = serde_json::from_value(value).map_err(|_| "chat-token-claims")?;
++    xodus::api::xbox::get_xsts_auth_header(token).map_err(|_| "chat-token-claims")
++}
++
++// XAL's pinned reqwest transport and the backend use different HTTP versions.
++// Its public reqwest overload preserves all headers, unlike its http::Request
++// overload. Type inference through verify selects that transport without adding
++// another dependency. Sign and verify the exact serialized bytes before sending.
++async fn signed(request: RequestBuilder, signer: &mut RequestSigner) -> Result<RequestBuilder, &'static str> {
++    let exact = request.try_clone().ok_or("chat-request-clone")?.build().map_err(|_| "chat-request-build")?;
++    let mut wire = http::Request::builder().method(exact.method().as_str()).uri(exact.url().as_str());
++    for (name, value) in exact.headers() { wire = wire.header(name.as_str(), value.as_bytes()); }
++    let body = exact.body().map(|v| v.as_bytes().ok_or("chat-request-body")).transpose()?.unwrap_or(&[]).to_vec();
++    let wire = wire.body(body).map_err(|_| "chat-request-build")?;
++    let legacy = wire.try_into().map_err(|_| "chat-request-build")?;
++    let signed = signer.sign_request(legacy, None).await.map_err(|_| "chat-request-signature")?;
++    let verified = signer.verify(signed).await.map_err(|_| "chat-request-signature")?;
++    let signature = verified.headers().get("Signature").and_then(|v| v.to_str().ok()).ok_or("chat-request-signature")?;
++    Ok(request.header("Signature", signature))
++}
++
++async fn response(response: reqwest::Response, stage: &'static str, created: bool) -> Result<Value, &'static str> {
++    let status = response.status().as_u16();
++    eprintln!("NEXUS_SOCIAL_DIAGNOSTIC_V1 {stage} {status}");
++    if status != 200 && !(created && status == 201) {
++        return Err(match status { 401 => "sign-in-required", 403 => "privacy-or-access-denied", 429 => "rate-limited", _ => "service-unavailable" });
++    }
++    serde_json::from_slice(&super::super::profile::bounded(response, super::LIMIT).await?).map_err(|_| "invalid-response")
++}
++
++impl Session {
++    async fn new(tokens: &TokenManager) -> Result<Self, &'static str> {
++        let client = Client::builder().redirect(reqwest::redirect::Policy::none())
++            .timeout(super::super::session::REQUEST_TIMEOUT).user_agent("xodus-nexus-social/1").build().map_err(|_| "http-client")?;
++        let (account, device, user) = super::super::session::prepare(tokens, &client).await?;
++        // An outgoing write must use the actual account/ticket pair stored by
++        // sign-in, not independent legacy records that can belong to two sessions.
++        let Some((bound_user, Token::Legacy(bound_token))) = tokens.get_user_sts_session().map_err(|_| "sign-in-required")? else { return Err("sign-in-required"); };
++        if bound_user.username != account || bound_user.puid.is_empty() || bound_token.token != user.token { return Err("account-changed"); }
++        let principal = bound_user.puid;
++        let app = super::super::login::CLIENT_ID;
++        let scope = format!("scope=xboxlive.signin&api-version=2.0&clientid={app}");
++        let outcome = xodus::api::live::exchange_user_token(&client, user, account.clone(), device.clone(), None, Some("Silent".into()), app.into(),
++            &[(scope, Some(soap::PolicyReference::token_broker()))]).await.map_err(|_| "chat-ticket-request")?;
++        let user_ticket = ticket(outcome, Utc::now())?;
++        let device_response = xodus::api::live::exchange_device_token(&client, device,
++            "{28C08266-F973-4AE6-FFE4-409B249F138F}".into(),
++            "scope=service::user.auth.xboxlive.com::MBI_SSL&api-version=2.0".into(), Some(soap::PolicyReference::token_broker()))
++            .await.map_err(|_| "chat-device-ticket")?;
++        let device_ticket = ticket(ExchangeUserTokenOutcome::Issued(soap::BodyContent::RequestSecurityTokenResponse(Box::new(device_response))), Utc::now())?;
++        let endpoints = response(client.get(POLICY).header("x-xbl-contract-version", "1").send().await.map_err(|_| "chat-policy-request")?, "chat-policy-http", false).await?;
++        let endpoints = serde_json::from_value(endpoints).map_err(|_| "chat-policy-response")?;
++        let mut signer = RequestSigner::new();
++        signer.signature_policy_cache = SignaturePolicyCache::new(endpoints);
++        let rp = signer.signature_policy_cache.find_relying_party_for_url(super::MESSAGES).await.map_err(|_| "chat-policy-response")?
++            .ok_or("chat-policy-missing")?;
++        if rp != RP { return Err("chat-policy-audience"); }
++        let request = client.post(DEVICE).header("x-xbl-contract-version", "1").json(&json!({
++            "RelyingParty":"http://auth.xboxlive.com","TokenType":"JWT","Properties":{
++                "AuthMethod":"RPS","RpsTicket":device_ticket,"SiteName":"user.auth.xboxlive.com",
++                "Version":xodus::xal::client_params::CLIENT_WINDOWS().client_version,"ProofKey":signer.get_proof_key()}}));
++        let device = response(signed(request, &mut signer).await?.send().await.map_err(|_| "chat-device-request")?, "chat-device-http", false).await?;
++        let device_token = fresh_token(&device, Utc::now())?;
++        let request = client.post(SISU).json(&json!({"AccessToken":user_ticket,"AppId":app,"DeviceToken":device_token,
++            "Sandbox":"RETAIL","SiteName":"user.auth.xboxlive.com","ProofKey":signer.get_proof_key()}));
++        let sisu = response(signed(request, &mut signer).await?.send().await.map_err(|_| "chat-context-request")?, "chat-context-http", false).await?;
++        let user_token = fresh_token(&sisu["UserToken"], Utc::now())?;
++        let title_token = fresh_token(&sisu["TitleToken"], Utc::now())?;
++        let request = client.post(XSTS).header("x-xbl-contract-version", "1").json(&json!({
++            "RelyingParty":RP,"TokenType":"JWT","Properties":{
++                "SandboxId":"RETAIL","DeviceToken":device_token,"TitleToken":title_token,"UserTokens":[user_token]}}));
++        let xsts = response(signed(request, &mut signer).await?.send().await.map_err(|_| "chat-xsts-request")?, "chat-xsts-http", false).await?;
++        let authorization = authorization(xsts, Utc::now())?;
++        account_unchanged(tokens, &account, &principal)?;
++        Ok(Self { client, signer, authorization, account, principal })
++    }
++
++    async fn allowed(&mut self, peer: &str) -> Result<(), &'static str> {
++        let mut url = reqwest::Url::parse("https://privacy.xboxlive.com/users/me/permission/validate").map_err(|_| "chat-privacy-url")?;
++        url.query_pairs_mut().append_pair("setting", "CommunicateUsingText").append_pair("target", &format!("xuid({peer})"));
++        let request = self.client.get(url).header("Authorization", &self.authorization)
++            .header("X-RequestedServiceVersion", "1").header("x-xbl-contract-version", "1");
++        let value = response(signed(request, &mut self.signer).await?.send().await.map_err(|_| "chat-privacy-request")?, "chat-privacy-http", false).await?;
++        if value["isAllowed"] != true { return Err("privacy-or-access-denied"); }
++        Ok(())
++    }
++
++    async fn post(&mut self, plan: super::Plan) -> Result<Value, &'static str> {
++        let body = plan.body.ok_or("invalid-request")?;
++        let request = self.client.post(plan.url).header("Authorization", &self.authorization)
++            .header("x-xbl-contract-version", plan.contract).header("Accept-Language", "en-US").json(&body);
++        response(signed(request, &mut self.signer).await?.send().await.map_err(|_| "request-unconfirmed")?, "send-http", true).await
++    }
++}
++
++pub(super) async fn send(tokens: &TokenManager, peer: &str, message: &str) -> Result<(Value, String), &'static str> {
++    if super::xuid(&json!(peer)).is_err() || super::text(&json!(message), 256).filter(|v| !v.trim().is_empty()).is_none() { return Err("invalid-request"); }
++    let mut session = Session::new(tokens).await?;
++    session.allowed(peer).await?;
++    account_unchanged(tokens, &session.account, &session.principal)?;
++    let op = super::Operation::Send(peer.into(), message.into());
++    let value = session.post(super::plan(&op)).await?;
++    account_unchanged(tokens, &session.account, &session.principal)?;
++    Ok((super::payload(&op, &value)?, session.account))
++}
++
++#[cfg(test)]
++mod tests {
++    use super::*;
++    use std::{io::{Read, Write}, net::TcpListener, thread};
++    use xodus::models::secrets::{LegacyToken, User};
++
++    fn policy(host: &str, protocol: &str) -> RequestSigner {
++        let endpoints = serde_json::from_value(json!({"EndPoints":[{"Protocol":protocol,"Host":host,"HostType":"fqdn","SignaturePolicyIndex":0}],
++            "SignaturePolicies":[{"Version":1,"SupportedAlgorithms":["ES256"],"MaxBodyBytes":8192,"SupportedSignatureTypes":["XBL"]}],"Certs":[],"RootCerts":[]})).unwrap();
++        let mut signer = RequestSigner::new();
++        signer.signature_policy_cache = SignaturePolicyCache::new(endpoints);
++        signer
++    }
++    fn wire(request: &reqwest::Request) -> http::Request<Vec<u8>> {
++        let mut builder = http::Request::builder().method(request.method().as_str()).uri(request.url().as_str());
++        for (name, value) in request.headers() { builder = builder.header(name.as_str(), value.as_bytes()); }
++        builder.body(request.body().and_then(|v| v.as_bytes()).unwrap_or(&[]).to_vec()).unwrap()
++    }
++    #[tokio::test]
++    async fn chat_session_signature_preserves_exact_bytes_and_rejects_tampering() {
++        let mut signer = policy("fixture.invalid", "https");
++        let client = Client::new();
++        for post in [false, true] {
++            let builder = if post { client.post("https://fixture.invalid/thread?maxItems=100").json(&json!({"parts":[{"contentType":"text","version":0,"text":"SYNTHETIC \" čeština 🐱"}]})) }
++                else { client.get("https://fixture.invalid/thread?maxItems=100") };
++            let builder = builder.header("Authorization", "SYNTHETIC_NOT_A_TOKEN");
++            let before = builder.try_clone().unwrap().build().unwrap();
++            let after = signed(builder, &mut signer).await.unwrap().build().unwrap();
++            assert_eq!(before.method(), after.method()); assert_eq!(before.url(), after.url());
++            assert_eq!(before.body().and_then(|v| v.as_bytes()), after.body().and_then(|v| v.as_bytes()));
++            for (name, value) in before.headers() { assert_eq!(after.headers().get(name), Some(value)); }
++            assert!(signer.verify(wire(&after).try_into().unwrap()).await.is_ok());
++            let mut tampered = wire(&after); *tampered.body_mut() = b"different body".to_vec();
++            if post { assert!(signer.verify(tampered.try_into().unwrap()).await.is_err()); }
++            let mut tampered = wire(&after); tampered.headers_mut().insert("Authorization", "DIFFERENT".parse().unwrap());
++            assert!(signer.verify(tampered.try_into().unwrap()).await.is_err());
++        }
++    }
++
++    fn user_ticket(kind: &str, created: &str, expires: &str) -> ExchangeUserTokenOutcome {
++        let response = serde_json::from_value(json!({"TokenType":kind,"AppliesTo":{"EndpointReference":{"Address":"synthetic.invalid"}},
++            "Lifetime":{"Created":created,"Expires":expires},"RequestedSecurityToken":{"BinarySecurityToken":{"@Id":"synthetic","$value":"SYNTHETIC"}}})).unwrap();
++        ExchangeUserTokenOutcome::Issued(soap::BodyContent::RequestSecurityTokenResponse(Box::new(response)))
++    }
++    #[test]
++    fn chat_session_issued_tickets_keep_the_server_type_and_require_fresh_lifetimes() {
++        let now = DateTime::parse_from_rfc3339("2026-10-26T12:00:00Z").unwrap().with_timezone(&Utc);
++        assert_eq!(ticket(user_ticket("urn:passport:compact", "2026-10-26T11:00:00Z", "2026-10-26T13:00:00Z"), now).unwrap(), "SYNTHETIC");
++        assert_eq!(ticket(user_ticket("urn:passport:delegationcompact", "2026-10-26T11:00:00Z", "2026-10-26T13:00:00Z"), now).unwrap(), "d=SYNTHETIC");
++        for (created, expires) in [("bad", "bad"), ("2026-10-26T11:00:00Z", "2026-10-26T12:00:00Z"),
++            ("2026-10-26T14:00:00Z", "2026-10-26T13:00:00Z"), ("2026-10-26T13:00:00Z", "2026-10-26T14:00:00Z")] {
++            assert!(ticket(user_ticket("urn:passport:delegationcompact", created, expires), now).is_err());
++        }
++        assert!(ticket(user_ticket("UNKNOWN", "2026-10-26T11:00:00Z", "2026-10-26T13:00:00Z"), now).is_err());
++        assert!(ticket(ExchangeUserTokenOutcome::Issued(soap::BodyContent::RequestSecurityTokenResponseCollection(
++            soap::RequestSecurityTokenResponseCollection { security_tokens: vec![] })), now).is_err());
++    }
++    #[test]
++    fn chat_session_xsts_requires_one_real_user_communications_and_unexpired_token() {
++        let now = DateTime::parse_from_rfc3339("2026-10-26T12:00:00Z").unwrap().with_timezone(&Utc);
++        let good = json!({"NotAfter":"2026-10-26T13:00:00Z","Token":"SYNTHETIC","DisplayClaims":{"xui":[{"xid":"42","uhs":"synthetic-hash","prv":"1 252 3"}]}});
++        assert_eq!(authorization(good.clone(), now).unwrap(), "XBL3.0 x=synthetic-hash;SYNTHETIC");
++        for (path, replacement) in [("/NotAfter", json!("2026-10-26T12:00:00Z")), ("/NotAfter", json!("bad")),
++            ("/Token", json!("")), ("/DisplayClaims/xui/0/uhs", json!("")), ("/DisplayClaims/xui", json!([])),
++            ("/DisplayClaims/xui/0/xid", json!("../invalid")), ("/DisplayClaims/xui/0/prv", json!("1252 52"))] {
++            let mut value = good.clone(); *value.pointer_mut(path).unwrap() = replacement;
++            assert!(authorization(value, now).is_err());
++        }
++        let mut value = good; value["DisplayClaims"]["xui"].as_array_mut().unwrap().push(json!({"xid":"43","uhs":"other","prv":"252"}));
++        assert!(authorization(value, now).is_err());
++    }
++    fn stored() -> Token {
++        Token::Legacy(LegacyToken { key_name:None, token:"SYNTHETIC".into(), binary_secret:None, tpm_key:None,
++            lifetime:soap::Timestamp { id:None, created:"2000-01-01T00:00:00Z".into(), expires:"2099-01-01T00:00:00Z".into() } })
++    }
++    #[test]
++    fn chat_session_writes_require_atomic_identity_and_reject_same_name_different_principal() {
++        let manager = TokenManager::with_memory();
++        manager.save_user(&User { username:"synthetic".into(), puid:"first".into() }).unwrap();
++        manager.save_user_token(xodus::tokens::PASSPORT_STS.into(), stored()).unwrap();
++        assert!(account_unchanged(&manager, "synthetic", "first").is_err());
++        manager.save_user_session(User { username:"synthetic".into(), puid:"first".into() },
++            std::collections::HashMap::from([(xodus::tokens::PASSPORT_STS.into(), stored())])).unwrap();
++        assert!(account_unchanged(&manager, "synthetic", "first").is_ok());
++        assert!(account_unchanged(&manager, "other", "first").is_err());
++        manager.save_user_session(User { username:"synthetic".into(), puid:"second".into() },
++            std::collections::HashMap::from([(xodus::tokens::PASSPORT_STS.into(), stored())])).unwrap();
++        assert!(account_unchanged(&manager, "synthetic", "first").is_err());
++        manager.remove_persistent().unwrap();
++        assert!(account_unchanged(&manager, "synthetic", "second").is_err());
++    }
++
++    #[tokio::test]
++    async fn chat_session_post_is_signed_once_without_retries_redirects_or_error_payloads() {
++        for status in [200, 201, 302, 401, 403, 429, 500, 0] {
++            let listener = TcpListener::bind("127.0.0.1:0").unwrap();
++            let address = listener.local_addr().unwrap();
++            let server = listener.try_clone().unwrap();
++            let task = thread::spawn(move || {
++                let (mut socket, _) = server.accept().unwrap(); socket.set_read_timeout(Some(std::time::Duration::from_secs(2))).unwrap();
++                let mut bytes = Vec::new(); let mut chunk = [0u8; 2048];
++                loop {
++                    let n = socket.read(&mut chunk).unwrap(); assert!(n > 0); bytes.extend_from_slice(&chunk[..n]);
++                    if let Some(end) = bytes.windows(4).position(|v| v == b"\r\n\r\n") {
++                        let headers = String::from_utf8_lossy(&bytes[..end]).to_ascii_lowercase();
++                        let len = headers.lines().find_map(|v| v.strip_prefix("content-length: ").and_then(|v| v.parse::<usize>().ok())).unwrap_or(0);
++                        if bytes.len() >= end + 4 + len { break; }
++                    }
++                    assert!(bytes.len() < 16384);
++                }
++                if status != 0 {
++                    let body = if status == 200 || status == 201 { r#"{"messageId":"synthetic-receipt","conversationId":"synthetic-thread"}"# } else { "PRIVATE_SERVER_ERROR" };
++                    write!(socket, "HTTP/1.1 {status} Test\r\nContent-Length: {}\r\nLocation: http://127.0.0.1:1/blocked\r\nConnection: close\r\n\r\n{body}", body.len()).unwrap();
++                }
++                bytes
++            });
++            let client = Client::builder().redirect(reqwest::redirect::Policy::none()).timeout(std::time::Duration::from_secs(2)).build().unwrap();
++            let mut session = Session { client, signer:policy("127.0.0.1", "http"), authorization:"SYNTHETIC_NOT_A_TOKEN".into(), account:"synthetic".into(), principal:"synthetic".into() };
++            let op = super::super::Operation::Send("42".into(), "synthetic-only".into());
++            let result = session.post(super::super::Plan { url:format!("http://{address}/fixture"), contract:"1", body:super::super::plan(&op).body }).await;
++            let captured = String::from_utf8(task.join().unwrap()).unwrap();
++            assert!(captured.starts_with("POST /fixture HTTP/1.1\r\n"));
++            let headers = captured.split_once("\r\n\r\n").unwrap().0.to_ascii_lowercase();
++            assert!(headers.contains("\r\nsignature: ")); assert!(headers.contains("\r\nauthorization: synthetic_not_a_token"));
++            assert!(headers.contains("\r\nx-xbl-contract-version: 1"));
++            assert_eq!(serde_json::from_str::<Value>(captured.split_once("\r\n\r\n").unwrap().1).unwrap(), super::super::plan(&op).body.unwrap());
++            match status { 200|201 => assert_eq!(result.unwrap()["messageId"], "synthetic-receipt"),
++                401 => assert_eq!(result.unwrap_err(), "sign-in-required"), 403 => assert_eq!(result.unwrap_err(), "privacy-or-access-denied"),
++                429 => assert_eq!(result.unwrap_err(), "rate-limited"), 0 => assert_eq!(result.unwrap_err(), "request-unconfirmed"),
++                _ => assert_eq!(result.unwrap_err(), "service-unavailable") }
++            listener.set_nonblocking(true).unwrap();
++            assert!(matches!(listener.accept(), Err(e) if e.kind() == std::io::ErrorKind::WouldBlock), "unexpected retry or redirect");
++        }
++    }
++}
