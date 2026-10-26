@@ -38,6 +38,17 @@ it.each(['no-runtime', 'no-run', 'incomplete', 'running'] as const)('preserves t
   if (kind === 'running') { expect(html).toContain('Stop'); expect(html).toContain('Working…'); }
 });
 
+it('shows a closing game as closing, with Stop turned into Force stop', () => {
+  const data = demoSnapshot();
+  data.gameOperation = { id: 'sample-run', gameId: data.games[0].id, title: data.games[0].title, kind: 'launch', status: 'stopping', phase: 'Closing the game and finishing its cloud saves…', log: [], startedAt: new Date().toISOString() };
+  const html = render(data, true);
+  expect(play(html)).toContain('disabled=""');
+  expect(html).toContain('Closing…');
+  expect(html).toContain('Force stop');
+  expect(html).toContain('<strong>Closing game</strong>');
+  expect(html).not.toContain('Working…');
+});
+
 it('keeps installation/update errors and operation phase outside collapsed metadata', () => {
   const data = demoSnapshot();
   data.games[0].installMessage = 'Sample installation warning';

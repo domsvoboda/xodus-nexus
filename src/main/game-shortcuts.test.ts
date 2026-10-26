@@ -41,7 +41,7 @@ it('creates Steam launch descriptions without unwanted desktop/menu entries and 
     expect(steam.executable).toBe('"/bin/sh"');
     expect(steam.options).toContain('"' + id + '"');
     expect((await execute('/bin/sh', [path.join(f.locations.userData, 'shortcuts/launch-game'), id])).stdout.trim())
-      .toBe(`--nexus-profile ${f.locations.userData} --launch-game ${id}`);
+      .toBe(`--nexus-client --nexus-profile ${f.locations.userData} --launch-game ${id}`);
     const nexus = await f.shortcuts.steamLaunch();
     expect(nexus.title).toBe('Xodus Nexus');
     expect(nexus.identity).not.toBe(steam.identity);
@@ -76,7 +76,7 @@ it('creates profile-scoped desktop/menu entries and starts the launcher, not the
     expect((await fs.stat(menu)).mode & 0o777).toBe(0o644);
     const entry = path.join(f.locations.userData, 'shortcuts/launch-game');
     const result = await execute(entry, [id]);
-    expect(result.stdout.trim()).toBe(`--nexus-profile ${f.locations.userData} --launch-game ${id}`);
+    expect(result.stdout.trim()).toBe(`--nexus-client --nexus-profile ${f.locations.userData} --launch-game ${id}`);
     const before = await fs.readFile(target, 'utf8');
     // AppImage update replaces the file at the same path; shortcut stays valid.
     await fs.rename(f.locations.launcher, `${f.locations.launcher}.old`);

@@ -40,6 +40,17 @@ jobs:
         run: npm run build
       - run: npm run test:runtime-tools
       - run: npm run test:ci-tools
+      - name: Build the nexus-close-window helper
+        if: github.ref == 'refs/heads/main'
+        timeout-minutes: 20
+        # The daemon runs this X11 helper to ask a game to close before it falls
+        # back to signals. Packaged from build/tools/<arch>/ by the after-pack hook.
+        run: |
+          set -euo pipefail
+          sudo apt-get -o Acquire::Retries=2 install -y --no-install-recommends libx11-dev
+          mkdir -p build/tools/x86_64
+          cc -std=c99 -Wall -Wextra -Werror -O2 -o build/tools/x86_64/nexus-close-window scripts/runtime-tools/nexus-close-window.c -lX11
+          file build/tools/x86_64/nexus-close-window | grep -q x86-64
       - name: Build launcher candidate (never publish)
         if: github.ref == 'refs/heads/main' && !contains(github.event.head_commit.message, '[source-only]')
         run: npx --no-install electron-builder --linux AppImage --publish never

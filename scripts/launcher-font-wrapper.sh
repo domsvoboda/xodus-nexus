@@ -39,6 +39,13 @@ if [ -n "${LD_PRELOAD-}" ]; then
 fi
 app_root=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd) || exit 1
 binary="$app_root/xodus-nexus.bin"
+# Background-service modes run plain Node entry points from this build, never
+# the Electron UI. The stable AppImage/wrapper path is what units and Steam call.
+case "${1-}" in
+  --nexus-daemon|--nexus-client)
+    nexus_mode=${1#--nexus-}; shift
+    ELECTRON_RUN_AS_NODE=1 exec "$binary" "$app_root/resources/nexus-node/dist-electron/$nexus_mode/index.js" "$@" ;;
+esac
 # Native helper modes must retain their normal behavior, including Crashpad.
 if [ "${ELECTRON_RUN_AS_NODE-}" = 1 ]; then exec "$binary" "$@"; fi
 # Steam's GTK input module can deliver the same text twice to Electron. Scope
