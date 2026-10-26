@@ -44,7 +44,7 @@ describe('prebuilt backend', () => {
       const pointer=JSON.stringify({binaryPath:cli});await fs.writeFile(path.join(root,'xodus-backends/current.json'),pointer);
       const name=backendPackageName(backendLock.version),archive=name+'.tar.xz';
       const manifest={schema:1,authUi:'electron',version:backendLock.version,commit:backendLock.commit,
-        recipeSha256:backendRecipeSha256,compatibility:backendLock.compatibility,platform:'linux',arch:'x64',archive,
+        recipeSha256:backendRecipeSha256,compatibility:backendLock.compatibility,platform:'linux',arch:currentArch(),archive,
         archiveSha512:'a'.repeat(128),files:{LICENSE:'b'.repeat(64),'xodus-cli':'c'.repeat(64),'xodus-service':'d'.repeat(64)}};
       const fetcher=vi.fn(async(input:URL|RequestInfo)=>{
         const target=String(input);
