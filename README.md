@@ -140,6 +140,7 @@ but have not been verified and may encounter compatibility issues.
 | Forza Horizon 6 | Yes | Playable online; some setups need [VC++ prerequisites](https://github.com/domsvoboda/xodus-nexus/issues/96). [Loading failures](https://github.com/domsvoboda/xodus-nexus/issues/13) also reported. |
 | Palworld | Yes | Playable online. |
 | DOOM Eternal | Yes | Playable. |
+| Microsoft Flight Simulator 2024 | Partial | Unreleased runtime: gameplay works, but sign-in can stall. Multiplayer unverified. |
 | Ori and the Will of the Wisps | Partial | Unreleased Experimental runtime: sign-in and main menu work; gameplay unverified. |
 | Like a Dragon: Infinite Wealth | Partial | Unreleased Experimental runtime: main menu works; gameplay unverified. |
 | DOOM: The Dark Ages | Yes | Playable (user report). |

@@ -3,6 +3,37 @@
   "approvals": [
     {
       "kind": "launcher",
+      "runId": "40407376647",
+      "commit": "ba0e191e1eb8088d00eee7bfe8da80f0a8c5ec72",
+      "manifestSha256": "09004edb67dbf4a3edfb01f20831758c8a7be040927bc00ea0a279286be4304a",
+      "notesSha256": "06eae7940fc64d2581d7b6ead33bfb6f24c8ec456f6a787f0ebf0a143ffa6170",
+      "approved": true,
+      "approvedBy": "domsvoboda",
+      "evidence": "Human approved the complete component notes and stable publication, then confirmed Gears reached its menu and was normally closed on 2026-10-27 (Europe/Prague). One isolated run used the exact launcher40407376647, backend40407377857 and nexus-runtime40408747698 artifacts with cloud enabled, a fresh profile and a copied private prefix. Game process exited0; the launcher unit exited0. Exact manifests, binary/source SHA256/SHA512, recipe, packaged new runtime repository and all12 runtime native gates passed. Preserved extraction matched the original CI tree; no archive was changed. No multiplayer match, independent cloud roundtrip or FS2024 authentication fix is claimed. Promote only these tested bytes and digest-bound notes, without rebuilding or changing production pointers."
+    },
+    {
+      "kind": "backend",
+      "runId": "40407377857",
+      "commit": "ba0e191e1eb8088d00eee7bfe8da80f0a8c5ec72",
+      "manifestSha256": "74d99f5cf610635094c39ca9dd36f3273220dee468934ee967eaff5b91bb4346",
+      "notesSha256": "48d093511c8613993a0c651b89ed09e1a56bf3918aaace42833656c03f613fea",
+      "approved": true,
+      "approvedBy": "domsvoboda",
+      "evidence": "Human approved notes and stable publication and confirmed the exact CI Gears menu test and normal quit on 2026-10-27 (Europe/Prague). Exact backend0.2.12 candidate40407377857 ran with launcher40407376647 and new shared runtime40408747698 in an isolated profile and copied private prefix with normal cloud synchronization enabled. Genuine account service and private bridge were ready, content license returned200, game and launcher exited0. Manifest, binary/source hashes, pinned Rust1.99.0 recipe and license verified. All12 runtime native gates passed. No multiplayer match, independent cloud roundtrip or FS2024 authentication fix is claimed. Publish these exact tested bytes with the digest-bound notes, without rebuild or production pointer changes."
+    },
+    {
+      "kind": "runtime",
+      "repository": "domsvoboda/nexus-runtime",
+      "runId": "40408747698",
+      "commit": "bae8ff867dbe4746b5d948b35d272d7cad3b5808",
+      "manifestSha256": "fa2110ba46e4f7c0d1b518a4f1bade1c0d1a07cef3da6ac515a163ac3f30d6ef",
+      "notesSha256": "b82c473f3cf26f6b91e52695723b9c1247606a2d2baa01875a5b74dcc12b7d08",
+      "approved": true,
+      "approvedBy": "domsvoboda",
+      "evidence": "Human explicitly approved stable publication after all builds and one exact CI Gears test with cloud, then confirmed the menu and normal quit on 2026-10-27 (Europe/Prague). New repository main candidate40408747698 passed all12 native authentication/user/store/component, Wine, HTTP, media and graphics gates. Exact binary and corresponding source SHA256/SHA512, source graph, bothABI component hashes and portable runtime checks passed. Archive-derived and preserved extracted tree both match CI828c5abd548fa873ff24cb5cd137d2fa9264a35b41d7cca2ba183f7043ae3e96; ordinary extraction changed only15 Xalia permission modes, not bytes. The unchanged candidate ran with exact launcher40407376647/backend40407377857, fresh profile and copied private prefix. Genuine account/license initialization passed, game and launcher exited0. No multiplayer match, independent cloud roundtrip or complete FS2024 authentication fix claimed. Publish only these verified bytes in domsvoboda/nexus-runtime, not the legacy runtime workflow, without rebuilding or changing installed defaults."
+    },
+    {
+      "kind": "launcher",
       "runId": "39830729086",
       "commit": "0e2a75a4334d9d8af72e0c452af4010276bc3392",
       "manifestSha256": "e6f9dd4754b0ddd712a55c6334b78e175aebdce6cd0611e44f8545e67cb90418",
