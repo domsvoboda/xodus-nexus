@@ -105,7 +105,7 @@ export class DaemonServer {
       }
       case 'launch': {
         try {
-          const active = await this.controller.launch({ gameId: frame.gameId, env: frame.env, cwd: frame.cwd }, frame.attach ? client.id : undefined);
+          const active = await this.controller.launch({ gameId: frame.gameId, env: frame.env, cwd: frame.cwd, steamCommand: frame.steamCommand }, frame.attach ? client.id : undefined);
           this.send(client, { schema: 1, type: 'accepted', requestId: frame.requestId, operationId: active.operationId });
         } catch (error) {
           const code = error instanceof DaemonError ? error.code : 'internal';

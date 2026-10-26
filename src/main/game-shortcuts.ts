@@ -3,7 +3,7 @@ import { randomUUID } from 'node:crypto';
 import path from 'node:path';
 import { profileIdOf } from '../shared/profile-id.js';
 import type { Game } from '../shared/types.js';
-import { steamArgument, type SteamLaunch } from './steam-shortcuts.js';
+import { ARMADA_LAUNCH_WRAPPER, steamArgument, steamCommandOptions, type SteamLaunch } from './steam-shortcuts.js';
 
 export type ShortcutDestination = 'desktop' | 'applications';
 const validId = (id: string) => /^[a-f0-9]{16}$/.test(id);
@@ -69,7 +69,7 @@ export function shortcutInstanceRequest(data: unknown, currentProfile: string): 
   return result;
 }
 
-interface Locations { userData: string; desktop: string; applications: string; launcher?: string; icon: string }
+interface Locations { userData: string; desktop: string; applications: string; launcher?: string; icon: string; armadaWrapper?: string }
 export class GameShortcuts {
   private entry?: string;
   private icon?: string;
@@ -190,8 +190,10 @@ export class GameShortcuts {
     if (!this.entry || !this.icon || !this.nexusEntry) throw new Error(this.reason);
     if (game && (game.installState !== 'ready' || !validId(game.id))) throw Error('Only installed, ready games can be added to Steam.');
     const entry = game ? this.entry : this.nexusEntry;
+    // ArmadaOS applies per-game settings through its wrapper; keep it, after the Nexus script.
+    const armada = await fs.access(this.locations.armadaWrapper ?? ARMADA_LAUNCH_WRAPPER, constants.X_OK).then(() => true, () => false);
     return { title: game ? game.title.replace(/[\x00-\x1f\x7f]/g, ' ').trim().slice(0, 256) || 'Xodus Nexus game' : 'Xodus Nexus',
-      executable: steamArgument('/bin/sh'), options: steamArgument(entry) + (game ? ' ' + steamArgument(game.id) : ''),
+      executable: steamArgument('/bin/sh'), options: game ? steamCommandOptions(steamArgument(entry) + ' ' + steamArgument(game.id), armada) : steamArgument(entry),
       directory: path.dirname(entry), identity: this.profileId + ':' + (game?.id ?? 'launcher'),
       icon: game ? await this.gameIcon(game.id, png) : this.icon };
   }

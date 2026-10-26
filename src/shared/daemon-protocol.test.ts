@@ -12,6 +12,7 @@ describe('daemon protocol frames', () => {
       { schema: 1, type: 'hello', client: 'steam', version: '0.3.12' },
       { schema: 1, type: 'launch', requestId: 'req-1', gameId: '0123456789abcdef', env: { DISPLAY: ':0', SteamGameId: '123' }, cwd: '/home/deck', attach: true },
       { schema: 1, type: 'launch', requestId: 'r', gameId: 'ffffffffffffffff', env: {}, attach: false },
+      { schema: 1, type: 'launch', requestId: 'r', gameId: 'ffffffffffffffff', env: {}, attach: true, steamCommand: ['/steam/proton', 'waitforexitandrun', '/bin/sh'] },
       { schema: 1, type: 'attach', operationId: 'game-0123456789abcdef' },
       { schema: 1, type: 'cancel', requestId: 'req_2' },
       { schema: 1, type: 'subscribe' },
@@ -34,6 +35,11 @@ describe('daemon protocol frames', () => {
       { schema: 1, type: 'pong' },
     ];
     for (const frame of frames) expect(parseDaemonFrame(encodeFrame(frame).trimEnd())).toEqual(frame);
+  });
+
+  it('rejects a Steam command that is empty, too long or carries control characters', () => {
+    const launch = (steamCommand: unknown) => JSON.stringify({ schema: 1, type: 'launch', requestId: 'r', gameId: 'ffffffffffffffff', env: {}, attach: true, steamCommand });
+    for (const bad of [[], 'proton', [''], ['a\nb'], [1], Array(65).fill('x')]) expect(() => parseClientFrame(launch(bad))).toThrow(ProtocolError);
   });
 
   it('rejects malformed frames with a ProtocolError and nothing else', () => {

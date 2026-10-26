@@ -15,6 +15,7 @@ const ENV_KEY = /^[A-Za-z_][A-Za-z0-9_]*$/;
 // Tab is the only control character a value may carry.
 const CONTROL = /[\0-\x08\x0a-\x1f\x7f]/;
 const MAX_TEXT = 4096;
+const MAX_COMMAND_WORDS = 64;
 
 export class ProtocolError extends Error {
   readonly code = 'schema' as const;
@@ -34,7 +35,7 @@ export interface DaemonState {
 
 export type ClientFrame =
   | { schema: 1; type: 'hello'; client: ClientKind; version: string }
-  | { schema: 1; type: 'launch'; requestId: string; gameId: string; env: Record<string, string>; cwd?: string; attach: boolean }
+  | { schema: 1; type: 'launch'; requestId: string; gameId: string; env: Record<string, string>; cwd?: string; attach: boolean; steamCommand?: string[] }
   | { schema: 1; type: 'attach'; operationId: string }
   | { schema: 1; type: 'cancel'; requestId: string }
   | { schema: 1; type: 'subscribe' }
@@ -66,6 +67,14 @@ function text(frame: Dict, key: string, pattern?: RegExp, optional = false): str
   if (typeof value !== 'string' || value.length === 0 || value.length > MAX_TEXT || CONTROL.test(value)) throw new ProtocolError(`Invalid ${key}.`);
   if (pattern && !pattern.test(value)) throw new ProtocolError(`Invalid ${key}.`);
   return value;
+}
+
+/** Steam's `%command%` words, as the shortcut passed them; absent for older clients. */
+function command(value: unknown): string[] | undefined {
+  if (value === undefined) return undefined;
+  if (!Array.isArray(value) || value.length === 0 || value.length > MAX_COMMAND_WORDS ||
+    value.some(word => typeof word !== 'string' || word.length === 0 || word.length > MAX_TEXT || CONTROL.test(word))) throw new ProtocolError('Invalid steamCommand.');
+  return value as string[];
 }
 
 function boolean(frame: Dict, key: string): boolean {
@@ -102,9 +111,10 @@ export function parseClientFrame(line: string): ClientFrame {
     }
     case 'launch': {
       const cwd = text(frame, 'cwd', undefined, true);
+      const steamCommand = command(frame.steamCommand);
       return {
         schema: 1, type: 'launch', requestId: text(frame, 'requestId', ID), gameId: text(frame, 'gameId', GAME_ID),
-        env: environment(frame.env), attach: boolean(frame, 'attach'), ...(cwd ? { cwd } : {}),
+        env: environment(frame.env), attach: boolean(frame, 'attach'), ...(cwd ? { cwd } : {}), ...(steamCommand ? { steamCommand } : {}),
       };
     }
     case 'attach': return { schema: 1, type: 'attach', operationId: text(frame, 'operationId', ID) };

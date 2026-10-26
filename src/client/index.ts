@@ -9,6 +9,7 @@ import { filterClientEnvironment, type DaemonFrame } from '../shared/daemon-prot
 import { shortcutArguments } from '../main/game-shortcuts.js';
 import { DaemonConnection, daemonSocketPath } from '../main/daemon-client.js';
 import { unitNames } from '../main/daemon-units.js';
+import { forwardedSteamCommand, parseSteamCommand, wrapperPrefix } from '../main/steam-compat.js';
 
 const CONNECT_WINDOW_MS = 10_000;
 const REATTACH_WINDOW_MS = 60_000;
@@ -60,23 +61,106 @@ async function connect(socketPath: string, profileId: string, runtimeDir: string
   return undefined;
 }
 
+/**
+ * Splits the shortcut's own arguments from Steam's `%command%`, which follows
+ * the game id: `--launch-game <id> <steam command…>`.
+ */
+export function splitSteamCommand(argv: string[]): { own: string[]; steamCommand?: string[] } {
+  const index = argv.indexOf('--launch-game');
+  if (index < 0 || argv.length <= index + 2) return { own: argv };
+  return { own: argv.slice(0, index + 2), steamCommand: argv.slice(index + 2) };
+}
+
+const TRACKED = 'XODUS_NEXUS_STEAM_TRACKED';
+const WRAPPERS = 'XODUS_NEXUS_STEAM_WRAPPERS';
+
+/** Every live descendant of `root`, deepest first, from /proc. */
+export async function descendants(root: number, proc = '/proc'): Promise<number[]> {
+  const parents = new Map<number, number[]>();
+  for (const name of await fs.readdir(proc).catch(() => [] as string[])) {
+    if (!/^\d+$/.test(name)) continue;
+    const stat = await fs.readFile(path.join(proc, name, 'stat'), 'utf8').catch(() => '');
+    // The parent pid is the second field after the parenthesized command name.
+    const ppid = Number(stat.slice(stat.lastIndexOf(')') + 2).split(' ')[1]);
+    if (Number.isInteger(ppid)) parents.set(ppid, [...(parents.get(ppid) ?? []), Number(name)]);
+  }
+  const found: number[] = [];
+  const visit = (pid: number) => { for (const child of parents.get(pid) ?? []) { visit(child); found.push(child); } };
+  visit(root);
+  return found;
+}
+
+/**
+ * Runs `words` with this process's stdio and returns its exit code. Steam may
+ * stop only this process (its direct child); the signal goes to the whole
+ * subtree, because wrappers such as pw-audio-namespace do not pass it on.
+ */
+function runUnder(words: string[], env: NodeJS.ProcessEnv): Promise<number> {
+  return new Promise((resolve, reject) => {
+    const child = spawn(words[0], words.slice(1), { stdio: 'inherit', env });
+    const forward = (signal: NodeJS.Signals) => () => {
+      void descendants(child.pid ?? -1).then(pids => {
+        for (const pid of [...pids, child.pid ?? -1]) { try { process.kill(pid, signal); } catch { /* Already gone. */ } }
+      });
+    };
+    const handlers = (['SIGINT', 'SIGTERM', 'SIGHUP'] as const).map(signal => [signal, forward(signal)] as const);
+    for (const [signal, handler] of handlers) process.on(signal, handler);
+    const done = () => { for (const [signal, handler] of handlers) process.off(signal, handler); };
+    child.once('error', error => { done(); reject(error); });
+    child.once('exit', (code, signal) => { done(); resolve(code ?? (signal ? 1 : 0)); });
+  });
+}
+
+function trackedWrappers(value: string | undefined): string[] {
+  try {
+    const words = JSON.parse(value ?? '[]') as unknown;
+    if (Array.isArray(words) && words.every(word => typeof word === 'string')) return words;
+  } catch { /* Malformed: no wrappers. */ }
+  return [];
+}
+
+/**
+ * The Steam command the daemon gets. The first run (Steam started the shortcut
+ * script with `%command%` after it) runs this client again inside the launch
+ * wrappers and Steam's tracking (`reaper SteamLaunch AppId=…`), so Steam sees
+ * the game and its Exit button ends the client as before; that second run
+ * forwards the wrappers and the compatibility tool part.
+ */
+export function steamLaunchPlan(steamCommand: string[] | undefined, env: NodeJS.ProcessEnv, entry: string, gameId: string):
+  { rerun: { words: string[]; env: NodeJS.ProcessEnv } } | { forwarded?: string[] } {
+  // The second run: without a compatibility tool nothing follows its id, but the wrappers still apply.
+  if (env[TRACKED] === '1') return { forwarded: [...trackedWrappers(env[WRAPPERS]), ...(steamCommand ?? [])] };
+  if (!steamCommand?.length) return {};
+  const parts = parseSteamCommand(steamCommand);
+  if (!parts.tracking.length) return { forwarded: forwardedSteamCommand(parts) };
+  return { rerun: {
+    words: [...wrapperPrefix(parts.wrappers), ...parts.tracking, '/bin/sh', entry, gameId, ...parts.tool],
+    env: { ...env, [TRACKED]: '1', [WRAPPERS]: JSON.stringify(parts.wrappers) },
+  } };
+}
+
 export async function main(argv = process.argv.slice(2), env = process.env): Promise<number> {
-  const request = shortcutArguments(argv);
+  const split = splitSteamCommand(argv);
+  const request = shortcutArguments(split.own);
   if (!request.gameId) throw new Error('A game shortcut ID is required.');
   const gameId = request.gameId;
   const userData = request.profile ?? path.join(env.XDG_CONFIG_HOME ?? path.join(os.homedir(), '.config'), 'xodus-nexus');
+  const plan = steamLaunchPlan(split.steamCommand, env, path.join(userData, 'shortcuts', 'launch-game'), gameId);
+  if ('rerun' in plan) return runUnder(plan.rerun.words, plan.rerun.env);
+  const steamCommand = plan.forwarded?.length ? plan.forwarded : undefined;
   const profileId = profileIdOf(userData);
   const runtimeDir = env.XDG_RUNTIME_DIR;
   const connection = runtimeDir && path.isAbsolute(runtimeDir) ? await connect(daemonSocketPath(runtimeDir, profileId), profileId, runtimeDir) : undefined;
   if (!connection) {
     say('Background service not running; starting Nexus directly.');
+    if (steamCommand?.some(word => path.basename(word) === 'proton')) say("Steam's compatibility tool needs the background service; this launch uses the Nexus runtime.");
     return legacyFallback(request.profile, gameId, env);
   }
   connection.send({ schema: 1, type: 'hello', client: 'steam', version: '1' });
   const hello = await connection.next((frame): frame is DaemonFrame & { type: 'hello' } => frame.type === 'hello', 5_000);
   say(`Connected to Nexus background service ${hello.daemonVersion}.`);
   const requestId = randomUUID();
-  connection.send({ schema: 1, type: 'launch', requestId, gameId, env: filterClientEnvironment(env), cwd: process.cwd(), attach: true });
+  connection.send({ schema: 1, type: 'launch', requestId, gameId, env: filterClientEnvironment(env), cwd: process.cwd(), attach: true, ...(steamCommand ? { steamCommand } : {}) });
   return new Promise<number>((resolve, reject) => {
     let operationId: string | undefined;
     let exited = false;

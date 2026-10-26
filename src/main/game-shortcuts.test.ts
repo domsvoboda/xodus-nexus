@@ -7,6 +7,7 @@ import { createHash } from 'node:crypto';
 import { expect, it } from 'vitest';
 import { GameShortcuts, desktopArgument, shortcutArguments, shortcutInstanceData, shortcutInstanceRequest, shortcutTitleStem } from './game-shortcuts.js';
 import { ShortcutLaunch } from './shortcut-launch.js';
+import { ARMADA_LAUNCH_WRAPPER, steamArgument } from './steam-shortcuts.js';
 
 const execute = promisify(execFile);
 const id = '0123456789abcdef';
@@ -53,13 +54,29 @@ it('creates Steam launch descriptions without unwanted desktop/menu entries and 
     await expect(f.shortcuts.steamLaunch({ ...game, id: '../bad' })).rejects.toThrow('ready');
   } finally { await fs.rm(f.root, { recursive: true, force: true }); }
 });
+it('puts Steam\'s command after the script and id, behind ArmadaOS\'s wrapper where it exists', async () => {
+  const f = await fixture();
+  try {
+    await f.shortcuts.initialize();
+    const plain = await f.shortcuts.steamLaunch({ ...game, title: 'A game' });
+    expect(plain.options).toBe(`${desktopShortcutWords(f)} "${id}" %command%`);
+    await fs.writeFile(f.locations.armadaWrapper, '#!/bin/sh\n', { mode: 0o755 });
+    const armada = await f.shortcuts.steamLaunch({ ...game, title: 'A game' });
+    expect(armada.options).toBe(`${desktopShortcutWords(f)} "${id}" ${ARMADA_LAUNCH_WRAPPER} %command%`);
+    // The launcher's own Steam entry takes no game command.
+    expect((await f.shortcuts.steamLaunch()).options).not.toContain('%command%');
+  } finally { await fs.rm(f.root, { recursive: true, force: true }); }
+});
+function desktopShortcutWords(f: Awaited<ReturnType<typeof fixture>>): string {
+  return steamArgument(path.join(f.locations.userData, 'shortcuts/launch-game'));
+}
 async function fixture() {
   const root = await fs.mkdtemp(path.join(os.tmpdir(), 'nexus-shortcuts-'));
   const launcher = path.join(root, 'Launcher $`%\' name.AppImage');
   await fs.copyFile('/bin/echo', launcher); await fs.chmod(launcher, 0o700);
   const icon = path.join(root, 'icon.png'); await fs.writeFile(icon, 'fixture icon');
   const locations = { userData: path.join(root, 'profile'), desktop: path.join(root, 'Desktop'),
-    applications: path.join(root, 'applications'), launcher, icon };
+    applications: path.join(root, 'applications'), launcher, icon, armadaWrapper: path.join(root, 'armada-game-launch') };
   return { root, locations, shortcuts: new GameShortcuts(locations) };
 }
 

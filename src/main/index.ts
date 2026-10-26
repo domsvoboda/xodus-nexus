@@ -70,6 +70,8 @@ import { openDesktopTarget } from './desktop-open.js';
 import { addSteamShortcut, steamAccounts, steamRunning } from './steam-shortcuts.js';
 import { gameSteamPortrait, nexusSteamArtwork } from './steam-artwork.js';
 import { addLiveSteamShortcut } from './steam-live.js';
+import { NEXUS_TOOL_NAME, registerNexusTool } from './steam-tool.js';
+import { liveSteamShortcut, SteamClientLink } from './steam-client.js';
 import { DownloadCompletionNotifications } from './download-notifications.js';
 import { KeyringSupport } from './keyring.js';
 import { XboxSocialSessions } from './xbox-social.js';
@@ -418,6 +420,24 @@ function ensureIdle(mode?: 'install' | 'launch' | 'remove'): void {
 async function syncManagedWinePath(): Promise<void> {
   const selected = selectedWinePath(store.settings.winePath, store.settings.runtimeRoot, runtime.current.winePath);
   if (selected && selected !== store.settings.winePath) await store.setSettings({ winePath: selected });
+  await syncNexusSteamTool();
+}
+
+/**
+ * Keeps the "Xodus Nexus" entry in Steam's Compatibility dropdown on the
+ * current runtime. 'known': registered before, so a running Steam lists it;
+ * 'new': Steam lists it from its next start; undefined: not registered.
+ */
+async function syncNexusSteamTool(): Promise<'known' | 'new' | undefined> {
+  if (process.platform !== 'linux' || demoMode || !runtime.current.winePath) return undefined;
+  try {
+    const { changed, created } = await registerNexusTool(os.homedir(), protonRootOf(runtime.current.winePath));
+    if (changed.length) console.log(`Registered the Xodus Nexus compatibility tool in ${changed.join(', ')}; Steam lists a new tool after a restart.`);
+    return created.length ? 'new' : 'known';
+  } catch (error) {
+    console.error('Could not register the Xodus Nexus compatibility tool:', error);
+    return undefined;
+  }
 }
 
 const accountRefresh = new AccountRefresh();
@@ -1553,7 +1573,21 @@ function registerIpc(): void {
     const wide = game?.heroUrl ? await loadShortcutIcon({ coverUrl: game.heroUrl }, normalize) : undefined;
     const artwork = game ? { cover: await gameSteamPortrait(cover ?? fallback).catch(() => cover ?? fallback), wide: wide ?? cover ?? fallback }
       : await nexusSteamArtwork(fallback).catch(() => ({ cover: fallback, wide: fallback }));
-    if (await steamRunning()) return addLiveSteamShortcut(accounts, launch, desktop, artwork, undefined, undefined, async existing => {
+    // New game shortcuts use the Xodus Nexus tool unless the player already picked one.
+    const toolState = game ? await syncNexusSteamTool() : undefined;
+    const running = await steamRunning();
+    // A running Steam can only select a tool it listed at its start.
+    const tool = toolState === 'known' || (toolState === 'new' && !running) ? NEXUS_TOOL_NAME : undefined;
+    // A running Steam that exposes its UI (SteamOS with Decky) takes the shortcut
+    // live, with Steam's command and the tool; Game Mode ignores desktop imports.
+    const link = running ? await SteamClientLink.connect() : undefined;
+    if (link) {
+      try {
+        const { appid } = await liveSteamShortcut(link, accounts, launch, '/bin/sh', artwork, tool);
+        return `steam://rungameid/${(BigInt(appid) << 32n) | 0x02000000n}`;
+      } finally { link.close(); }
+    }
+    if (running) return addLiveSteamShortcut(accounts, launch, desktop, artwork, undefined, undefined, async existing => {
       const choice = await dialog.showMessageBox(mainWindow!, { type: 'question', title: nativeText('Steam shortcut already exists'),
         message: nativeText('Reuse an existing shortcut, or ask Steam to add it for the currently signed-in account?'),
         detail: nativeText('Choose an existing profile to avoid creating a duplicate in that account.'),
@@ -1570,7 +1604,7 @@ function registerIpc(): void {
       selected = choice.response;
       if (selected >= accounts.length) throw Error('Add to Steam cancelled.');
     }
-    return addSteamShortcut(accounts[selected], launch, artwork);
+    return addSteamShortcut(accounts[selected], launch, artwork, undefined, tool);
   });
   ipcMain.handle('create-game-shortcut', async (_event, id: string, destination: ShortcutDestination) => {
     const game = store.games.find(entry => entry.id === id);

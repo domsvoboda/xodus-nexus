@@ -2,7 +2,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { promises as fs } from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
-import { addSteamShortcut, findSteamLaunch, planSteamShortcut, readSteamShortcuts, steamAccounts, steamArgument, type SteamLaunch } from './steam-shortcuts.js';
+import { addSteamShortcut, ARMADA_LAUNCH_WRAPPER, findSteamLaunch, planSteamShortcut, readSteamShortcuts, STEAM_COMMAND, steamAccounts, steamArgument, steamCommandOptions, type SteamLaunch } from './steam-shortcuts.js';
 
 let root: string;
 const image = Buffer.concat([Buffer.from('89504e470d0a1a0a', 'hex'), Buffer.from('fixture')]);
@@ -38,6 +38,31 @@ describe('Steam binary shortcut planning', () => {
     const first = planSteamShortcut(undefined, launch);
     const second = planSteamShortcut(first.bytes, { ...launch, options: 'second', identity: 'second-profile' });
     expect(second.appid).not.toBe(first.appid);
+  });
+  it('upgrades a shortcut without %command% in place, keeping its id and other fields', () => {
+    const legacy = planSteamShortcut(undefined, launch);
+    const current = { ...launch, options: launch.options + STEAM_COMMAND };
+    const upgraded = planSteamShortcut(legacy.bytes, current);
+    expect(upgraded.added).toBe(true);
+    expect(upgraded.appid).toBe(legacy.appid);
+    expect(upgraded.bytes.toString('binary')).toContain(`LaunchOptions\0${current.options}\0`);
+    expect(upgraded.bytes.toString('binary')).not.toContain(`LaunchOptions\0${launch.options}\0`);
+    expect(upgraded.bytes.length).toBe(legacy.bytes.length + STEAM_COMMAND.length);
+    expect(planSteamShortcut(upgraded.bytes, current)).toEqual({ bytes: upgraded.bytes, appid: legacy.appid, added: false });
+    expect(findSteamLaunch(legacy.bytes, current)).toBe(legacy.appid);
+  });
+  it('upgrades a shortcut ArmadaOS wrapped (`<wrapper> %command% <script> <id>`) to the script-first form', () => {
+    const current = { ...launch, options: steamCommandOptions(launch.options, true) };
+    expect(current.options).toBe(`${launch.options} ${ARMADA_LAUNCH_WRAPPER} %command%`);
+    const plain = planSteamShortcut(undefined, launch);
+    const wrapped = Buffer.from(plain.bytes.toString('binary').replace(`LaunchOptions\0${launch.options}\0`, `LaunchOptions\0${ARMADA_LAUNCH_WRAPPER} %command% ${launch.options}\0`), 'binary');
+    expect(findSteamLaunch(wrapped, current)).toBe(plain.appid);
+    const upgraded = planSteamShortcut(wrapped, current);
+    expect(upgraded).toMatchObject({ appid: plain.appid, added: true });
+    expect(upgraded.bytes.toString('binary')).toContain(`LaunchOptions\0${current.options}\0`);
+    // A shortcut first written elsewhere (`<script> <id> %command%`) also moves to the ArmadaOS form.
+    const other = planSteamShortcut(undefined, { ...launch, options: steamCommandOptions(launch.options, false) });
+    expect(planSteamShortcut(other.bytes, current)).toMatchObject({ appid: other.appid, added: true });
   });
   it('refuses an ID collision without changing the old entry', () => {
     const first = planSteamShortcut(undefined, launch);

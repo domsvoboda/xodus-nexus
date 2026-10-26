@@ -653,6 +653,7 @@ test('SMBIOS probing never prompts for elevation on devices without a firmware t
   assert.ok(entry);
   const patch = await fs.readFile('assets/xodus-smbios-optional.patch', 'utf8');
   assert.equal(createHash('sha256').update(patch).digest('hex'), entry.sha256);
+  assert.ok(lock.patches.findIndex(p => p.file === entry.file) > lock.patches.findIndex(p => p.file === 'xodus-offline-launch.patch'));
   const files = [...patch.matchAll(/^diff --git a\/(\S+) b\/\S+$/gm)].map(match => match[1]);
   assert.deepEqual(files, ['crates/xodus/src/hardware.rs']);
   for (const expected of ['fn load_raw_smbios_from(', 'if !path.exists() {', 'this device exposes no SMBIOS table',
@@ -663,4 +664,54 @@ test('SMBIOS probing never prompts for elevation on devices without a firmware t
   const build = await fs.readFile('scripts/build-backend.mjs', 'utf8');
   assert.match(build, /command\('cargo', \['test', '--locked', \.\.\.offline, \.\.\.features, '-p', 'xodus', 'smbios_'\]\)/);
   assert.match(build, /archSuffix = \{ x64: 'x86_64', arm64: 'aarch64' \}\[process\.arch\]/);
+});
+
+test('a full launch view runs on any Wine without file maps and only in a private directory', async () => {
+  const lock = JSON.parse(await fs.readFile('assets/backend-source.lock.json', 'utf8'));
+  const entry = lock.patches.find(p => p.file === 'xodus-full-view.patch');
+  assert.ok(entry);
+  const patch = await fs.readFile(`assets/${entry.file}`, 'utf8');
+  assert.equal(createHash('sha256').update(patch).digest('hex'), entry.sha256);
+  assert.ok(lock.patches.findIndex(p => p.file === entry.file) > lock.patches.findIndex(p => p.file === 'xodus-smbios-optional.patch'));
+  const files = [...patch.matchAll(/^diff --git a\/(\S+) b\/\S+$/gm)].map(match => match[1]);
+  assert.deepEqual(files.sort(), ['crates/xodus-cli/src/commands/run.rs', 'crates/xodus-cli/src/main.rs']);
+  assert.match(patch, /requires = "view_dir"/);
+  assert.match(patch, /#\[arg\(long = "view-dir"/);
+  // No fallback next to the game or in /tmp, and an owner-only view directory.
+  assert.match(patch, /None if all => \{\s*\n\+\s*return Err/);
+  assert.match(patch, /metadata\.mode\(\) & 0o077 != 0/);
+  // Every launch view, the executable-only one next to the game included, is 0700.
+  assert.match(patch, /^\+\s*std::fs::set_permissions\(mirror\.path\(\), std::fs::Permissions::from_mode\(0o700\)\)\?;/m);
+  // File maps, inherited memfds and the PlayFab token stay out of a full view.
+  assert.match(patch, /if materialize_all \{[\s\S]*?flags\.insert\(FdFlags::CLOEXEC\)/);
+  assert.match(patch, /^\+\s*\.env\("WINE_DLL_FILE_MAP", env_value\)/m);
+  assert.match(patch, /not passing a PlayFab token in the environment/);
+  assert.match(patch, /full_view_materializes_every_encrypted_file_in_the_private_view_directory/);
+  assert.match(patch, /full_view_requires_a_private_absolute_view_directory/);
+});
+
+test('a full launch view stages the PlayFab Game Saves adapter only for the exact SDK contract', async () => {
+  const lock = JSON.parse(await fs.readFile('assets/backend-source.lock.json', 'utf8'));
+  const entry = lock.patches.find(p => p.file === 'xodus-playfab-view-adapter.patch');
+  assert.ok(entry);
+  const patch = await fs.readFile(`assets/${entry.file}`, 'utf8');
+  assert.equal(createHash('sha256').update(patch).digest('hex'), entry.sha256);
+  assert.equal(lock.patches.at(-1).file, entry.file);
+  assert.ok(lock.patches.findIndex(p => p.file === entry.file) > lock.patches.findIndex(p => p.file === 'xodus-full-view.patch'));
+  const files = [...patch.matchAll(/^diff --git a\/(\S+) b\/\S+$/gm)].map(match => match[1]);
+  assert.deepEqual(files.sort(), ['crates/xodus-cli/src/commands/run.rs', 'crates/xodus-cli/src/main.rs']);
+  assert.match(patch, /long = "playfab-adapter",\s*\n\+\s*requires = "materialize_all"/);
+  // The same 40 exports, in order, as the runtime's adapter definition.
+  const definition = await fs.readFile('scripts/runtime-compat/playfab-save-folder.def', 'utf8');
+  const names = [...definition.matchAll(/^(PF\w+)(?:=\S+)? @\d+$/gm)].map(match => match[1]);
+  const list = patch.match(/const PLAYFAB_SDK_EXPORTS: \[&str; 40\] = \[\n([\s\S]*?)\n\+\];/);
+  assert.ok(list);
+  assert.deepEqual([...list[1].matchAll(/"(PF\w+)"/g)].map(match => match[1]), names);
+  // Fail closed and never write through a game-file symlink.
+  assert.match(patch, /unsupported PlayFab SDK export contract; left unchanged/);
+  assert.match(patch, /refusing a partial launch/);
+  assert.match(patch, /create_new\(true\)/);
+  assert.match(patch, /playfabgamesave=n;nexus_pgs_native=n/);
+  assert.match(patch, /playfab_adapter_is_staged_in_real_view_directories_without_touching_the_game/);
+  assert.match(patch, /playfab_contract_accepts_only_the_exact_sdk_exports/);
 });

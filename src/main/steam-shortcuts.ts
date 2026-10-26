@@ -2,6 +2,7 @@ import { constants, promises as fs } from 'node:fs';
 import { randomUUID } from 'node:crypto';
 import path from 'node:path';
 import { commandWords } from '../shared/launch-tools.js';
+import { selectCompatTool } from './steam-tool.js';
 
 interface Field { type: number; key: string; value: string | number | Field[]; start: number; end: number }
 const missing = (error: unknown) => (error as NodeJS.ErrnoException).code === 'ENOENT';
@@ -55,6 +56,28 @@ export function steamArgument(value: string): string {
   return '"' + value.replace(/["`$\\]/g, '\\$&') + '"';
 }
 export interface SteamLaunch { title: string; executable: string; options: string; directory: string; identity: string; icon: string }
+/** Game shortcuts end in Steam's `%command%`, so a compatibility tool chosen in Steam reaches Nexus. */
+export const STEAM_COMMAND = ' %command%';
+/** ArmadaOS's per-game settings wrapper; its Decky plugin leaves options that already name it alone. */
+export const ARMADA_LAUNCH_WRAPPER = '/usr/libexec/armada/armada-game-launch';
+const ARMADA_SUFFIX = ` ${ARMADA_LAUNCH_WRAPPER}${STEAM_COMMAND}`;
+
+/** The shortcut script and game id first, then Steam's command (behind ArmadaOS's wrapper there). */
+export function steamCommandOptions(base: string, armada: boolean): string {
+  return base + (armada ? ARMADA_SUFFIX : STEAM_COMMAND);
+}
+
+/**
+ * Every older form of these options, still recognized and upgraded in place:
+ * without `%command%`, as ArmadaOS wrapped it (`<wrapper> %command% <base>`),
+ * and the other platform's form.
+ */
+function olderOptions(options: string): string[] {
+  const base = options.endsWith(ARMADA_SUFFIX) ? options.slice(0, -ARMADA_SUFFIX.length)
+    : options.endsWith(STEAM_COMMAND) ? options.slice(0, -STEAM_COMMAND.length) : undefined;
+  if (base === undefined) return [];
+  return [base, `${ARMADA_LAUNCH_WRAPPER}${STEAM_COMMAND} ${base}`, base + STEAM_COMMAND, base + ARMADA_SUFFIX].filter(form => form !== options);
+}
 export function findSteamLaunch(bytes: Buffer, launch: SteamLaunch): number | undefined {
   return findSteamLaunches(bytes, launch)[0];
 }
@@ -67,7 +90,8 @@ export function findSteamLaunches(bytes: Buffer, launch: SteamLaunch): number[] 
   const matches = new Set<number>();
   for (const entry of parse(bytes)) {
     const fields = entry.value as Field[];
-    if (!sameWords(field(fields, 'Exe'), launch.executable) || !sameWords(field(fields, 'LaunchOptions'), launch.options)) continue;
+    const known = [launch.options, ...olderOptions(launch.options)];
+    if (!sameWords(field(fields, 'Exe'), launch.executable) || !known.some(form => sameWords(field(fields, 'LaunchOptions'), form))) continue;
     const appid = field(fields, 'appid');
     if (typeof appid === 'number' && (appid & 0x80000000)) matches.add(appid);
   }
@@ -76,13 +100,19 @@ export function findSteamLaunches(bytes: Buffer, launch: SteamLaunch): number[] 
 export function planSteamShortcut(original: Buffer | undefined, launch: SteamLaunch): { bytes: Buffer; appid: number; added: boolean } {
   const bytes = original ?? empty, entries = parse(bytes);
   if ([launch.title, launch.executable, launch.options, launch.directory, launch.identity, launch.icon].some(value => /\0/.test(value) || value.length > 4096)) throw Error('Invalid Steam shortcut data.');
+  const older = olderOptions(launch.options);
   for (const entry of entries) {
     const fields = entry.value as Field[];
-    if (field(fields, 'exe') === launch.executable && field(fields, 'LaunchOptions') === launch.options) {
-      const appid = field(fields, 'appid');
-      if (typeof appid !== 'number' || !(appid & 0x80000000)) throw Error('Invalid existing Steam shortcut ID.');
-      return { bytes, appid, added: false };
-    }
+    const options = fields.find(value => value.key.toLowerCase() === 'launchoptions');
+    if (field(fields, 'exe') !== launch.executable || !options || (options.value !== launch.options && !older.includes(options.value as string))) continue;
+    const appid = field(fields, 'appid');
+    if (typeof appid !== 'number' || !(appid & 0x80000000)) throw Error('Invalid existing Steam shortcut ID.');
+    if (options.value === launch.options) return { bytes, appid, added: false };
+    // Upgrade only this entry's launch options; its id, artwork and Steam
+    // settings (such as the chosen compatibility tool) stay as they are.
+    const updated = Buffer.concat([bytes.subarray(0, options.start), string(options.key, launch.options), bytes.subarray(options.end)]);
+    parse(updated);
+    return { bytes: updated, appid, added: true };
   }
   // Steam stores the ID explicitly. Include the profile/game identity so games
   // with the same title and shared /bin/sh executable cannot collide silently.
@@ -170,7 +200,7 @@ export async function writeSteamArtwork(config: string, appid: number, artwork: 
   }
 }
 export async function addSteamShortcut(config: string, launch: SteamLaunch, artwork: { cover?: Buffer; wide?: Buffer },
-  running = steamRunning): Promise<string> {
+  running = steamRunning, compatTool?: string): Promise<string> {
   const stopped = async () => { if (await running()) throw Error('Close Steam completely, then try Add to Steam again. Nexus will not close Steam for you.'); };
   await stopped(); await safeDirectory(config);
   const lockPath = path.join(config, '.xodus-nexus-shortcuts.lock');
@@ -191,6 +221,12 @@ export async function addSteamShortcut(config: string, launch: SteamLaunch, artw
       await stopped();
       if (original) await fs.rename(temp, file);
       else await fs.link(temp, file);
+    }
+    // The shortcut's Compatibility choice, unless the player already made one.
+    if (compatTool) {
+      await stopped();
+      await selectCompatTool(path.resolve(config, '..', '..', '..'), planned.appid, compatTool)
+        .catch(error => { if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error; });
     }
     return `steam://rungameid/${(BigInt(planned.appid) << 32n) | 0x02000000n}`;
   } finally {
