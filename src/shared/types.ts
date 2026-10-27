@@ -135,6 +135,7 @@ export interface DownloadTask {
   productId: string;
   selectedContentId?: string;
   selectionMarket?: string;
+  contentProductIds?: string[];
   destination: string;
   status: 'queued' | 'running' | 'paused' | 'complete' | 'failed' | 'cancelled';
   canPause?: boolean;
@@ -238,6 +239,7 @@ export interface InstallRequest {
   destination: string;
   selectedContentId?: string;
   selectionMarket?: string;
+  contentProductIds?: string[];
 }
 
 export interface InstallChoice {
@@ -267,6 +269,8 @@ export interface GameContentItem {
   productId: string;
   title: string;
   access?: LibraryAccess;
+  /** Validated managed files exist; this does not grant an account license. */
+  installedFiles?: boolean;
   status: 'installed' | 'available' | 'verify' | 'unlicensed' | 'unsupported' | 'bundle' | 'license-only';
   downloadBytes?: number;
   note: string;
@@ -404,6 +408,8 @@ export interface LauncherApi {
   getAccountLibrary(kind: AccountLibraryPage['kind'], cursor?: string, refresh?: boolean, sort?: AccountLibraryPage['sort']): Promise<AccountLibraryPage>;
   startInstall(request: InstallRequest): Promise<string>;
   getInstallPlan(productId: string, destination?: string): Promise<InstallPlan>;
+  getInstallContent(productId: string, offerProductId?: string): Promise<GameContentPlan>;
+  manageGameContent(id: string, productIds: string[], action: 'install' | 'repair' | 'remove'): Promise<void>;
   getGameContent(id: string): Promise<GameContentPlan>;
   installGameContent(id: string, productId: string): Promise<string>;
   updateInstalledGame(id: string): Promise<string>;

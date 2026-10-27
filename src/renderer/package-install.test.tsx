@@ -64,3 +64,22 @@ it('shows verified package names, IDs, platform and disabled unsupported choices
   expect(html.match(/disabled=""/g)).toHaveLength(2); expect(html).not.toContain('checked=""');
   expect(html).toContain('Cancel'); expect(html).toContain('checks your license');
 });
+
+it('keeps the requested edition and target-storage confirmation before collecting DLC selections', async () => {
+  const plan = sizedPlan(), request = { productId: plan.rootProductId, title: 'Premium edition', destination: '/synthetic/game' };
+  const api = { getInstallPlan: vi.fn(async () => plan), startInstall: vi.fn(async () => 'queued') };
+  const events: string[] = [];
+  const select = vi.fn(async () => { events.push('dlc'); expect(api.startInstall).not.toHaveBeenCalled(); return ['9BBBBBBBBBBB']; });
+  expect(await confirmedPackageInstall(request, api, async () => { events.push('storage'); return plan.choices[0].contentId; }, () => true, select)).toBe('queued');
+  expect(events).toEqual(['storage', 'dlc']);
+  expect(api.startInstall).toHaveBeenCalledWith({ ...request, selectedContentId: plan.choices[0].contentId, selectionMarket: plan.market, contentProductIds: ['9BBBBBBBBBBB'] });
+});
+it('does not start a game after the DLC dialog is cancelled or an invalid package is supplied', async () => {
+  const plan = sizedPlan(), request = { productId: plan.rootProductId, title: 'Game', destination: '/synthetic/game' };
+  const api = { getInstallPlan: vi.fn(async () => plan), startInstall: vi.fn(async () => 'queued') };
+  expect(await confirmedPackageInstall(request, api, async () => plan.choices[0].contentId, () => true, async () => undefined)).toBeUndefined();
+  expect(api.startInstall).not.toHaveBeenCalled();
+  const select = vi.fn(async () => []);
+  await expect(confirmedPackageInstall(request, api, async () => 'invalid-content', () => true, select)).rejects.toThrow('Invalid installation package');
+  expect(select).not.toHaveBeenCalled(); expect(api.startInstall).not.toHaveBeenCalled();
+});

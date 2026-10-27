@@ -2,6 +2,7 @@ import { afterEach, expect, it, vi } from 'vitest';
 import { promises as fs } from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
+import { AccountLibrary } from './account-library.js';
 import { GameContent, contentManifest, contentOffers } from './game-content.js';
 import { parsePackageXml } from './package-xml.js';
 import type { Game } from '../shared/types.js';
@@ -176,4 +177,100 @@ it('rejects a forged Content ID, family, preorder-only SKU or storage inside the
   expect(await fs.readdir(rootInside)).toEqual([]);
   const data=catalog();Object.assign(data.Products[1].DisplaySkuAvailabilities[0].Sku.Properties,{IsPreOrder:true});
   expect(contentOffers(contentManifest(baseXml),data,{[OWN]:'owned'}).packages).toEqual([]);
+});
+
+it('offers all seven Persona premium DLC from authoritative active rows despite an omitted bundle parent',async()=>{
+  const data=JSON.parse(await fs.readFile(new URL('./fixtures/persona-premium-content.json',import.meta.url),'utf8'));
+  const baseId='9NKK6Z0K3RH2',ids=data.Products.map((p:any)=>p.ProductId).filter((id:string)=>id!==baseId);
+  const base=contentManifest(`<Game><Identity Name="SEGAofAmericaInc.L0cb6b3aea" Version="1.0.0.0" Publisher="CN=Fixture"/><StoreId>${baseId}</StoreId><RelatedProducts>${ids.map((id:string)=>`<RelatedProduct>${id}</RelatedProduct>`).join('')}</RelatedProducts></Game>`);
+  const library=new AccountLibrary(vi.fn(),async()=>JSON.stringify({schema:1,account:'fixture@example.test',market:'TW',checkedAt:new Date().toISOString(),
+    entitlements:ids.map((productId:string)=>({productId,status:'Active',isTrial:false,sharingSource:'None',special:false,endDate:'2099-01-01T00:00:00Z',satisfiedByProductId:'9NDGTQVVRSVS'}))}));
+  library.select('fixture@example.test','/fixture/backend','TW');
+  const result=contentOffers(base,data,(await library.access()).accessByProductId);
+  expect(result.items).toHaveLength(7);expect(result.packages).toHaveLength(7);
+  expect(result.items.every(item=>item.status==='available'&&item.access==='other')).toBe(true);
+  expect(contentOffers(base,data,{}).packages).toHaveLength(0);
+});
+
+it('plans all seven real Persona PC DLC for its base identity without a RelatedProducts list', async () => {
+  const f = await fixture();
+  const data = JSON.parse(await fs.readFile(new URL('./fixtures/persona-premium-content.json', import.meta.url), 'utf8'));
+  const baseId = '9NKK6Z0K3RH2';
+  const xml = `<Game><Identity Name="SEGAofAmericaInc.L0cb6b3aea" Publisher="CN=8E5E0709-F814-48B2-9B8A-DC1D37C0D899" Version="1.0.345.0"/><StoreId>${baseId}</StoreId></Game>`;
+  await fs.writeFile(path.join(f.base, 'MicrosoftGame.Config'), xml);
+  const fetcher = vi.fn(async (input: URL | RequestInfo) => {
+    const ids = new URL(String(input)).searchParams.get('bigIds')!.split(',');
+    return new Response(JSON.stringify({ Products: data.Products.filter((p: any) => ids.includes(p.ProductId)) }));
+  }) as unknown as typeof fetch;
+  const owned: Record<string, 'owned'> = Object.fromEntries(data.Products.map((p: any) => [p.ProductId, 'owned']));
+  const manager = new GameContent(f.data, fetcher);
+  const result = await manager.plan({ ...f.game, storeId: baseId }, async () => ({ checkedAt: '', accessByProductId: owned }), 'TW');
+  expect(result.packages).toHaveLength(7);
+  expect(result.plan.items.every(item => item.access === 'owned' && item.status === 'available')).toBe(true);
+  expect(result.plan.items.some(item => item.title.includes('人格面具'))).toBe(true);
+});
+
+it('registers DLC with a config extracted into its declared SRC destination, preserving the original', async () => {
+  const f = await installFixture();
+  await fs.mkdir(path.join(f.directory, 'SRC'));
+  await fs.rename(path.join(f.directory, 'MicrosoftGame.Config'), path.join(f.directory, 'SRC', 'MicrosoftGame.config'));
+  await fs.writeFile(path.join(f.directory, `layout_${GUID}.xml`), '<Package><Chunk Id="1000" Marker="Launch"><FileGroup DestinationPath="\\SRC" SourcePath="." Include="*.*"/></Chunk></Package>');
+  expect(await f.manager.roots(f.game)).toEqual([]);
+  await f.manager.complete(f.game, f.selected);
+  expect(await fs.readFile(path.join(f.directory, 'MicrosoftGame.config'), 'utf8')).toBe(childXml());
+  expect(await fs.readFile(path.join(f.directory, 'SRC', 'MicrosoftGame.config'), 'utf8')).toBe(childXml());
+  expect(await f.manager.roots(f.game)).toEqual([f.directory]);
+});
+
+it('does not promote nested configs with foreign identities, undeclared mappings or symlink destinations', async () => {
+  for (const failure of ['identity', 'mapping', 'symlink']) {
+    const f = await installFixture();
+    const source = path.join(f.directory, 'SRC');
+    await fs.mkdir(source);
+    await fs.rename(path.join(f.directory, 'MicrosoftGame.Config'), path.join(source, 'MicrosoftGame.config'));
+    if (failure === 'identity') await fs.writeFile(path.join(source, 'MicrosoftGame.config'), childXml().replace('CN=Example', 'CN=Other'));
+    if (failure === 'symlink') {
+      await fs.rename(source, path.join(f.directory, 'original'));
+      await fs.symlink(path.join(f.directory, 'original'), source);
+    }
+    await fs.writeFile(path.join(f.directory, `layout_${GUID}.xml`), `<Package><Chunk><FileGroup ${failure === 'mapping' ? '' : 'DestinationPath="\\SRC"'} SourcePath="." Include="*.*"/></Chunk></Package>`);
+    await expect(f.manager.complete(f.game, f.selected)).rejects.toThrow();
+    await expect(fs.stat(path.join(f.directory, 'MicrosoftGame.config'))).rejects.toMatchObject({ code: 'ENOENT' });
+    expect(await f.manager.roots(f.game)).toEqual([]);
+  }
+});
+
+it('checks licensed matching DLC before any base game directory exists', async () => {
+  const f = await fixture();
+  const result = await f.manager.preflight(BASE, access, 'TW');
+  expect(result.packages.map(pkg => pkg.productId)).toEqual([OWN, GP]);
+  expect(await fs.readdir(f.data)).toEqual([]);
+});
+
+it('removes only completed managed content, preserving the base and refusing unmarked or foreign records', async () => {
+  const f = await installFixture();
+  await expect(f.manager.remove(f.game, OWN)).rejects.toThrow();
+  expect(await fs.readFile(path.join(f.directory, 'MicrosoftGame.Config'), 'utf8')).toBe(childXml());
+  await f.manager.complete(f.game, f.selected);
+  const marker = path.join(f.directory, '.nexus-content-complete.json');
+  const original = await fs.readFile(marker, 'utf8');
+  await fs.writeFile(marker, original.replace(BASE, PAID));
+  await expect(f.manager.remove(f.game, OWN)).rejects.toThrow('Invalid content');
+  await fs.writeFile(marker, original);
+  await f.manager.remove(f.game, OWN);
+  await expect(fs.stat(f.directory)).rejects.toMatchObject({ code: 'ENOENT' });
+  expect(await fs.readFile(path.join(f.base, 'MicrosoftGame.Config'), 'utf8')).toBe(baseXml);
+  expect(await f.manager.roots(f.game)).toEqual([]);
+});
+
+it('reports validated installed files separately from unresolved source-offer licensing', async () => {
+  const f = await installFixture(); await f.manager.complete(f.game, f.selected);
+  const { ContentCatalog } = await import('./content-catalog.js');
+  const discover = vi.spyOn(ContentCatalog.prototype, 'discover').mockResolvedValue({ ...catalog(), related: [OWN], verify: [OWN] });
+  try {
+    const result = await f.manager.plan(f.game, async () => ({ checkedAt: '', accessByProductId: { [BASE]: 'owned' } }));
+    expect(result.plan.items[0]).toMatchObject({ status: 'verify', installedFiles: true });
+    expect(result.plan.items[0]).not.toHaveProperty('access');
+    expect(result.packages[0].productId).toBe(OWN);
+  } finally { discover.mockRestore(); }
 });

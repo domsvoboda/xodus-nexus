@@ -1,0 +1,1070 @@
+{
+  "source": "https://displaycatalog.mp.microsoft.com/v7.0/products?market=TW&languages=zh-tw",
+  "Products": [
+    {
+      "ProductId": "9NKK6Z0K3RH2",
+      "ProductType": "Game",
+      "LocalizedProperties": [
+        {
+          "Language": "zh-hant",
+          "ProductTitle": "女神異聞錄３ Reload"
+        }
+      ],
+      "DisplaySkuAvailabilities": [
+        {
+          "Sku": {
+            "Properties": {
+              "IsTrial": false,
+              "Packages": [
+                {
+                  "ContentId": "e9a67f92-3f17-4cd3-87b3-ab37051f601f",
+                  "PackageFormat": "XVC",
+                  "Architectures": [
+                    "x64"
+                  ],
+                  "PlatformDependencies": [
+                    {
+                      "MaxTested": 0,
+                      "MinVersion": 0,
+                      "PlatformName": "Windows.Xbox"
+                    }
+                  ],
+                  "PackageFamilyName": null,
+                  "MainPackageFamilyNameForDlc": null
+                },
+                {
+                  "ContentId": "e9a67f92-3f17-4cd3-87b3-ab37051f601f",
+                  "PackageFormat": "XVC",
+                  "Architectures": [
+                    "x64"
+                  ],
+                  "PlatformDependencies": [
+                    {
+                      "MaxTested": 0,
+                      "MinVersion": 0,
+                      "PlatformName": "Windows.Xbox"
+                    }
+                  ],
+                  "PackageFamilyName": null,
+                  "MainPackageFamilyNameForDlc": null
+                },
+                {
+                  "ContentId": "b76a6f53-a81a-4d3e-b100-976d2d8edb30",
+                  "PackageFormat": "MSIXVC",
+                  "Architectures": [
+                    "x64"
+                  ],
+                  "PlatformDependencies": [
+                    {
+                      "MaxTested": 2814750970478592,
+                      "MinVersion": 2814750970478592,
+                      "PlatformName": "Windows.Desktop"
+                    }
+                  ],
+                  "PackageFamilyName": "SEGAofAmericaInc.L0cb6b3aea_s751p9cej88mt",
+                  "MainPackageFamilyNameForDlc": null
+                }
+              ]
+            }
+          }
+        },
+        {
+          "Sku": {
+            "Properties": {
+              "IsTrial": false,
+              "Packages": [
+                {
+                  "ContentId": "e9a67f92-3f17-4cd3-87b3-ab37051f601f",
+                  "PackageFormat": "XVC",
+                  "Architectures": [
+                    "x64"
+                  ],
+                  "PlatformDependencies": [
+                    {
+                      "MaxTested": 0,
+                      "MinVersion": 0,
+                      "PlatformName": "Windows.Xbox"
+                    }
+                  ],
+                  "PackageFamilyName": null,
+                  "MainPackageFamilyNameForDlc": null
+                },
+                {
+                  "ContentId": "e9a67f92-3f17-4cd3-87b3-ab37051f601f",
+                  "PackageFormat": "XVC",
+                  "Architectures": [
+                    "x64"
+                  ],
+                  "PlatformDependencies": [
+                    {
+                      "MaxTested": 0,
+                      "MinVersion": 0,
+                      "PlatformName": "Windows.Xbox"
+                    }
+                  ],
+                  "PackageFamilyName": null,
+                  "MainPackageFamilyNameForDlc": null
+                },
+                {
+                  "ContentId": "b76a6f53-a81a-4d3e-b100-976d2d8edb30",
+                  "PackageFormat": "MSIXVC",
+                  "Architectures": [
+                    "x64"
+                  ],
+                  "PlatformDependencies": [
+                    {
+                      "MaxTested": 2814750970478592,
+                      "MinVersion": 2814750970478592,
+                      "PlatformName": "Windows.Desktop"
+                    }
+                  ],
+                  "PackageFamilyName": "SEGAofAmericaInc.L0cb6b3aea_s751p9cej88mt",
+                  "MainPackageFamilyNameForDlc": null
+                }
+              ]
+            }
+          }
+        },
+        {
+          "Sku": {
+            "Properties": {
+              "IsTrial": true,
+              "Packages": [
+                {
+                  "ContentId": "e9a67f92-3f17-4cd3-87b3-ab37051f601f",
+                  "PackageFormat": "XVC",
+                  "Architectures": [
+                    "x64"
+                  ],
+                  "PlatformDependencies": [
+                    {
+                      "MaxTested": 0,
+                      "MinVersion": 0,
+                      "PlatformName": "Windows.Xbox"
+                    }
+                  ],
+                  "PackageFamilyName": null,
+                  "MainPackageFamilyNameForDlc": null
+                },
+                {
+                  "ContentId": "e9a67f92-3f17-4cd3-87b3-ab37051f601f",
+                  "PackageFormat": "XVC",
+                  "Architectures": [
+                    "x64"
+                  ],
+                  "PlatformDependencies": [
+                    {
+                      "MaxTested": 0,
+                      "MinVersion": 0,
+                      "PlatformName": "Windows.Xbox"
+                    }
+                  ],
+                  "PackageFamilyName": null,
+                  "MainPackageFamilyNameForDlc": null
+                },
+                {
+                  "ContentId": "b76a6f53-a81a-4d3e-b100-976d2d8edb30",
+                  "PackageFormat": "MSIXVC",
+                  "Architectures": [
+                    "x64"
+                  ],
+                  "PlatformDependencies": [
+                    {
+                      "MaxTested": 2814750970478592,
+                      "MinVersion": 2814750970478592,
+                      "PlatformName": "Windows.Desktop"
+                    }
+                  ],
+                  "PackageFamilyName": "SEGAofAmericaInc.L0cb6b3aea_s751p9cej88mt",
+                  "MainPackageFamilyNameForDlc": null
+                }
+              ]
+            }
+          }
+        }
+      ]
+    },
+    {
+      "ProductId": "9N17MLZ5JHGJ",
+      "ProductType": "Durable",
+      "LocalizedProperties": [
+        {
+          "Language": "zh-hant",
+          "ProductTitle": "女神異聞錄３ Reload 女神異聞錄５ 皇家版 人格面具套組２"
+        }
+      ],
+      "DisplaySkuAvailabilities": [
+        {
+          "Sku": {
+            "Properties": {
+              "IsTrial": false,
+              "Packages": [
+                {
+                  "ContentId": "f776b3f1-0138-4d7d-92dd-1d1528f06d85",
+                  "PackageFormat": "XVC",
+                  "Architectures": [
+                    "x64"
+                  ],
+                  "PlatformDependencies": [
+                    {
+                      "MaxTested": 0,
+                      "MinVersion": 0,
+                      "PlatformName": "Windows.Xbox"
+                    }
+                  ],
+                  "PackageFamilyName": null,
+                  "MainPackageFamilyNameForDlc": "SEGAofAmericaInc.L0cb6b3aea_s751p9cej88mt"
+                },
+                {
+                  "ContentId": "f776b3f1-0138-4d7d-92dd-1d1528f06d85",
+                  "PackageFormat": "XVC",
+                  "Architectures": [
+                    "x64"
+                  ],
+                  "PlatformDependencies": [
+                    {
+                      "MaxTested": 0,
+                      "MinVersion": 0,
+                      "PlatformName": "Windows.Xbox"
+                    }
+                  ],
+                  "PackageFamilyName": null,
+                  "MainPackageFamilyNameForDlc": "SEGAofAmericaInc.L0cb6b3aea_s751p9cej88mt"
+                },
+                {
+                  "ContentId": "187ab8cb-a880-490f-8228-793e375deaa2",
+                  "PackageFormat": "MSIXVC",
+                  "Architectures": [
+                    "x64"
+                  ],
+                  "PlatformDependencies": [
+                    {
+                      "MaxTested": 2814750970478592,
+                      "MinVersion": 2814750970478592,
+                      "PlatformName": "Windows.Desktop"
+                    }
+                  ],
+                  "PackageFamilyName": "SEGAofAmericaInc.Persona5RoyalPersonaSet2_s751p9cej88mt",
+                  "MainPackageFamilyNameForDlc": "SEGAofAmericaInc.L0cb6b3aea_s751p9cej88mt"
+                }
+              ]
+            }
+          }
+        },
+        {
+          "Sku": {
+            "Properties": {
+              "IsTrial": false,
+              "Packages": [
+                {
+                  "ContentId": "f776b3f1-0138-4d7d-92dd-1d1528f06d85",
+                  "PackageFormat": "XVC",
+                  "Architectures": [
+                    "x64"
+                  ],
+                  "PlatformDependencies": [
+                    {
+                      "MaxTested": 0,
+                      "MinVersion": 0,
+                      "PlatformName": "Windows.Xbox"
+                    }
+                  ],
+                  "PackageFamilyName": null,
+                  "MainPackageFamilyNameForDlc": "SEGAofAmericaInc.L0cb6b3aea_s751p9cej88mt"
+                },
+                {
+                  "ContentId": "f776b3f1-0138-4d7d-92dd-1d1528f06d85",
+                  "PackageFormat": "XVC",
+                  "Architectures": [
+                    "x64"
+                  ],
+                  "PlatformDependencies": [
+                    {
+                      "MaxTested": 0,
+                      "MinVersion": 0,
+                      "PlatformName": "Windows.Xbox"
+                    }
+                  ],
+                  "PackageFamilyName": null,
+                  "MainPackageFamilyNameForDlc": "SEGAofAmericaInc.L0cb6b3aea_s751p9cej88mt"
+                },
+                {
+                  "ContentId": "187ab8cb-a880-490f-8228-793e375deaa2",
+                  "PackageFormat": "MSIXVC",
+                  "Architectures": [
+                    "x64"
+                  ],
+                  "PlatformDependencies": [
+                    {
+                      "MaxTested": 2814750970478592,
+                      "MinVersion": 2814750970478592,
+                      "PlatformName": "Windows.Desktop"
+                    }
+                  ],
+                  "PackageFamilyName": "SEGAofAmericaInc.Persona5RoyalPersonaSet2_s751p9cej88mt",
+                  "MainPackageFamilyNameForDlc": "SEGAofAmericaInc.L0cb6b3aea_s751p9cej88mt"
+                }
+              ]
+            }
+          }
+        }
+      ]
+    },
+    {
+      "ProductId": "9NBNSPC5ZBB7",
+      "ProductType": "Durable",
+      "LocalizedProperties": [
+        {
+          "Language": "zh-hant",
+          "ProductTitle": "女神異聞錄３ Reload 女神異聞錄４ 黃金版 人格面具套組"
+        }
+      ],
+      "DisplaySkuAvailabilities": [
+        {
+          "Sku": {
+            "Properties": {
+              "IsTrial": false,
+              "Packages": [
+                {
+                  "ContentId": "60145863-54ae-4fa3-ae1b-88ccd86cc36d",
+                  "PackageFormat": "XVC",
+                  "Architectures": [
+                    "x64"
+                  ],
+                  "PlatformDependencies": [
+                    {
+                      "MaxTested": 0,
+                      "MinVersion": 0,
+                      "PlatformName": "Windows.Xbox"
+                    }
+                  ],
+                  "PackageFamilyName": null,
+                  "MainPackageFamilyNameForDlc": "SEGAofAmericaInc.L0cb6b3aea_s751p9cej88mt"
+                },
+                {
+                  "ContentId": "60145863-54ae-4fa3-ae1b-88ccd86cc36d",
+                  "PackageFormat": "XVC",
+                  "Architectures": [
+                    "x64"
+                  ],
+                  "PlatformDependencies": [
+                    {
+                      "MaxTested": 0,
+                      "MinVersion": 0,
+                      "PlatformName": "Windows.Xbox"
+                    }
+                  ],
+                  "PackageFamilyName": null,
+                  "MainPackageFamilyNameForDlc": "SEGAofAmericaInc.L0cb6b3aea_s751p9cej88mt"
+                },
+                {
+                  "ContentId": "98c6a5ca-5cf0-44ab-bc19-b9f61f02a30e",
+                  "PackageFormat": "MSIXVC",
+                  "Architectures": [
+                    "x64"
+                  ],
+                  "PlatformDependencies": [
+                    {
+                      "MaxTested": 2814750970478592,
+                      "MinVersion": 2814750970478592,
+                      "PlatformName": "Windows.Desktop"
+                    }
+                  ],
+                  "PackageFamilyName": "SEGAofAmericaInc.Persona4GoldenPersonaSet_s751p9cej88mt",
+                  "MainPackageFamilyNameForDlc": "SEGAofAmericaInc.L0cb6b3aea_s751p9cej88mt"
+                }
+              ]
+            }
+          }
+        },
+        {
+          "Sku": {
+            "Properties": {
+              "IsTrial": false,
+              "Packages": [
+                {
+                  "ContentId": "60145863-54ae-4fa3-ae1b-88ccd86cc36d",
+                  "PackageFormat": "XVC",
+                  "Architectures": [
+                    "x64"
+                  ],
+                  "PlatformDependencies": [
+                    {
+                      "MaxTested": 0,
+                      "MinVersion": 0,
+                      "PlatformName": "Windows.Xbox"
+                    }
+                  ],
+                  "PackageFamilyName": null,
+                  "MainPackageFamilyNameForDlc": "SEGAofAmericaInc.L0cb6b3aea_s751p9cej88mt"
+                },
+                {
+                  "ContentId": "60145863-54ae-4fa3-ae1b-88ccd86cc36d",
+                  "PackageFormat": "XVC",
+                  "Architectures": [
+                    "x64"
+                  ],
+                  "PlatformDependencies": [
+                    {
+                      "MaxTested": 0,
+                      "MinVersion": 0,
+                      "PlatformName": "Windows.Xbox"
+                    }
+                  ],
+                  "PackageFamilyName": null,
+                  "MainPackageFamilyNameForDlc": "SEGAofAmericaInc.L0cb6b3aea_s751p9cej88mt"
+                },
+                {
+                  "ContentId": "98c6a5ca-5cf0-44ab-bc19-b9f61f02a30e",
+                  "PackageFormat": "MSIXVC",
+                  "Architectures": [
+                    "x64"
+                  ],
+                  "PlatformDependencies": [
+                    {
+                      "MaxTested": 2814750970478592,
+                      "MinVersion": 2814750970478592,
+                      "PlatformName": "Windows.Desktop"
+                    }
+                  ],
+                  "PackageFamilyName": "SEGAofAmericaInc.Persona4GoldenPersonaSet_s751p9cej88mt",
+                  "MainPackageFamilyNameForDlc": "SEGAofAmericaInc.L0cb6b3aea_s751p9cej88mt"
+                }
+              ]
+            }
+          }
+        }
+      ]
+    },
+    {
+      "ProductId": "9NLZX1XGWRDD",
+      "ProductType": "Durable",
+      "LocalizedProperties": [
+        {
+          "Language": "zh-hant",
+          "ProductTitle": "女神異聞錄３ Reload 女神異聞錄５ 皇家版 人格面具套組１"
+        }
+      ],
+      "DisplaySkuAvailabilities": [
+        {
+          "Sku": {
+            "Properties": {
+              "IsTrial": false,
+              "Packages": [
+                {
+                  "ContentId": "ddd3d0d2-b319-4782-bb01-3cde26da3197",
+                  "PackageFormat": "XVC",
+                  "Architectures": [
+                    "x64"
+                  ],
+                  "PlatformDependencies": [
+                    {
+                      "MaxTested": 0,
+                      "MinVersion": 0,
+                      "PlatformName": "Windows.Xbox"
+                    }
+                  ],
+                  "PackageFamilyName": null,
+                  "MainPackageFamilyNameForDlc": "SEGAofAmericaInc.L0cb6b3aea_s751p9cej88mt"
+                },
+                {
+                  "ContentId": "ddd3d0d2-b319-4782-bb01-3cde26da3197",
+                  "PackageFormat": "XVC",
+                  "Architectures": [
+                    "x64"
+                  ],
+                  "PlatformDependencies": [
+                    {
+                      "MaxTested": 0,
+                      "MinVersion": 0,
+                      "PlatformName": "Windows.Xbox"
+                    }
+                  ],
+                  "PackageFamilyName": null,
+                  "MainPackageFamilyNameForDlc": "SEGAofAmericaInc.L0cb6b3aea_s751p9cej88mt"
+                },
+                {
+                  "ContentId": "ae13c95e-796c-44cd-81e1-edf35f7eb5ae",
+                  "PackageFormat": "MSIXVC",
+                  "Architectures": [
+                    "x64"
+                  ],
+                  "PlatformDependencies": [
+                    {
+                      "MaxTested": 2814750970478592,
+                      "MinVersion": 2814750970478592,
+                      "PlatformName": "Windows.Desktop"
+                    }
+                  ],
+                  "PackageFamilyName": "SEGAofAmericaInc.Persona5RoyalPersonaSet1_s751p9cej88mt",
+                  "MainPackageFamilyNameForDlc": "SEGAofAmericaInc.L0cb6b3aea_s751p9cej88mt"
+                }
+              ]
+            }
+          }
+        },
+        {
+          "Sku": {
+            "Properties": {
+              "IsTrial": false,
+              "Packages": [
+                {
+                  "ContentId": "ddd3d0d2-b319-4782-bb01-3cde26da3197",
+                  "PackageFormat": "XVC",
+                  "Architectures": [
+                    "x64"
+                  ],
+                  "PlatformDependencies": [
+                    {
+                      "MaxTested": 0,
+                      "MinVersion": 0,
+                      "PlatformName": "Windows.Xbox"
+                    }
+                  ],
+                  "PackageFamilyName": null,
+                  "MainPackageFamilyNameForDlc": "SEGAofAmericaInc.L0cb6b3aea_s751p9cej88mt"
+                },
+                {
+                  "ContentId": "ddd3d0d2-b319-4782-bb01-3cde26da3197",
+                  "PackageFormat": "XVC",
+                  "Architectures": [
+                    "x64"
+                  ],
+                  "PlatformDependencies": [
+                    {
+                      "MaxTested": 0,
+                      "MinVersion": 0,
+                      "PlatformName": "Windows.Xbox"
+                    }
+                  ],
+                  "PackageFamilyName": null,
+                  "MainPackageFamilyNameForDlc": "SEGAofAmericaInc.L0cb6b3aea_s751p9cej88mt"
+                },
+                {
+                  "ContentId": "ae13c95e-796c-44cd-81e1-edf35f7eb5ae",
+                  "PackageFormat": "MSIXVC",
+                  "Architectures": [
+                    "x64"
+                  ],
+                  "PlatformDependencies": [
+                    {
+                      "MaxTested": 2814750970478592,
+                      "MinVersion": 2814750970478592,
+                      "PlatformName": "Windows.Desktop"
+                    }
+                  ],
+                  "PackageFamilyName": "SEGAofAmericaInc.Persona5RoyalPersonaSet1_s751p9cej88mt",
+                  "MainPackageFamilyNameForDlc": "SEGAofAmericaInc.L0cb6b3aea_s751p9cej88mt"
+                }
+              ]
+            }
+          }
+        }
+      ]
+    },
+    {
+      "ProductId": "9NMVGJ6T8XC0",
+      "ProductType": "Durable",
+      "LocalizedProperties": [
+        {
+          "Language": "zh-hant",
+          "ProductTitle": "女神異聞錄３ Reload 女神異聞錄５ 皇家版 BGM套組"
+        }
+      ],
+      "DisplaySkuAvailabilities": [
+        {
+          "Sku": {
+            "Properties": {
+              "IsTrial": false,
+              "Packages": [
+                {
+                  "ContentId": "836331b3-ef79-4a8f-ab64-2ce380061fc6",
+                  "PackageFormat": "XVC",
+                  "Architectures": [
+                    "x64"
+                  ],
+                  "PlatformDependencies": [
+                    {
+                      "MaxTested": 0,
+                      "MinVersion": 0,
+                      "PlatformName": "Windows.Xbox"
+                    }
+                  ],
+                  "PackageFamilyName": null,
+                  "MainPackageFamilyNameForDlc": "SEGAofAmericaInc.L0cb6b3aea_s751p9cej88mt"
+                },
+                {
+                  "ContentId": "836331b3-ef79-4a8f-ab64-2ce380061fc6",
+                  "PackageFormat": "XVC",
+                  "Architectures": [
+                    "x64"
+                  ],
+                  "PlatformDependencies": [
+                    {
+                      "MaxTested": 0,
+                      "MinVersion": 0,
+                      "PlatformName": "Windows.Xbox"
+                    }
+                  ],
+                  "PackageFamilyName": null,
+                  "MainPackageFamilyNameForDlc": "SEGAofAmericaInc.L0cb6b3aea_s751p9cej88mt"
+                },
+                {
+                  "ContentId": "a07248bf-d13a-4d4b-b5d0-c9fda61afa68",
+                  "PackageFormat": "MSIXVC",
+                  "Architectures": [
+                    "x64"
+                  ],
+                  "PlatformDependencies": [
+                    {
+                      "MaxTested": 2814750970478592,
+                      "MinVersion": 2814750970478592,
+                      "PlatformName": "Windows.Desktop"
+                    }
+                  ],
+                  "PackageFamilyName": "SEGAofAmericaInc.Persona5RoyalBGMSet_s751p9cej88mt",
+                  "MainPackageFamilyNameForDlc": "SEGAofAmericaInc.L0cb6b3aea_s751p9cej88mt"
+                }
+              ]
+            }
+          }
+        },
+        {
+          "Sku": {
+            "Properties": {
+              "IsTrial": false,
+              "Packages": [
+                {
+                  "ContentId": "836331b3-ef79-4a8f-ab64-2ce380061fc6",
+                  "PackageFormat": "XVC",
+                  "Architectures": [
+                    "x64"
+                  ],
+                  "PlatformDependencies": [
+                    {
+                      "MaxTested": 0,
+                      "MinVersion": 0,
+                      "PlatformName": "Windows.Xbox"
+                    }
+                  ],
+                  "PackageFamilyName": null,
+                  "MainPackageFamilyNameForDlc": "SEGAofAmericaInc.L0cb6b3aea_s751p9cej88mt"
+                },
+                {
+                  "ContentId": "836331b3-ef79-4a8f-ab64-2ce380061fc6",
+                  "PackageFormat": "XVC",
+                  "Architectures": [
+                    "x64"
+                  ],
+                  "PlatformDependencies": [
+                    {
+                      "MaxTested": 0,
+                      "MinVersion": 0,
+                      "PlatformName": "Windows.Xbox"
+                    }
+                  ],
+                  "PackageFamilyName": null,
+                  "MainPackageFamilyNameForDlc": "SEGAofAmericaInc.L0cb6b3aea_s751p9cej88mt"
+                },
+                {
+                  "ContentId": "a07248bf-d13a-4d4b-b5d0-c9fda61afa68",
+                  "PackageFormat": "MSIXVC",
+                  "Architectures": [
+                    "x64"
+                  ],
+                  "PlatformDependencies": [
+                    {
+                      "MaxTested": 2814750970478592,
+                      "MinVersion": 2814750970478592,
+                      "PlatformName": "Windows.Desktop"
+                    }
+                  ],
+                  "PackageFamilyName": "SEGAofAmericaInc.Persona5RoyalBGMSet_s751p9cej88mt",
+                  "MainPackageFamilyNameForDlc": "SEGAofAmericaInc.L0cb6b3aea_s751p9cej88mt"
+                }
+              ]
+            }
+          }
+        }
+      ]
+    },
+    {
+      "ProductId": "9NQT2TSTL016",
+      "ProductType": "Durable",
+      "LocalizedProperties": [
+        {
+          "Language": "zh-hant",
+          "ProductTitle": "女神異聞錄３ Reload 女神異聞錄５ 皇家版 秀盡學園高校服裝套組"
+        }
+      ],
+      "DisplaySkuAvailabilities": [
+        {
+          "Sku": {
+            "Properties": {
+              "IsTrial": false,
+              "Packages": [
+                {
+                  "ContentId": "83f54a34-6e12-4b2c-b2b7-eecdff258af8",
+                  "PackageFormat": "XVC",
+                  "Architectures": [
+                    "x64"
+                  ],
+                  "PlatformDependencies": [
+                    {
+                      "MaxTested": 0,
+                      "MinVersion": 0,
+                      "PlatformName": "Windows.Xbox"
+                    }
+                  ],
+                  "PackageFamilyName": null,
+                  "MainPackageFamilyNameForDlc": "SEGAofAmericaInc.L0cb6b3aea_s751p9cej88mt"
+                },
+                {
+                  "ContentId": "83f54a34-6e12-4b2c-b2b7-eecdff258af8",
+                  "PackageFormat": "XVC",
+                  "Architectures": [
+                    "x64"
+                  ],
+                  "PlatformDependencies": [
+                    {
+                      "MaxTested": 0,
+                      "MinVersion": 0,
+                      "PlatformName": "Windows.Xbox"
+                    }
+                  ],
+                  "PackageFamilyName": null,
+                  "MainPackageFamilyNameForDlc": "SEGAofAmericaInc.L0cb6b3aea_s751p9cej88mt"
+                },
+                {
+                  "ContentId": "be6b1e67-4244-4a1b-9568-3172d9c28462",
+                  "PackageFormat": "MSIXVC",
+                  "Architectures": [
+                    "x64"
+                  ],
+                  "PlatformDependencies": [
+                    {
+                      "MaxTested": 2814750970478592,
+                      "MinVersion": 2814750970478592,
+                      "PlatformName": "Windows.Desktop"
+                    }
+                  ],
+                  "PackageFamilyName": "SEGAofAmericaInc.Persona5RoyalShujinAcademyCostume_s751p9cej88mt",
+                  "MainPackageFamilyNameForDlc": "SEGAofAmericaInc.L0cb6b3aea_s751p9cej88mt"
+                }
+              ]
+            }
+          }
+        },
+        {
+          "Sku": {
+            "Properties": {
+              "IsTrial": false,
+              "Packages": [
+                {
+                  "ContentId": "83f54a34-6e12-4b2c-b2b7-eecdff258af8",
+                  "PackageFormat": "XVC",
+                  "Architectures": [
+                    "x64"
+                  ],
+                  "PlatformDependencies": [
+                    {
+                      "MaxTested": 0,
+                      "MinVersion": 0,
+                      "PlatformName": "Windows.Xbox"
+                    }
+                  ],
+                  "PackageFamilyName": null,
+                  "MainPackageFamilyNameForDlc": "SEGAofAmericaInc.L0cb6b3aea_s751p9cej88mt"
+                },
+                {
+                  "ContentId": "83f54a34-6e12-4b2c-b2b7-eecdff258af8",
+                  "PackageFormat": "XVC",
+                  "Architectures": [
+                    "x64"
+                  ],
+                  "PlatformDependencies": [
+                    {
+                      "MaxTested": 0,
+                      "MinVersion": 0,
+                      "PlatformName": "Windows.Xbox"
+                    }
+                  ],
+                  "PackageFamilyName": null,
+                  "MainPackageFamilyNameForDlc": "SEGAofAmericaInc.L0cb6b3aea_s751p9cej88mt"
+                },
+                {
+                  "ContentId": "be6b1e67-4244-4a1b-9568-3172d9c28462",
+                  "PackageFormat": "MSIXVC",
+                  "Architectures": [
+                    "x64"
+                  ],
+                  "PlatformDependencies": [
+                    {
+                      "MaxTested": 2814750970478592,
+                      "MinVersion": 2814750970478592,
+                      "PlatformName": "Windows.Desktop"
+                    }
+                  ],
+                  "PackageFamilyName": "SEGAofAmericaInc.Persona5RoyalShujinAcademyCostume_s751p9cej88mt",
+                  "MainPackageFamilyNameForDlc": "SEGAofAmericaInc.L0cb6b3aea_s751p9cej88mt"
+                }
+              ]
+            }
+          }
+        }
+      ]
+    },
+    {
+      "ProductId": "9PDJN17WTFR0",
+      "ProductType": "Durable",
+      "LocalizedProperties": [
+        {
+          "Language": "zh-hant",
+          "ProductTitle": "女神異聞錄３ Reload 女神異聞錄４ 黃金版 八十神高級中學服裝套組"
+        }
+      ],
+      "DisplaySkuAvailabilities": [
+        {
+          "Sku": {
+            "Properties": {
+              "IsTrial": false,
+              "Packages": [
+                {
+                  "ContentId": "2ce3a07a-269d-4b1f-9533-5540f262c16d",
+                  "PackageFormat": "XVC",
+                  "Architectures": [
+                    "x64"
+                  ],
+                  "PlatformDependencies": [
+                    {
+                      "MaxTested": 0,
+                      "MinVersion": 0,
+                      "PlatformName": "Windows.Xbox"
+                    }
+                  ],
+                  "PackageFamilyName": null,
+                  "MainPackageFamilyNameForDlc": "SEGAofAmericaInc.L0cb6b3aea_s751p9cej88mt"
+                },
+                {
+                  "ContentId": "2ce3a07a-269d-4b1f-9533-5540f262c16d",
+                  "PackageFormat": "XVC",
+                  "Architectures": [
+                    "x64"
+                  ],
+                  "PlatformDependencies": [
+                    {
+                      "MaxTested": 0,
+                      "MinVersion": 0,
+                      "PlatformName": "Windows.Xbox"
+                    }
+                  ],
+                  "PackageFamilyName": null,
+                  "MainPackageFamilyNameForDlc": "SEGAofAmericaInc.L0cb6b3aea_s751p9cej88mt"
+                },
+                {
+                  "ContentId": "78e3093d-0a1b-4503-8ebd-996b42d3fae5",
+                  "PackageFormat": "MSIXVC",
+                  "Architectures": [
+                    "x64"
+                  ],
+                  "PlatformDependencies": [
+                    {
+                      "MaxTested": 2814750970478592,
+                      "MinVersion": 2814750970478592,
+                      "PlatformName": "Windows.Desktop"
+                    }
+                  ],
+                  "PackageFamilyName": "SEGAofAmericaInc.Persona4GoldenYasogamiHighCostume_s751p9cej88mt",
+                  "MainPackageFamilyNameForDlc": "SEGAofAmericaInc.L0cb6b3aea_s751p9cej88mt"
+                }
+              ]
+            }
+          }
+        },
+        {
+          "Sku": {
+            "Properties": {
+              "IsTrial": false,
+              "Packages": [
+                {
+                  "ContentId": "2ce3a07a-269d-4b1f-9533-5540f262c16d",
+                  "PackageFormat": "XVC",
+                  "Architectures": [
+                    "x64"
+                  ],
+                  "PlatformDependencies": [
+                    {
+                      "MaxTested": 0,
+                      "MinVersion": 0,
+                      "PlatformName": "Windows.Xbox"
+                    }
+                  ],
+                  "PackageFamilyName": null,
+                  "MainPackageFamilyNameForDlc": "SEGAofAmericaInc.L0cb6b3aea_s751p9cej88mt"
+                },
+                {
+                  "ContentId": "2ce3a07a-269d-4b1f-9533-5540f262c16d",
+                  "PackageFormat": "XVC",
+                  "Architectures": [
+                    "x64"
+                  ],
+                  "PlatformDependencies": [
+                    {
+                      "MaxTested": 0,
+                      "MinVersion": 0,
+                      "PlatformName": "Windows.Xbox"
+                    }
+                  ],
+                  "PackageFamilyName": null,
+                  "MainPackageFamilyNameForDlc": "SEGAofAmericaInc.L0cb6b3aea_s751p9cej88mt"
+                },
+                {
+                  "ContentId": "78e3093d-0a1b-4503-8ebd-996b42d3fae5",
+                  "PackageFormat": "MSIXVC",
+                  "Architectures": [
+                    "x64"
+                  ],
+                  "PlatformDependencies": [
+                    {
+                      "MaxTested": 2814750970478592,
+                      "MinVersion": 2814750970478592,
+                      "PlatformName": "Windows.Desktop"
+                    }
+                  ],
+                  "PackageFamilyName": "SEGAofAmericaInc.Persona4GoldenYasogamiHighCostume_s751p9cej88mt",
+                  "MainPackageFamilyNameForDlc": "SEGAofAmericaInc.L0cb6b3aea_s751p9cej88mt"
+                }
+              ]
+            }
+          }
+        }
+      ]
+    },
+    {
+      "ProductId": "9PPSRZPSCCQP",
+      "ProductType": "Durable",
+      "LocalizedProperties": [
+        {
+          "Language": "zh-hant",
+          "ProductTitle": "女神異聞錄３ Reload 女神異聞錄５ 皇家版 怪盜團服裝套組"
+        }
+      ],
+      "DisplaySkuAvailabilities": [
+        {
+          "Sku": {
+            "Properties": {
+              "IsTrial": false,
+              "Packages": [
+                {
+                  "ContentId": "ea573bdd-9619-4266-bde1-98d8bd32eb9c",
+                  "PackageFormat": "XVC",
+                  "Architectures": [
+                    "x64"
+                  ],
+                  "PlatformDependencies": [
+                    {
+                      "MaxTested": 0,
+                      "MinVersion": 0,
+                      "PlatformName": "Windows.Xbox"
+                    }
+                  ],
+                  "PackageFamilyName": null,
+                  "MainPackageFamilyNameForDlc": "SEGAofAmericaInc.L0cb6b3aea_s751p9cej88mt"
+                },
+                {
+                  "ContentId": "ea573bdd-9619-4266-bde1-98d8bd32eb9c",
+                  "PackageFormat": "XVC",
+                  "Architectures": [
+                    "x64"
+                  ],
+                  "PlatformDependencies": [
+                    {
+                      "MaxTested": 0,
+                      "MinVersion": 0,
+                      "PlatformName": "Windows.Xbox"
+                    }
+                  ],
+                  "PackageFamilyName": null,
+                  "MainPackageFamilyNameForDlc": "SEGAofAmericaInc.L0cb6b3aea_s751p9cej88mt"
+                },
+                {
+                  "ContentId": "8cf2d8bc-36c8-4685-8f73-071d9a5e56c1",
+                  "PackageFormat": "MSIXVC",
+                  "Architectures": [
+                    "x64"
+                  ],
+                  "PlatformDependencies": [
+                    {
+                      "MaxTested": 2814750970478592,
+                      "MinVersion": 2814750970478592,
+                      "PlatformName": "Windows.Desktop"
+                    }
+                  ],
+                  "PackageFamilyName": "SEGAofAmericaInc.Persona5RoyalPhantomThiefCostumeS_s751p9cej88mt",
+                  "MainPackageFamilyNameForDlc": "SEGAofAmericaInc.L0cb6b3aea_s751p9cej88mt"
+                }
+              ]
+            }
+          }
+        },
+        {
+          "Sku": {
+            "Properties": {
+              "IsTrial": false,
+              "Packages": [
+                {
+                  "ContentId": "ea573bdd-9619-4266-bde1-98d8bd32eb9c",
+                  "PackageFormat": "XVC",
+                  "Architectures": [
+                    "x64"
+                  ],
+                  "PlatformDependencies": [
+                    {
+                      "MaxTested": 0,
+                      "MinVersion": 0,
+                      "PlatformName": "Windows.Xbox"
+                    }
+                  ],
+                  "PackageFamilyName": null,
+                  "MainPackageFamilyNameForDlc": "SEGAofAmericaInc.L0cb6b3aea_s751p9cej88mt"
+                },
+                {
+                  "ContentId": "ea573bdd-9619-4266-bde1-98d8bd32eb9c",
+                  "PackageFormat": "XVC",
+                  "Architectures": [
+                    "x64"
+                  ],
+                  "PlatformDependencies": [
+                    {
+                      "MaxTested": 0,
+                      "MinVersion": 0,
+                      "PlatformName": "Windows.Xbox"
+                    }
+                  ],
+                  "PackageFamilyName": null,
+                  "MainPackageFamilyNameForDlc": "SEGAofAmericaInc.L0cb6b3aea_s751p9cej88mt"
+                },
+                {
+                  "ContentId": "8cf2d8bc-36c8-4685-8f73-071d9a5e56c1",
+                  "PackageFormat": "MSIXVC",
+                  "Architectures": [
+                    "x64"
+                  ],
+                  "PlatformDependencies": [
+                    {
+                      "MaxTested": 2814750970478592,
+                      "MinVersion": 2814750970478592,
+                      "PlatformName": "Windows.Desktop"
+                    }
+                  ],
+                  "PackageFamilyName": "SEGAofAmericaInc.Persona5RoyalPhantomThiefCostumeS_s751p9cej88mt",
+                  "MainPackageFamilyNameForDlc": "SEGAofAmericaInc.L0cb6b3aea_s751p9cej88mt"
+                }
+              ]
+            }
+          }
+        }
+      ]
+    }
+  ]
+}

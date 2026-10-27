@@ -68,7 +68,7 @@ Flatpak version available through Discover. Other browsers are not supported.
 - Open a game for its description, categories, screenshot gallery and available Xbox achievements, time played and last activity. Xbox data depends on the account and game.
 - **Store** lets you browse and install supported PC games.
 - New game installations show the estimated download size and free space on the destination drive. The downloader checks exact space requirements.
-- **Manage content** installs licensed add-ons and campaign packages.
+- **Manage content** supports selecting add-ons for batch installation, repair and removal. Base game installation can also queue selected licensed DLC after the game is registered.
 - **Install Queue** downloads games one at a time and lets you add more while downloading or playing another game. Pause and resume are supported, including manual resume after restarting the launcher.
 - Cancelling a new installation can keep or delete its partial files. Existing games, updates and DLC keep their files.
 - Right-click an installed game for settings, VC++ prerequisites, shortcuts or removal.

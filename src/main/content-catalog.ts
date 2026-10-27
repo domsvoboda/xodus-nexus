@@ -36,7 +36,7 @@ export class ContentCatalog {
   private cacheBytes = 0;
   constructor(private fetcher: typeof fetch = fetch) {}
 
-  async discover(base: { storeId: string; name: string; related: string[] }, access: Record<string, LibraryAccess>, market: string, offerId?: string, externalSignal?: AbortSignal): Promise<{ Products: Product[]; related: string[]; verify: string[] }> {
+  async discover(base: { storeId: string; name?: string; related: string[] }, access: Record<string, LibraryAccess>, market: string, offerId?: string, externalSignal?: AbortSignal): Promise<{ Products: Product[]; related: string[]; verify: string[] }> {
     const ownedIds = Object.keys(access);
     if (!validId(base.storeId) || base.related.length > 256 || base.related.some(id => !validId(id))
       || ownedIds.length > 10_000 || ownedIds.some(id => !validId(id))) throw Error('Invalid content discovery scope.');
@@ -102,7 +102,7 @@ export class ContentCatalog {
     };
     await load([base.storeId, ...base.related, ...(validId(offerId) ? [offerId] : []), ...ownedIds]);
     const families = new Set(desktopContentPackages(products.get(base.storeId) ?? {}).map(pkg => pkg.PackageFamilyName)
-      .filter(family => typeof family === 'string' && family.startsWith(base.name + '_')));
+      .filter(family => typeof family === 'string' && (base.name ? family.startsWith(base.name + '_') : /^[A-Za-z0-9.-]+_[A-Za-z0-9]+$/.test(family))));
     const scoped = (product: Product) => ['Durable', 'GameAddOn'].includes(product.ProductType)
       && (base.related.includes(product.ProductId) || relationships(product, 'addOnParent').includes(base.storeId)
         || desktopContentPackages(product).some(pkg => families.has(pkg.MainPackageFamilyNameForDlc)));

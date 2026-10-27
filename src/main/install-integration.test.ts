@@ -409,7 +409,7 @@ it('routes a direct Durable through real managed-content admission and completio
     await vi.waitFor(()=>expect(h.downloads).toHaveLength(1));
     const task=snapshot().downloads.find((task:any)=>task.id===taskId);
     expect(task.kind).toBe('content');expect(task.gameId).toBe('sample');expect(task.destination.startsWith(gamePath)).toBe(false);
-    expect(h.downloads[0].args[1]).toBe(cid);expect((await ipc('download-cancel-options',taskId)).deleteFilesAllowed).toBe(false);
+    expect(h.downloads[0].args[1]).toBe(id); expect(h.downloads[0].args[h.downloads[0].args.indexOf('--selected-content-id') + 1]).toBe(cid);expect((await ipc('download-cancel-options',taskId)).deleteFilesAllowed).toBe(false);
     await fs.writeFile(path.join(task.destination,'MicrosoftGame.config'),`<Game><Identity Name="Example.Dlc" Version="1.0.0.0" Publisher="CN=Example"/><StoreId>${id}</StoreId><AllowedProducts><AllowedProduct>${base}</AllowedProduct></AllowedProducts><DesktopRegistration><MainPackageDependency Name="Example.Base"/></DesktopRegistration></Game>`);
     await fs.writeFile(path.join(task.destination,'appxmanifest.xml'),'<Package><Identity Name="Example.Dlc" Version="1.0.0.0" Publisher="CN=Example"/><Dependencies><MainPackageDependency Name="Example.Base"/></Dependencies></Package>');
     await fs.writeFile(path.join(task.destination,`layout_${cid}.xml`),'<Package><Chunk><FileGroup SourcePath="." Include="MicrosoftGame.config"/></Chunk></Package>');
@@ -501,6 +501,108 @@ it('shows safe specific licensing guidance on failed launch and preserves later 
     await new Promise(resolve => setTimeout(resolve, 10));
   }
   h.blockDisplay.mockClear(); h.releaseDisplay.mockClear();
+});
+
+
+it('passes the verified DLC Content ID through the real queue to streaming without treating it as a base game', async () => {
+  const productId = '9N17MLZ5JHGJ', contentId = '187ab8cb-a880-490f-8228-793e375deaa2';
+  const pkg = { productId, contentId, family: 'Example.Content_hash' };
+  const directory = path.join(h.root, 'managed-dlc'); await fs.mkdir(directory);
+  const planning = vi.spyOn(GameContent.prototype, 'plan').mockResolvedValue({
+    plan: { gameId: 'sample', checkedAt: new Date().toISOString(), items: [{ productId, title: 'Licensed DLC', status: 'available', access: 'owned', note: '' }] }, packages: [pkg],
+  });
+  const prepare = vi.spyOn(GameContent.prototype, 'prepare').mockResolvedValue(directory);
+  h.contentSupported = true;
+  try {
+    const id = await ipc('install-game-content', 'sample', productId);
+    await vi.waitFor(() => expect(h.downloads).toHaveLength(1));
+    expect(snapshot().downloads.find((task: any) => task.id === id)).toMatchObject({ kind: 'content', selectedContentId: contentId, selectionMarket: 'US' });
+    const args = h.downloads[0].args;
+    expect(args[1]).toBe(productId);
+    expect(args[args.indexOf('--selected-content-id') + 1]).toBe(contentId);
+    expect(prepare).toHaveBeenCalledWith(expect.objectContaining({ id: 'sample' }), pkg, 'US');
+    h.downloads[0].finish(1);
+    await vi.waitFor(() => expect(snapshot().downloads.find((task: any) => task.id === id).status).toBe('failed'));
+    expect(snapshot().games.some((game: any) => game.storeId === productId)).toBe(false);
+  } finally { planning.mockRestore(); prepare.mockRestore(); h.contentSupported = false; h.downloads.splice(0); }
+});
+
+
+it('queues selected DLC sequentially and validates a whole removal selection before deleting anything', async () => {
+  const ids = ['9BBBBBBBBBBB', '9CCCCCCCCCCC'];
+  const packages = ids.map((productId, index) => ({ productId, contentId: `${index + 1}1111111-1111-4111-8111-111111111111`, family: 'Example.Content_hash' }));
+  const plan = { gameId: 'sample', checkedAt: '', items: ids.map(productId => ({ productId, title: 'DLC ' + productId, access: 'owned' as const, status: 'available' as const, note: '' })) };
+  const planning = vi.spyOn(GameContent.prototype, 'plan').mockResolvedValue({ plan, packages });
+  const prepare = vi.spyOn(GameContent.prototype, 'prepare').mockImplementation(async (_game, pkg) => { const directory = path.join(h.root, 'batch-' + pkg.productId); await fs.mkdir(directory, { recursive: true }); return directory; });
+  const remove = vi.spyOn(GameContent.prototype, 'remove').mockResolvedValue();
+  h.contentSupported = true;
+  try {
+    await ipc('manage-game-content', 'sample', ids, 'install');
+    await vi.waitFor(() => expect(h.downloads).toHaveLength(1));
+    expect(h.downloads[0].args[1]).toBe(ids[0]);
+    h.downloads[0].finish(1);
+    await vi.waitFor(() => expect(h.downloads).toHaveLength(2));
+    expect(h.downloads[1].args[1]).toBe(ids[1]); h.downloads[1].finish(1);
+    await vi.waitFor(() => expect(snapshot().downloads.filter((task: any) => ids.includes(task.productId)).every((task: any) => task.status === 'failed')).toBe(true));
+    planning.mockResolvedValue({ plan: { ...plan, items: plan.items.map(item => ({ ...item, status: 'installed' as const })) }, packages });
+    await expect(ipc('manage-game-content', 'sample', [ids[0], '9XXXXXXXXXXX'], 'remove')).rejects.toThrow('No supported content');
+    expect(remove).not.toHaveBeenCalled();
+    await ipc('manage-game-content', 'sample', ids, 'remove'); expect(remove).toHaveBeenCalledTimes(2);
+    await expect(ipc('manage-game-content', 'sample', [ids[0], ids[0]], 'repair')).rejects.toThrow('Invalid content');
+  } finally { planning.mockRestore(); prepare.mockRestore(); remove.mockRestore(); h.contentSupported = false; h.downloads.splice(0); }
+});
+
+
+it('checks DLC licenses before the base download and queues them only after successful base registration', async () => {
+  const productId = '9DDDDDDDDDDD', baseId = '9VVVVVVVVVVV', contentId = '11111111-1111-4111-8111-111111111111';
+  const pkg = { productId, contentId: '22222222-2222-4222-8222-222222222222', family: 'Example.Content_hash' };
+  const result = { plan: { gameId: baseId, checkedAt: '', items: [{ productId, title: 'Selected DLC', access: 'owned' as const, status: 'available' as const, note: '' }] }, packages: [pkg] };
+  const preflight = vi.spyOn(GameContent.prototype, 'preflight').mockResolvedValue(result);
+  const planning = vi.spyOn(GameContent.prototype, 'plan').mockResolvedValue(result);
+  const directory = path.join(h.root, 'auto-content'); await fs.mkdir(directory);
+  const prepare = vi.spyOn(GameContent.prototype, 'prepare').mockResolvedValue(directory);
+  h.planOverrides.set(baseId, { schema: 1, rootProductId: baseId, market: 'US', status: 'ready', choices: [{ productId: baseId, contentId, title: 'Base', platform: 'Windows.Desktop', packageFormat: 'MSIXVC', kind: 'Game', supported: true }] });
+  h.contentSupported = true;
+  const base = path.join(h.root, 'auto-base'); await fs.mkdir(base);
+  await fs.writeFile(path.join(base, 'MicrosoftGame.config'), `<Game><ShellVisuals DefaultDisplayName="Base"/><ExecutableList><Executable Name="Game.exe"/></ExecutableList><StoreId>${baseId}</StoreId></Game>`); await fs.writeFile(path.join(base, 'Game.exe'), 'fixture');
+  try {
+    const id = await ipc('start-install', { productId: baseId, title: 'Base', destination: base, selectedContentId: contentId, selectionMarket: 'US', contentProductIds: [productId] });
+    expect(preflight).toHaveBeenCalled();
+    await vi.waitFor(() => expect(h.downloads).toHaveLength(1));
+    expect(snapshot().downloads.find((task: any) => task.id === id).contentProductIds).toEqual([productId]);
+    expect(prepare).not.toHaveBeenCalled();
+    h.downloads[0].progress(false, 'complete'); h.downloads[0].finish(0);
+    await vi.waitFor(() => expect(h.downloads).toHaveLength(2));
+    expect(h.downloads[1].args[1]).toBe(productId); expect(prepare).toHaveBeenCalled();
+    expect(snapshot().games.some((game: any) => game.storeId === baseId)).toBe(true);
+    h.downloads[1].finish(1);
+    await vi.waitFor(() => expect(snapshot().downloads.find((task: any) => task.productId === productId).status).toBe('failed'));
+  } finally { preflight.mockRestore(); planning.mockRestore(); prepare.mockRestore(); h.planOverrides.set(baseId, {} as any); h.contentSupported = false; h.downloads.splice(0); h.notifications.splice(0); }
+});
+
+
+it('keeps repair and removal available for installed DLC that still needs backend license verification', async () => {
+  const productId = '9WWWWWWWWWWW', pkg = { productId, contentId: '55555555-5555-4555-8555-555555555555', family: 'Example.Verify_hash' };
+  const item = { productId, title: 'Installed source-offer DLC', status: 'verify' as const, installedFiles: true, note: 'License must be verified.' };
+  const plan = { gameId: 'sample', checkedAt: '', items: [item] };
+  const planning = vi.spyOn(GameContent.prototype, 'plan').mockResolvedValue({ plan, packages: [pkg] });
+  const directory = path.join(h.root, 'verify-repair'); await fs.mkdir(directory);
+  const prepare = vi.spyOn(GameContent.prototype, 'prepare').mockResolvedValue(directory);
+  const remove = vi.spyOn(GameContent.prototype, 'remove').mockResolvedValue(); h.contentSupported = true;
+  try {
+    await expect(ipc('manage-game-content', 'sample', [productId], 'install')).rejects.toThrow('selected content action');
+    expect(prepare).not.toHaveBeenCalled();
+    await ipc('manage-game-content', 'sample', [productId], 'repair');
+    await vi.waitFor(() => expect(h.downloads).toHaveLength(1));
+    expect(h.downloads[0].args[1]).toBe(productId);
+    expect(h.downloads[0].args).toContain('--selected-content-id');
+    h.downloads[0].finish(1);
+    await vi.waitFor(() => expect(snapshot().downloads.find((task: any) => task.productId === productId).status).toBe('failed'));
+    await ipc('manage-game-content', 'sample', [productId], 'remove'); expect(remove).toHaveBeenCalledOnce();
+    planning.mockResolvedValue({ plan: { ...plan, items: [{ ...item, installedFiles: undefined }] }, packages: [pkg] });
+    await expect(ipc('manage-game-content', 'sample', [productId], 'repair')).rejects.toThrow('selected content action');
+    await expect(ipc('manage-game-content', 'sample', [productId], 'remove')).rejects.toThrow('No supported content');
+  } finally { planning.mockRestore(); prepare.mockRestore(); remove.mockRestore(); h.contentSupported = false; h.downloads.splice(0); }
 });
 
 it('runs real queue IPC, pause/cancel/failure/restart and simultaneous play/download safely', async () => {

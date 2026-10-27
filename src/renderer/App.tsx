@@ -1,3 +1,5 @@
+import { ContentList, contentSelection } from './ContentSelection';
+export { ContentList } from './ContentSelection';
 import { useEffect, useLayoutEffect, useMemo, useRef, useState, type FormEvent } from 'react';
 import {
   ArrowDownToLine, Check, ChevronRight, CircleAlert, CircleUserRound,
@@ -519,48 +521,49 @@ function AccountGamesForUser(props: AccountGamesProps) {
   return <AccountGames key={`${data.auth.username}:${data.auth.stored}:${data.auth.running}:${data.settings.market}:${data.backend.binaryPath}`} {...props} />;
 }
 
-export function ContentList({ plan, disabled, pending, install }: { plan: GameContentPlan; disabled: boolean; pending?: string; install: (id: string) => void }) {
-  return <div className="content-list">{plan.items.length ? plan.items.map(item => <article key={item.productId}>
-    <div><strong title={item.title}>{item.title}</strong><small>{item.access === 'owned' ? ui("ui.owned_17b760c") : item.access === 'gamepass' ? ui("ui.game_pass_5c83b40") : item.access === 'other' ? ui("ui.other_access_542b2ae") : ui("ui.license_not_verified_b4ac386")} · {item.status === 'installed' ? ui("ui.installed_f8b32f4") : item.status === 'verify' ? ui("ui.license_check_required_cb65e96") : item.status === 'available' ? ui("ui.not_installed_d177cdc") : item.status === 'license-only' ? ui("ui.no_download_required_56d8478") : item.status === 'bundle' ? ui("ui.content_bundle_ccfe4f2") : item.status === 'unsupported' ? ui("ui.unsupported_package_d72ac5f") : ui("ui.unavailable_ca18449")}</small>
-      {item.downloadBytes ? <small>{ui("ui.download_7502fd3")}{' '}{(item.downloadBytes / 1024 ** 2).toFixed(1)}{' '}{ui("ui.mib_dea6cb8")}</small> : null}<small>{uiText(item.note)}</small></div>
-    {['license-only', 'bundle'].includes(item.status) ? null : <button className="secondary" disabled={disabled || Boolean(pending) || (!item.access && item.status !== 'verify') || !['available', 'installed', 'verify'].includes(item.status)} onClick={() => install(item.productId)}><Download />{pending === item.productId ? ui("ui.preparing_5d1fa38") : item.status === 'verify' ? ui("ui.verify_and_install_27d773b") : item.status === 'installed' ? ui("ui.repair_1196b6c") : ui("ui.install_569ca49")}</button>}
-  </article>) : <p>{ui("ui.no_related_add_ons_were_found_for_this_game_37fb940")}</p>}</div>;
-}
 
-function GameContentDialog({ game, data, close, toast }: { game: Game; data: AppSnapshot; close: () => void; toast: (value: Toast) => void }) {
+
+export function GameContentDialog({ game, data, close, toast }: { game: Game; data: AppSnapshot; close: () => void; toast: (value: Toast) => void }) {
   const confirm = useConfirmation();
   const [plan, setPlan] = useState<GameContentPlan>();
   const [error, setError] = useState<string>();
   const [loading, setLoading] = useState(true);
   const [pending, setPending] = useState<string>();
+  const [selected, setSelected] = useState<string[]>([]);
   const [revision, setRevision] = useState(0);
   const queue = data.downloads.filter(task => task.kind === 'content' && task.gameId === game.id);
   const queueState = queue.map(task => task.id + ':' + task.status).join(',');
   const busy = data.downloads.some(task => ['running', 'paused', 'queued'].includes(task.status)) || Boolean(data.gameOperation && ['preparing', 'running', 'stopping'].includes(data.gameOperation.status));
   useEffect(() => {
     let cancelled = false;
-    setLoading(true); setError(undefined); setPlan(undefined);
+    setLoading(true); setError(undefined); setPlan(undefined); setSelected([]);
     window.launcher.getGameContent(game.id).then(value => { if (!cancelled) setPlan(value); })
       .catch(error => { if (!cancelled) setError(errorMessage(error)); })
       .finally(() => { if (!cancelled) setLoading(false); });
     return () => { cancelled = true; };
   }, [game.id, data.auth.username, data.auth.stored, data.auth.running, data.backend.binaryPath, data.settings.market, revision, queueState]);
-  async function install(id: string) {
-    const item = plan?.items.find(item => item.productId === id);
-    if (!item || !await confirm({ title: `${item.status === 'installed' ? ui("ui.repair_1196b6c") : ui("ui.install_569ca49")} ${item.title}?`, message: ui("ui.this_downloads_licensed_content_into_a_separate_393e175"), confirmLabel: item.status === 'installed' ? ui("ui.repair_1196b6c") : ui("ui.install_569ca49") })) return;
-    setPending(id); setError(undefined);
-    try { await window.launcher.installGameContent(game.id, id); toast({ kind: 'success', message: ui("ui.content_added_to_install_queue_fc638a9") }); }
+  async function manage(action: 'install' | 'repair' | 'remove') {
+    const ids = contentSelection(plan, selected, action);
+    const label = action === 'remove' ? ui('dlc.remove_label') : action === 'repair' ? ui('ui.repair_1196b6c') : ui('ui.install_569ca49');
+    const title = action === 'remove' ? ui('dlc.confirm_remove') : action === 'repair' ? ui('dlc.confirm_repair') : ui('dlc.confirm_install');
+    const message = action === 'remove' ? ui('dlc.remove_message') : ui('dlc.queue_message');
+    if (!ids.length || !await confirm({ title, message, confirmLabel: label })) return;
+    setPending(action); setError(undefined);
+    try { await window.launcher.manageGameContent(game.id, ids, action); toast({ kind: 'success', message: action === 'remove' ? ui('dlc.removed') : ui('dlc.queued') }); setRevision(value => value + 1); }
     catch (error) { setError(errorMessage(error)); }
     finally { setPending(undefined); }
   }
-  return <div className="dialog-backdrop" onMouseDown={event => { if (event.target === event.currentTarget && !pending) close(); }}><section className="game-dialog content-dialog" role="dialog" aria-modal="true" aria-label={ui("ui.content_for_73287b5", { game: game.title })}>
-    <h2>{ui("ui.manage_content_459a3de")}</h2><p>{game.title}</p><p>{ui("ui.only_verified_licensed_pc_content_can_be_install_dfb3a32")}</p>
-    {loading ? <p role="status"><LoaderCircle className="spin" />{ui("ui.checking_account_licenses_and_packages_1ace530")}</p> : null}
+  return <div className="dialog-backdrop" onMouseDown={event => { if (event.target === event.currentTarget && !pending) close(); }}><section className="game-dialog content-dialog" role="dialog" aria-modal="true" aria-label={ui('ui.content_for_73287b5', { game: game.title })}>
+    <h2>{ui('ui.manage_content_459a3de')}</h2><p>{game.title}</p><p>{ui('ui.only_verified_licensed_pc_content_can_be_install_dfb3a32')}</p>
+    {loading ? <p role="status"><LoaderCircle className="spin" />{ui('ui.checking_account_licenses_and_packages_1ace530')}</p> : null}
     {error ? <p role="alert" className="error-text">{uiText(error)}</p> : null}
-    {plan?.runtimeSupported === false ? <p className="error-text">{ui("ui.update_the_nexus_runtime_in_settings_before_inst_ace6eca")}</p> : null}
-    {plan && !loading ? <ContentList plan={plan} disabled={busy || !data.backend.capabilities.streaming || plan.runtimeSupported === false} pending={pending} install={id => { void install(id); }} /> : null}
-    {queue.some(task => ['running', 'paused', 'queued'].includes(task.status)) ? <p>{ui("ui.content_download_is_in_install_queue_pause_resum_69c2b12")}</p> : null}
-    <div className="dialog-actions"><button className="secondary" disabled={loading || Boolean(pending)} onClick={() => setRevision(value => value + 1)}><RefreshCw />{ui("ui.refresh_0e91610")}</button><button className="secondary" disabled={Boolean(pending)} data-gamepad-cancel onClick={close}>{ui("ui.close_7d9eb7a")}</button></div>
+    {plan?.runtimeSupported === false ? <p className="error-text">{ui('ui.update_the_nexus_runtime_in_settings_before_inst_ace6eca')}</p> : null}
+    {plan && !loading ? <ContentList plan={plan} disabled={busy || Boolean(pending)} selected={selected} change={setSelected} /> : null}
+    {queue.some(task => ['running', 'paused', 'queued'].includes(task.status)) ? <p>{ui('ui.content_download_is_in_install_queue_pause_resum_69c2b12')}</p> : null}
+    <div className="dialog-actions"><button className="secondary" disabled={loading || Boolean(pending)} onClick={() => setRevision(value => value + 1)}><RefreshCw />{ui('ui.refresh_0e91610')}</button>
+      {plan?.items.some(item => item.access && item.status === 'available' || item.status === 'verify' && !item.installedFiles) ? <button className="primary" disabled={busy || loading || Boolean(pending) || plan.runtimeSupported === false || !data.backend.capabilities.streaming || !contentSelection(plan, selected, 'install').length} onClick={() => void manage('install')}><Download />{ui('ui.install_569ca49')}</button> : null}
+      {plan?.items.some(item => item.status === 'installed' || item.installedFiles) ? <><button className="secondary" disabled={busy || loading || Boolean(pending) || plan.runtimeSupported === false || !data.backend.capabilities.streaming || !contentSelection(plan, selected, 'repair').length} onClick={() => void manage('repair')}><RefreshCw />{ui('ui.repair_1196b6c')}</button><button className="danger" disabled={busy || loading || Boolean(pending) || !contentSelection(plan, selected, 'remove').length} onClick={() => void manage('remove')}><Trash2 />{ui('dlc.remove_label')}</button></> : null}
+      <button className="secondary" disabled={Boolean(pending)} data-gamepad-cancel onClick={close}>{ui('ui.close_7d9eb7a')}</button></div>
   </section></div>;
 }
 

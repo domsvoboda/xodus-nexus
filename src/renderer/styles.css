@@ -653,3 +653,12 @@ button.primary, button.secondary { border-radius: 5px; min-height: 40px; font-si
 .keyring-compact .keyring-problem { margin: 10px 0 0; font-size: 12px; line-height: 1.5; }
 .keyring-help { margin-top: 8px; font-size: 11px; color: var(--muted); }
 .keyring-help > summary { cursor: pointer; width: fit-content; }
+
+.content-list .content-choice, .content-list .content-select-all { display: flex; align-items: flex-start; gap: 12px; width: 100%; cursor: pointer; }
+.content-choice input, .content-select-all input { width: 20px; height: 20px; flex-shrink: 0; accent-color: #78bf43; margin-top: 2px; }
+.content-choice > span { min-width: 0; }
+.content-select-all { align-items: center; padding: 8px 14px; }
+.content-select-all span { margin-inline-start: auto; color: #b6bec8; }
+.content-dialog .dialog-actions { flex-wrap: wrap; }
+.content-dialog .dialog-actions .danger { display: inline-flex; align-items: center; gap: 8px; padding: 11px 18px; border: 1px solid #9c5555; background: #5c2c2c; color: #fff; border-radius: 6px; }
+.content-dialog .dialog-actions .danger svg { width: 18px; height: 18px; }
