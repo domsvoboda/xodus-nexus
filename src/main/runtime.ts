@@ -106,6 +106,14 @@ export class RuntimeManager {
       this.commandOk('sha512sum', ['--version']),
     ]);
     this.status.prerequisites = { gh, authenticated, tar, sha512sum };
+    const nixWine = process.env.XODUS_NEXUS_WINE;
+    if (nixWine && await this.validateWine(nixWine)) {
+      Object.assign(this.status, {
+        installed: true, name: 'Nix-managed Nexus runtime', winePath: nixWine,
+        commit: 'nix-store', error: undefined,
+      });
+      return this.current;
+    }
     const pointer = await this.readPointer();
     if (pointer && await this.validateWine(pointer.winePath)) {
       Object.assign(this.status, {
