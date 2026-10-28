@@ -119,6 +119,7 @@ describe('GameSession', () => {
     expect(spawned.env.XODUS_FORCE_OFFLINE).toBeUndefined();
     expect(spawned.env.XODUS_OFFLINE_IDENTITY).toBeUndefined();
     expect(spawned.env.NEXUS_INVITE_PORT).toBeUndefined();
+    expect(spawned.env.XODUS_NEXUS_LAUNCH_ID).toBe('game-g');
     expect(attached).toEqual([{ id: 'g', pid: 4242 }]);
     expect(active.operation.status).toBe('running');
     expect(session.current).toBe(active.operation);

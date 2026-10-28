@@ -53,6 +53,7 @@ import { DownloadProgress, PROGRESS_PREFIX } from './download-progress.js';
 import { DownloadCleanup } from './download-cleanup.js';
 import { GameSession, gameLocales, type ActiveGame } from './game-session.js';
 import { EphemeralServiceSessions } from './service-sessions.js';
+import { bundledCloseHelper, closeGracefully } from './graceful-close.js';
 import { InstallQueue, assertActivityCompatible, assertInstallDestination, canonicalInstallPath, installPathsOverlap } from './install-queue.js';
 import { GameDisplayBlocker } from './game-display.js';
 import { GameShortcuts, shortcutArguments, shortcutInstanceData, shortcutInstanceRequest, shortcutLauncherPath, type ShortcutDestination } from './game-shortcuts.js';
@@ -1751,10 +1752,24 @@ function registerIpc(): void {
     const controller = preparationControllers.get(gameOperation.id);
     if (!child && !controller) throw new Error('Xodus is still preparing; try stopping again in a moment.');
     if (child && gameOperation.kind === 'prerequisite') throw new Error('VC++ installation is running. Wait for it to finish; interrupting it could damage the Proton prefix.');
+    if (child && gameProcess && gameOperation.kind === 'launch' && gameOperation.status === 'stopping') {
+      // A second Stop while the game closes (and may still upload saves) ends it now.
+      gameOperation.phase = 'Forcing the game to stop…';
+      await gameProcess.forceStop();
+      emitSnapshot();
+      return;
+    }
     gameOperation.status = 'stopping';
     gameOperation.phase = child ? 'Stopping Xodus and Wine…' : 'Cancelling prerequisite download…';
     controller?.abort();
-    if (child && gameProcess) {
+    if (child && gameProcess && gameOperation.kind === 'launch') {
+      const operation = gameOperation;
+      operation.phase = 'Closing the game…';
+      // Like a user closing the window, so the runtime can upload saves before exiting; signals only if it does not.
+      void bundledCloseHelper().then(helper => closeGracefully(gameProcess, operation.id, {
+        helper, env: process.env, log: line => { operation.log.push(line); operation.log.splice(0, Math.max(0, operation.log.length - 250)); operation.phase = line; scheduleSnapshot(); },
+      })).catch((error) => console.error('Could not stop game:', error));
+    } else if (child && gameProcess) {
       const operationId = gameOperation.id;
       try { await gameProcess.stop(); }
       catch (error) { gameOperation.status = 'running'; emitSnapshot(); throw error; }

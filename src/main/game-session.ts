@@ -248,6 +248,8 @@ export class GameSession {
       delete environment.XODUS_OFFLINE_IDENTITY;
       delete environment.XODUS_FORCE_OFFLINE;
       delete environment.XODUS_ACCOUNT_HASH;
+      // Lets nexus-close-window find this launch's windows (and only these) to close them like a user would.
+      environment.XODUS_NEXUS_LAUNCH_ID = operationId;
       if (content.relatedProducts && await storeDiscoveryRuntime(wine)) {
         const related = await content.relatedProducts(game).catch(() => {
           addGameLog('Additional DLC discovery unavailable. Continuing with package-declared content.');
