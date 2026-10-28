@@ -1,0 +1,505 @@
+diff --git a/crates/msixvc/src/streaming.rs b/crates/msixvc/src/streaming.rs
+index b494841..30e5514 100644
+--- a/crates/msixvc/src/streaming.rs
++++ b/crates/msixvc/src/streaming.rs
+@@ -24,6 +24,27 @@ pub fn resume_digest(bytes: &[u8]) -> String {
+         .collect()
+ }
+ 
++/// Incremental checkpoint identity digest. Callers can serialize large layouts
++/// through a bounded buffer instead of materializing their entire JSON encoding.
++#[derive(Default)]
++pub struct ResumeDigest(sha2::Sha256);
++
++impl std::io::Write for ResumeDigest {
++    fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
++        use sha2::Digest;
++        self.0.update(bytes);
++        Ok(bytes.len())
++    }
++    fn flush(&mut self) -> std::io::Result<()> { Ok(()) }
++}
++
++impl ResumeDigest {
++    pub fn finish(self) -> String {
++        use sha2::Digest;
++        self.0.finalize().iter().map(|byte| format!("{byte:02x}")).collect()
++    }
++}
++
+ type ByteStream = Pin<Box<dyn Stream<Item = std::io::Result<Bytes>> + Send>>;
+ type PendingHttpOpen = Pin<Box<dyn Future<Output = std::io::Result<OpenedHttpStream>> + Send>>;
+ 
+diff --git a/crates/msixvc/src/streaming_hash_cache.rs b/crates/msixvc/src/streaming_hash_cache.rs
+new file mode 100644
+index 0000000..baf153f
+--- /dev/null
++++ b/crates/msixvc/src/streaming_hash_cache.rs
+@@ -0,0 +1,263 @@
++//! Bounded reads of the declared hash-tree section, independent of filesystem.
++use std::io::{self, ErrorKind, SeekFrom};
++use tokio::io::{AsyncRead, AsyncReadExt, AsyncSeek, AsyncSeekExt};
++
++const WINDOW: usize = 1024 * 1024;
++
++#[derive(Default)]
++pub(super) struct HashCache {
++    start: u64,
++    data: Vec<u8>,
++}
++
++#[cfg(test)]
++mod tests {
++    use super::*;
++    use std::{
++        io::Cursor,
++        pin::Pin,
++        task::{Context, Poll},
++    };
++    use tokio::io::ReadBuf;
++
++    struct Counting {
++        inner: Cursor<Vec<u8>>,
++        reads: usize,
++        seeks: usize,
++        bytes: usize,
++    }
++    impl AsyncRead for Counting {
++        fn poll_read(
++            mut self: Pin<&mut Self>,
++            cx: &mut Context<'_>,
++            buf: &mut ReadBuf<'_>,
++        ) -> Poll<io::Result<()>> {
++            self.reads += 1;
++            let before = buf.filled().len();
++            let result = Pin::new(&mut self.inner).poll_read(cx, buf);
++            self.bytes += buf.filled().len() - before;
++            result
++        }
++    }
++    impl AsyncSeek for Counting {
++        fn start_seek(mut self: Pin<&mut Self>, pos: SeekFrom) -> io::Result<()> {
++            self.seeks += 1;
++            Pin::new(&mut self.inner).start_seek(pos)
++        }
++        fn poll_complete(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<io::Result<u64>> {
++            Pin::new(&mut self.inner).poll_complete(cx)
++        }
++    }
++    fn fixture(length: usize) -> Counting {
++        Counting {
++            inner: Cursor::new((0..length).map(|n| (n % 251) as u8).collect()),
++            reads: 0,
++            seeks: 0,
++            bytes: 0,
++        }
++    }
++
++    #[tokio::test]
++    async fn streaming_hash_cache_full_xvd_parser_preserves_every_hash_and_encryption_unit() {
++        use crate::{
++            layout::{PAGE_SIZE, Pages},
++            math::calculate_hash_block_num_and_run_for_block_num,
++            models::xvd::{XvdHashEntry, XvdHeader},
++            xvd::XvdFile,
++        };
++        use msixvc_common::parse::{BinaryParse, BinaryTryParse};
++        let count = 50000u32;
++        let mut header = XvdHeader::buffer();
++        header[512..520].copy_from_slice(b"msft-xvd");
++        header[528..536].copy_from_slice(&116444736000000000u64.to_le_bytes());
++        header[536..544].copy_from_slice(&((count as u64 + 20) * PAGE_SIZE as u64).to_le_bytes());
++        header[656..660].copy_from_slice(&4096u32.to_le_bytes());
++        let parsed_header = XvdHeader::try_from_array(&header).unwrap();
++        let layout = parsed_header.layout();
++        let mut data = vec![0; layout.xvc_info.start.to_bytes().0 as usize + 4096];
++        data[..header.len()].copy_from_slice(&header);
++        let info = layout.xvc_info.start.to_bytes().0 as usize;
++        data[info + 3344..info + 3348].copy_from_slice(&1u32.to_le_bytes());
++        data[info + 3348..info + 3352].copy_from_slice(&1u32.to_le_bytes());
++        data[info + 3376..info + 3384].copy_from_slice(&116444736000000000u64.to_le_bytes());
++        let region = info + 3496;
++        let start = Pages(layout.drive_data.start.0 + 7);
++        data[region + 80..region + 88].copy_from_slice(&start.to_bytes().0.to_le_bytes());
++        data[region + 88..region + 96].copy_from_slice(&Pages(count).to_bytes().0.to_le_bytes());
++        for page in 0..count {
++            let (block, entry, _) = calculate_hash_block_num_and_run_for_block_num(
++                0,
++                layout.hash_tree_layout.top_level() as u64 + 1,
++                parsed_header.number_of_hashed_pages(),
++                start.0 - layout.user_data.start.0 + page,
++                0,
++                false,
++                false,
++            );
++            let offset = (layout.hash_tree.start.to_bytes().0 + Pages(block).to_bytes().0) as usize
++                + entry as usize * XvdHashEntry::SIZE;
++            data[offset..offset + 20].fill((page % 251) as u8);
++            data[offset + 20..offset + 24].copy_from_slice(&(page * 7).to_le_bytes());
++        }
++        let mut reader = Counting {
++            inner: Cursor::new(data),
++            reads: 0,
++            seeks: 0,
++            bytes: 0,
++        };
++        let parsed = XvdFile::parse(&mut reader).await.unwrap();
++        assert_eq!(parsed.encrypted_section_infos.len(), 1);
++        let section = &parsed.encrypted_section_infos[0];
++        assert_eq!(section.data_hashs.len(), count as usize);
++        for page in 0..count {
++            assert_eq!(section.data_hashs[page as usize], [(page % 251) as u8; 20]);
++            assert_eq!(
++                section.data_units.as_ref().unwrap()[page as usize],
++                page * 7
++            );
++        }
++        assert!(
++            reader.reads < 10,
++            "full parser should batch hash-tree reads, got {}",
++            reader.reads
++        );
++    }
++
++    #[tokio::test]
++    async fn streaming_hash_cache_batches_strided_reads_and_preserves_backward_and_boundary_bytes()
++    {
++        let mut reader = fixture(3 * WINDOW + 17);
++        let mut cache = HashCache::default();
++        let end = reader.inner.get_ref().len() as u64;
++        for n in 0..500 {
++            let start = n * 4096;
++            let bytes = cache
++                .read(&mut reader, start as u64, 4080, end)
++                .await
++                .unwrap();
++            assert_eq!(
++                bytes,
++                (start..start + 4080)
++                    .map(|n| (n % 251) as u8)
++                    .collect::<Vec<_>>()
++            );
++        }
++        assert_eq!(
++            reader.reads, 2,
++            "one read per MiB rather than one per hash block"
++        );
++        assert_eq!(reader.seeks, 2);
++        for (start, length) in [(12, 31), (WINDOW - 12, 48), (3 * WINDOW, 17)] {
++            assert_eq!(
++                cache
++                    .read(&mut reader, start as u64, length, end)
++                    .await
++                    .unwrap(),
++                (start..start + length)
++                    .map(|n| (n % 251) as u8)
++                    .collect::<Vec<_>>()
++            );
++        }
++        assert!(cache.data.len() <= WINDOW);
++    }
++
++    #[tokio::test]
++    async fn streaming_hash_cache_never_reads_beyond_declared_section_or_accepts_truncated_data() {
++        let mut reader = fixture(100);
++        let mut cache = HashCache::default();
++        assert_eq!(cache.read(&mut reader, 10, 20, 37).await.unwrap().len(), 20);
++        assert_eq!(reader.bytes, 27);
++        assert!(cache.read(&mut reader, 38, 0, 37).await.is_err());
++        assert!(
++            cache
++                .read(&mut reader, u64::MAX, 2, u64::MAX)
++                .await
++                .is_err()
++        );
++        assert!(
++            cache
++                .read(&mut reader, 0, WINDOW + 1, 2 * WINDOW as u64)
++                .await
++                .is_err()
++        );
++        assert!(cache.read(&mut reader, 90, 20, 110).await.is_err());
++        assert!(cache.data.is_empty());
++        assert_eq!(
++            cache.read(&mut reader, 90, 10, 100).await.unwrap(),
++            (90..100).collect::<Vec<u8>>()
++        );
++    }
++
++    struct PartialThenPending(bool);
++    impl AsyncRead for PartialThenPending {
++        fn poll_read(
++            mut self: Pin<&mut Self>,
++            _: &mut Context<'_>,
++            buf: &mut ReadBuf<'_>,
++        ) -> Poll<io::Result<()>> {
++            if self.0 {
++                return Poll::Pending;
++            }
++            self.0 = true;
++            buf.put_slice(&[1; 11]);
++            Poll::Ready(Ok(()))
++        }
++    }
++    impl AsyncSeek for PartialThenPending {
++        fn start_seek(self: Pin<&mut Self>, _: SeekFrom) -> io::Result<()> {
++            Ok(())
++        }
++        fn poll_complete(self: Pin<&mut Self>, _: &mut Context<'_>) -> Poll<io::Result<u64>> {
++            Poll::Ready(Ok(0))
++        }
++    }
++    #[tokio::test]
++    async fn streaming_hash_cache_cancelled_fill_is_never_reused() {
++        let mut cache = HashCache::default();
++        assert!(
++            tokio::time::timeout(
++                std::time::Duration::from_millis(10),
++                cache.read(&mut PartialThenPending(false), 0, 20, 100)
++            )
++            .await
++            .is_err()
++        );
++        assert!(cache.data.is_empty());
++        assert_eq!(
++            cache.read(&mut fixture(100), 0, 20, 100).await.unwrap(),
++            (0..20).collect::<Vec<u8>>()
++        );
++    }
++}
++
++impl HashCache {
++    pub(super) async fn read<'a>(
++        &'a mut self,
++        reader: &mut (impl AsyncRead + AsyncSeek + Unpin),
++        offset: u64,
++        length: usize,
++        end: u64,
++    ) -> io::Result<&'a [u8]> {
++        let invalid = || {
++            io::Error::new(
++                ErrorKind::InvalidData,
++                "Hash run exceeds the metadata section.",
++            )
++        };
++        let requested_end = offset.checked_add(length as u64).ok_or_else(invalid)?;
++        if requested_end > end || length > WINDOW {
++            return Err(invalid());
++        }
++        if offset < self.start || requested_end > self.start + self.data.len() as u64 {
++            self.start = offset;
++            let mut data = std::mem::take(&mut self.data);
++            data.resize((end - offset).min(WINDOW as u64) as usize, 0);
++            reader.seek(SeekFrom::Start(offset)).await?;
++            // Do not leave an apparently valid cache after a failed or cancelled fill.
++            reader.read_exact(&mut data).await?;
++            self.data = data;
++        }
++        let start = (offset - self.start) as usize;
++        Ok(&self.data[start..start + length])
++    }
++}
+diff --git a/crates/msixvc/src/xvd.rs b/crates/msixvc/src/xvd.rs
+index 7addb37..f286e6e 100644
+--- a/crates/msixvc/src/xvd.rs
++++ b/crates/msixvc/src/xvd.rs
+@@ -19,7 +19,7 @@ use uuid::Uuid;
+ use zerocopy::IntoBytes;
+ 
+ use crate::crypt::{TweakGenerator, decrypt_page_xts};
+-use crate::layout::{Bytes, PAGE_SIZE, PAGES_PER_BLOCK, Pages};
++use crate::layout::{Bytes, PAGE_SIZE, Pages};
+ use crate::math::calculate_hash_block_num_and_run_for_block_num;
+ use crate::models::xvd::layout::XvdLayout;
+ use crate::models::xvd::{
+@@ -30,6 +30,9 @@ use crate::models::xvd::{
+ use crate::streaming_ntfs::collect_ntfs_stream_layouts;
+ use crate::streaming_http::{Policy, RangeReader, TransferError};
+ 
++#[path = "streaming_hash_cache.rs"]
++mod hash_cache;
++
+ #[cfg(test)]
+ #[path = "package_metadata_tests.rs"]
+ mod package_metadata_tests;
+@@ -455,7 +458,10 @@ impl XvdFile {
+         }
+ 
+         let mut enc_sections: Vec<EncryptedSectionInfo> = vec![];
+-        let mut reader = BufReader::with_capacity(PAGES_PER_BLOCK * XvdHashEntry::SIZE, file);
++        let mut reader = file;
++        let mut hash_cache = hash_cache::HashCache::default();
++        let hash_tree_end = layout.hash_tree.start.to_bytes().0.checked_add(layout.hash_tree.len.0)
++            .ok_or_else(|| io::Error::new(ErrorKind::InvalidData, "Hash-tree bounds overflow."))?;
+         for h in region_headers {
+             let key_id = h.key_id;
+             let num_pages = h.length.0;
+@@ -489,12 +495,10 @@ impl XvdFile {
+                 let read_offset = layout.hash_tree.start.to_bytes()
+                     + Pages(hash_block).to_bytes()
+                     + Bytes(entry_start as u64 * XvdHashEntry::SIZE as u64);
+-                reader.seek(SeekFrom::Start(read_offset.0)).await?;
+-
+-                let mut buf = XvdHashEntry::buffer();
+-                for _ in 0..run_length {
+-                    reader.read_exact(&mut buf).await?;
+-                    let hash = XvdHashEntry::from_array(&buf);
++                let bytes = hash_cache.read(&mut reader, read_offset.0,
++                    run_length as usize * XvdHashEntry::SIZE, hash_tree_end).await?;
++                for entry in bytes.chunks_exact(XvdHashEntry::SIZE) {
++                    let hash = XvdHashEntry::from_array(entry.try_into().unwrap());
+                     data_units.push(hash.unit);
+                     data_hashs.push(hash.block_hash);
+                 }
+diff --git a/crates/xodus-cli/src/commands/streaming.rs b/crates/xodus-cli/src/commands/streaming.rs
+index 0328e98..f2615cc 100644
+--- a/crates/xodus-cli/src/commands/streaming.rs
++++ b/crates/xodus-cli/src/commands/streaming.rs
+@@ -459,7 +459,11 @@ where
+         Ok(files) => files,
+         Err(error) => { eprintln!("Unable to inspect installed package files: {error}"); return ExitCode::FAILURE; }
+     };
+-    let installed_journal = match resume::Journal::open(out, &remote_xvd.resume_identity(), &rfiles) {
++    let identity = match resume::Journal::identity(&remote_xvd.resume_identity(), &rfiles) {
++        Ok(identity) => identity,
++        Err(error) => { failure::report(&error); return ExitCode::FAILURE; }
++    };
++    let installed_journal = match resume::Journal::open_with_identity(out, &identity) {
+         Ok(journal) => std::sync::Arc::new(std::sync::Mutex::new(journal)),
+         Err(error) => { eprintln!("Unable to prepare download checkpoints: {error}"); return ExitCode::FAILURE; }
+     };
+@@ -473,7 +477,7 @@ where
+         pending.retain(|(name,file)| !update::completed(&installed_journal.lock().unwrap(),out,name,file));
+     }
+     let journal = match &stage {
+-        Some(stage) => match resume::Journal::open(stage, &remote_xvd.resume_identity(), &rfiles) {
++        Some(stage) => match resume::Journal::open_with_identity(stage, &identity) {
+             Ok(journal) => std::sync::Arc::new(std::sync::Mutex::new(journal)),
+             Err(error) => { failure::report(&error); return ExitCode::FAILURE; }
+         },
+diff --git a/crates/xodus-cli/src/commands/streaming_resume.rs b/crates/xodus-cli/src/commands/streaming_resume.rs
+index 9643c27..86f9cba 100644
+--- a/crates/xodus-cli/src/commands/streaming_resume.rs
++++ b/crates/xodus-cli/src/commands/streaming_resume.rs
+@@ -14,6 +14,8 @@ pub(super) struct Journal {
+     entries: serde_json::Map<String, serde_json::Value>,
+ }
+ 
++pub(super) struct Identity(String);
++
+ /// Preserve completed ciphertext pages, trim only uncommitted data. Return the
+ /// logical offset to resume from, which can rewind an old truncated final page.
+ pub(super) async fn prepare_output(
+@@ -209,17 +211,35 @@ pub(super) fn target(root: &Path, name: &str) -> io::Result<PathBuf> {
+ }
+ 
+ impl Journal {
+-    pub(super) fn open(
+-        root: &Path,
++    pub(super) fn identity(
+         content: &str,
+         files: &HashMap<String, SegmentFile>,
+-    ) -> io::Result<Self> {
++    ) -> io::Result<Identity> {
+         let mut layout: Vec<_> = files
+             .iter()
+             .map(|(name, f)| (name, f.offset, f.length, f.keep_encrypted, &f.data_hashs))
+             .collect();
+         layout.sort_by(|a, b| a.0.cmp(b.0));
+-        let identity = resume_digest(&serde_json::to_vec(&(content, layout))?);
++        let mut digest = msixvc::streaming::ResumeDigest::default();
++        {
++            let mut writer = std::io::BufWriter::with_capacity(64 * 1024, &mut digest);
++            serde_json::to_writer(&mut writer, &(content, layout))?;
++            writer.flush()?;
++        }
++        Ok(Identity(digest.finish()))
++    }
++
++    #[cfg(test)]
++    pub(super) fn open(
++        root: &Path,
++        content: &str,
++        files: &HashMap<String, SegmentFile>,
++    ) -> io::Result<Self> {
++        Self::open_with_identity(root, &Self::identity(content, files)?)
++    }
++
++    pub(super) fn open_with_identity(root: &Path, identity: &Identity) -> io::Result<Self> {
++        let identity = identity.0.clone();
+         let path = target(root, ".nexus-streaming-v1.jsonl")?;
+         let mut entries = serde_json::Map::new();
+         if let Ok(file) = File::open(&path) {
+@@ -326,6 +346,71 @@ fn tail(path: &Path, offset: u64) -> io::Result<String> {
+ #[cfg(test)]
+ mod tests {
+     use super::*;
++    fn legacy_identity(content: &str, files: &HashMap<String, SegmentFile>) -> String {
++        let mut layout: Vec<_> = files.iter()
++            .map(|(name, f)| (name, f.offset, f.length, f.keep_encrypted, &f.data_hashs)).collect();
++        layout.sort_by(|a, b| a.0.cmp(b.0));
++        resume_digest(&serde_json::to_vec(&(content, layout)).unwrap())
++    }
++
++    #[test]
++    fn streaming_resume_streamed_identity_is_byte_compatible_and_binds_every_layout_field() {
++        let mut files = HashMap::from([
++            ("žluťoučký/🎮\\\"\n.bin".to_owned(), SegmentFile {
++                offset: u64::MAX - 100, length: 5000, keep_encrypted: true,
++                data_hashs: (0..256).map(|n| [n as u8; 20]).collect(),
++            }),
++            ("a".to_owned(), SegmentFile { offset: 0, length: 0, keep_encrypted: false, data_hashs: vec![] }),
++        ]);
++        let identity = Journal::identity("package\n\"", &files).unwrap().0;
++        assert_eq!(identity, legacy_identity("package\n\"", &files));
++        assert_eq!(Journal::identity("empty", &HashMap::new()).unwrap().0, legacy_identity("empty", &HashMap::new()));
++        assert_ne!(Journal::identity("another", &files).unwrap().0, identity);
++        for field in 0..4 {
++            let file = files.get_mut("a").unwrap();
++            *file = SegmentFile { offset: 0, length: 0, keep_encrypted: false, data_hashs: vec![] };
++            match field { 0 => file.offset = 1, 1 => file.length = 1,
++                2 => file.keep_encrypted = true, _ => file.data_hashs.push([7;20]) }
++            assert_ne!(Journal::identity("package\n\"", &files).unwrap().0, identity);
++        }
++    }
++
++    #[test]
++    fn streaming_resume_shared_identity_reopens_legacy_checkpoints_in_both_roots() {
++        let roots = [tempfile::tempdir().unwrap(), tempfile::tempdir().unwrap()];
++        let files = HashMap::from([("a.bin".to_owned(), SegmentFile {
++            offset: 4096, length: 8192, keep_encrypted: false, data_hashs: vec![[3;20];2],
++        })]);
++        let identity = Journal::identity("package", &files).unwrap();
++        for root in roots {
++            let path = root.path().join("a.bin");
++            fs::write(&path, vec![19;8192]).unwrap();
++            let record = serde_json::json!({"schema":1,"identity":legacy_identity("package",&files),
++                "file":"a.bin","checkpoint":{"offset":4096,"tailSha256":tail(&path,4096).unwrap()}});
++            fs::write(root.path().join(".nexus-streaming-v1.jsonl"), format!("{record}\n")).unwrap();
++            let journal = Journal::open_with_identity(root.path(), &identity).unwrap();
++            assert_eq!(journal.offset("a.bin",8192),4096);
++            let other = Journal::identity("changed", &files).unwrap();
++            assert_eq!(Journal::open_with_identity(root.path(), &other).unwrap().offset("a.bin",8192),0);
++        }
++    }
++
++    #[test]
++    #[ignore = "synthetic identity CPU benchmark, no account or installed data"]
++    fn streaming_resume_identity_benchmark() {
++        let files = HashMap::from([("fixture".to_owned(),SegmentFile {
++            offset: 4096, length: 1638400000, keep_encrypted: true,
++            data_hashs: (0..400000).map(|n| [n as u8;20]).collect(),
++        })]);
++        let start = std::time::Instant::now();
++        let before = legacy_identity("fixture", &files);
++        let old = start.elapsed().as_secs_f64();
++        let start = std::time::Instant::now();
++        let after = Journal::identity("fixture", &files).unwrap().0;
++        let new = start.elapsed().as_secs_f64();
++        assert_eq!(before,after);
++        eprintln!("IDENTITY_BENCH hashes=400000 legacy_seconds={old:.6} streamed_seconds={new:.6}");
++    }
+     #[test]
+     fn streaming_resume_reopens_checkpoint_and_rejects_changed_data_or_package() {
+         let root = tempfile::tempdir().unwrap();
+

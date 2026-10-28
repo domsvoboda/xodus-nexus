@@ -6,6 +6,7 @@ import { createHash } from 'node:crypto';
 import { BackendManager } from './backend.js';
 import { backendLock, backendRecipeSha256, backendPackageName, validateBackendManifest, validateBackendArchive } from './backend-package.js';
 import { discoverBackend } from './backend-releases.js';
+import { BACKEND_ARCH_SUFFIX, ELF_MACHINE, currentArch } from './arch.js';
 import { run } from './process.js';
 
 vi.mock('./process.js', async importOriginal => {
@@ -14,10 +15,13 @@ vi.mock('./process.js', async importOriginal => {
     if (cmd.endsWith('/xodus-cli')) {
       const marker = (await fs.readFile(cmd))[63];
       if (marker === 7) return {code:127,output:'/private/path/xodus-cli: error while loading shared libraries: libdbus-1.so.3: cannot open shared object file: No such file or directory\n'};
+      // 8: an earlier offline backend that cannot revoke stored licenses; 9: the current one.
+      if ([8, 9].includes(marker) && args[0] === 'run') return { code: 0, output: '--materialize-chain\n--license-cache <LICENSE_CACHE>\n--offline\n' };
+      if ([8, 9].includes(marker) && args[0] === 'offline-pc') return { code: 0, output: marker === 9 ? '--set <SET>\n--confirm\n--license-cache <LICENSE_CACHE>\n' : '--set <SET>\n--confirm\n' };
       if (args[0] === 'resolve-package') return { code:0,output: marker === 6 ? '--include-dlc\n' : '--json\n--market\n' };
-      return { code: 0, output: args[0] === 'streaming' ? '--selected-content-id\n' + ([3,5].includes(marker) ? '--progress-json\n--control-stdin\n' : '') + (marker === 3 ? '--download-limit-kib\n' : '') : args[0] === 'run' ? (marker === 2 ? '--unsupported' : '--materialize-chain') :
+      return { code: 0, output: args[0] === 'streaming' ? '--selected-content-id\n' + ([3,5].includes(marker) ? '--progress-json\n--control-stdin\n' : '') + (marker === 3 ? '--download-limit-kib\n' : '') + (marker === 8 ? 'Nexus capabilities: update-recovery-v1\n' : '') : args[0] === 'run' ? (marker === 2 ? '--unsupported' : '--materialize-chain') :
         (marker === 1 ? 'xodus-cli 0.1.0\n  login    Login\n  streaming    Streaming\n' :
-        'xodus-cli 0.1.0\n  account    Account\n  login    Login\n  logout    Logout\n  download    Download\n  streaming    Streaming\n  run    Run\n  resolve-package    Resolve packages\n' + (marker === 4 ? '' : '\nOptions:\n  --external-webview-stdio  External UI\n')) };
+        'xodus-cli 0.1.0\n  account    Account\n  login    Login\n  logout    Logout\n  download    Download\n  streaming    Streaming\n  run    Run\n  resolve-package    Resolve packages\n' + ([8, 9].includes(marker) ? '  offline-pc    Offline PC\n' : '') + (marker === 4 ? '' : '\nOptions:\n  --external-webview-stdio  External UI\n')) };
     }
     if (cmd.endsWith('/xodus-service')) throw new Error('Service must never be started by installer tests');
     if (['git', 'cargo', 'rustc', 'protoc'].includes(cmd)) return { code: 1, output: 'Build tool intentionally absent' };
@@ -28,9 +32,19 @@ vi.mock('./process.js', async importOriginal => {
 const sha = (data: Buffer, algorithm = 'sha256') => createHash(algorithm).update(data).digest('hex');
 const tag = `backend-v${backendLock.version}`;
 const url = (name: string) => `https://github.com/domsvoboda/xodus-nexus/releases/download/${tag}/${name}`;
-const elf = () => { const bytes = Buffer.alloc(64); bytes.set([0x7f, 0x45, 0x4c, 0x46, 2, 1]); bytes.writeUInt16LE(62, 18); return bytes; };
+const elf = () => { const bytes = Buffer.alloc(64); bytes.set([0x7f, 0x45, 0x4c, 0x46, 2, 1]); bytes.writeUInt16LE(ELF_MACHINE[currentArch()], 18); return bytes; };
 
 describe('prebuilt backend', () => {
+  it.each([false, true])('requires the real update-recovery capability rather than progress support: %s', async supported => {
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), 'nexus-update-caps-'));
+    try {
+      const cli = path.join(root, 'target/release/xodus-cli'); await fs.mkdir(path.dirname(cli), { recursive: true });
+      const bytes = elf(); bytes[63] = supported ? 8 : 3; await fs.writeFile(cli, bytes, { mode: 0o755 });
+      const status = await new BackendManager(root, root, () => {}, () => false).refresh();
+      expect(status.capabilities.streamingUpdateRecovery).toBe(supported);
+      if (!supported) expect(status.capabilities.streamingControls).toBe(true);
+    } finally { await fs.rm(root, { recursive: true, force: true }); }
+  });
   it('reports a missing loader dependency instead of hiding it behind offline status (#328)',async()=>{
     const root=await fs.mkdtemp(path.join(os.tmpdir(),'nexus-backend-loader-'));
     try{
@@ -40,7 +54,7 @@ describe('prebuilt backend', () => {
       const pointer=JSON.stringify({binaryPath:cli});await fs.writeFile(path.join(root,'xodus-backends/current.json'),pointer);
       const name=backendPackageName(backendLock.version),archive=name+'.tar.xz';
       const manifest={schema:1,authUi:'electron',version:backendLock.version,commit:backendLock.commit,
-        recipeSha256:backendRecipeSha256,compatibility:backendLock.compatibility,platform:'linux',arch:'x64',archive,
+        recipeSha256:backendRecipeSha256,compatibility:backendLock.compatibility,platform:'linux',arch:currentArch(),archive,
         archiveSha512:'a'.repeat(128),files:{LICENSE:'b'.repeat(64),'xodus-cli':'c'.repeat(64),'xodus-service':'d'.repeat(64)}};
       const fetcher=vi.fn(async(input:URL|RequestInfo)=>{
         const target=String(input);
@@ -69,6 +83,16 @@ describe('prebuilt backend', () => {
       const status=await new BackendManager(root,root,()=>{},()=>false).refresh();
       expect(status.capabilities.contentPackageSelection).toBe(supported);
       expect(status.capabilities.packageSelection).toBe(true);
+    }finally{await fs.rm(root,{recursive:true,force:true});}
+  });
+  it.each([[8, false], [9, true]])('keeps offline licenses only with a backend that also revokes them (marker %s)', async (marker, supported) => {
+    const root=await fs.mkdtemp(path.join(os.tmpdir(),'nexus-license-cache-cap-'));
+    try{const cli=path.join(root,'target/release/xodus-cli');await fs.mkdir(path.dirname(cli),{recursive:true});
+      const bytes=elf();bytes[63]=marker;await fs.writeFile(cli,bytes,{mode:0o755});
+      const status=await new BackendManager(root,root,()=>{},()=>false).refresh();
+      expect(status.capabilities.offlinePc).toBe(true);
+      expect(status.capabilities.licenseCache).toBe(supported);
+      expect(status.capabilities.offlineLaunch).toBe(supported);
     }finally{await fs.rm(root,{recursive:true,force:true});}
   });
   it.each([false, true])('detects structured progress and controls from actual subcommand help: %s', async supported => {
@@ -122,7 +146,7 @@ describe('prebuilt backend', () => {
       expect((await run('tar', ['-cJf', path.join(build, archive), '-C', build, backendPackageName(backendLock.version)])).code).toBe(0);
       const data = await fs.readFile(path.join(build, archive));
       const manifest = { schema: 1, authUi: 'electron', version: backendLock.version, commit: backendLock.commit, compatibility: backendLock.compatibility,
-        recipeSha256: scenario === 'recipe' ? 'not-a-valid-hash' : backendRecipeSha256, platform: 'linux', arch: 'x64', archive,
+        recipeSha256: scenario === 'recipe' ? 'not-a-valid-hash' : backendRecipeSha256, platform: 'linux', arch: currentArch(), archive,
         archiveSha512: scenario === 'archive-digest' ? '0'.repeat(128) : sha(data, 'sha512'), files };
       const assets = [archive, `${backendPackageName(backendLock.version)}.manifest.json`, `${backendPackageName(backendLock.version)}.sha512sum`, `${backendPackageName(backendLock.version)}-source.tar.xz`, `${backendPackageName(backendLock.version)}-source.sha512sum`];
       let downloading = false;
@@ -189,9 +213,9 @@ describe('prebuilt backend', () => {
 
   it('discovers the newest stable backend release above the launcher minimum, ignoring older ones', async () => {
     const newest = `backend-v9.9.9`;
-    const name = (version: string, suffix: string) => `xodus-nexus-backend-${version}-linux-x86_64${suffix}`;
+    const name = (version: string, suffix: string) => `xodus-nexus-backend-${version}-linux-${BACKEND_ARCH_SUFFIX[currentArch()]}${suffix}`;
     const manifest = { schema: 1, authUi: 'electron', version: '9.9.9', commit: 'a'.repeat(40), recipeSha256: 'b'.repeat(64), compatibility: 'linux-run-fixture',
-      platform: 'linux', arch: 'x64', archive: name('9.9.9', '.tar.xz'), archiveSha512: 'c'.repeat(128),
+      platform: 'linux', arch: currentArch(), archive: name('9.9.9', '.tar.xz'), archiveSha512: 'c'.repeat(128),
       files: { 'xodus-cli': 'd'.repeat(64), 'xodus-service': 'e'.repeat(64), LICENSE: 'f'.repeat(64) } };
     const newestUrl = (asset: string) => `https://github.com/domsvoboda/xodus-nexus/releases/download/${newest}/${asset}`;
     const fetcher = (async (input: URL | RequestInfo) => {
@@ -223,7 +247,29 @@ describe('prebuilt backend', () => {
   it('rejects foreign asset URLs rather than downloading executable code from them', async () => {
     const fetcher = (async () => new Response(JSON.stringify([{ tag_name: tag, assets: [
       { name: `${backendPackageName(backendLock.version)}.manifest.json`, browser_download_url: 'https://other.example/manifest' },
+      ...['.tar.xz', '.sha512sum', '-source.tar.xz', '-source.sha512sum'].map(suffix => ({ name: backendPackageName(backendLock.version) + suffix, browser_download_url: 'https://other.example/file' })),
     ] }]))) as typeof fetch;
     await expect(discoverBackend(fetcher)).rejects.toThrow('Unexpected');
+  });
+
+  it.each(['x64', 'arm64'] as const)('discovers only complete %s releases even when a newer release ships the other architecture', async arch => {
+    const requests: string[] = [];
+    const version = '9.8.0', expectedTag = 'backend-v' + version;
+    const name = backendPackageName(version, arch);
+    const sum = 'c'.repeat(128);
+    const release = (v: string, a: 'x64' | 'arm64', complete = true) => ({ tag_name: 'backend-v' + v,
+      assets: ['.tar.xz', '.manifest.json', '.sha512sum', '-source.tar.xz', ...(complete ? ['-source.sha512sum'] : [])].map(suffix => ({
+        name: backendPackageName(v, a) + suffix,
+        browser_download_url: `https://github.com/domsvoboda/xodus-nexus/releases/download/backend-v${v}/${backendPackageName(v, a)}${suffix}`,
+      })) });
+    const fetcher = (async (input: URL | RequestInfo) => {
+      const url = String(input); requests.push(url);
+      if (url.includes('/releases?')) return new Response(JSON.stringify([release('9.9.9', arch === 'arm64' ? 'x64' : 'arm64'), release('9.9.8', arch, false), release(version, arch)]));
+      if (url.endsWith('.manifest.json')) return new Response(JSON.stringify({ schema: 1, authUi: 'electron', version, commit: 'a'.repeat(40), recipeSha256: 'b'.repeat(64), compatibility: 'linux-run-fixture', platform: 'linux', arch,
+        archive: name + '.tar.xz', archiveSha512: sum, files: { 'xodus-cli': 'd'.repeat(64), 'xodus-service': 'e'.repeat(64), LICENSE: 'f'.repeat(64) } }));
+      return new Response(`${sum}  ${name}.tar.xz\n`);
+    }) as typeof fetch;
+    expect((await discoverBackend(fetcher, arch)).tag).toBe(expectedTag);
+    expect(requests.slice(1).every(url => url.includes(expectedTag + '/' + name))).toBe(true);
   });
 });

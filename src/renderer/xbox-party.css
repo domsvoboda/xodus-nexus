@@ -1,0 +1,24 @@
+.social-party { display:flex;flex-direction:column;gap:20px;padding:16px 24px 24px; }
+.social-party[hidden] { display:none; }
+.social-party-status,.social-party-controls,.social-party-member,.social-party-invite>div { display:flex;align-items:center;gap:12px; }
+.social-party-status>svg { width:32px;height:32px;flex-shrink:0; }
+.social-party-status small,.social-party-existing>small { display:block;margin-top:6px;color:var(--social-muted); }
+.social-party button { display:inline-flex;align-items:center;justify-content:center;gap:8px; }
+.social-party button>svg { width:18px;height:18px; }
+.social-party-controls { flex-wrap:wrap; }
+.xbox-guide .social-party button,.xbox-guide .social-party select { min-height:40px;padding:10px 14px;border:0;border-radius:4px;background:var(--social-button); }
+.xbox-guide .social-party button:hover { background:var(--social-hover); }
+.xbox-guide .social-party select { appearance:none; }
+.xbox-guide .social-party .primary { background:#008746;color:#fff; }
+.xbox-guide .social-party .primary:hover { background:#00a85a; }
+.social-party .social-error { margin:0; }
+.social-party-members h2,.social-party-invitations h2 { margin-bottom:16px;font-size:20px; }
+.social-party-member { justify-content:space-between;min-height:64px;padding:8px 0;border-bottom:1px solid var(--social-divider); }
+.social-party-member>span { flex:1; }
+.social-party-member small { display:block;margin-top:4px;color:var(--social-muted); }
+.social-party-member>.social-gamerpic { flex:none; }
+.social-party-invite label { display:block;margin-bottom:12px; }
+.social-party-invite select { flex:1;min-width:0; }
+.social-party-invite>small { display:block;margin-top:10px;color:#71bb88; }
+.social-party-invitations article { display:flex;align-items:center;justify-content:space-between;gap:12px;padding:12px 0;border-bottom:1px solid var(--social-divider); }
+.social-party-invitations small { display:block;color:var(--social-muted); }

@@ -21,6 +21,8 @@ export class DownloadProgress {
         typeof value.phase !== 'string' || !Object.hasOwn(phases, value.phase) ||
         !counter(value.completedBytes) || !(value.totalBytes === null || counter(value.totalBytes)) ||
         value.totalBytes !== null && value.completedBytes > value.totalBytes ||
+        value.networkBytes !== undefined && !counter(value.networkBytes) ||
+        value.reusedBytes !== undefined && !counter(value.reusedBytes) ||
         !counter(value.bytesPerSecond) || typeof value.paused !== 'boolean' || typeof value.canPause !== 'boolean') return;
     this.sequence = value.sequence;
     const phase = value.phase as keyof typeof phases;
@@ -30,8 +32,9 @@ export class DownloadProgress {
     const rate = value.bytesPerSecond;
     return {
       progress, downloadedBytes: value.completedBytes, totalBytes: value.totalBytes ?? undefined,
+      networkBytes: value.networkBytes as number | undefined, reusedBytes: value.reusedBytes as number | undefined,
       transferRate: value.paused || rate === 0 ? undefined : `${(rate / 1048576).toFixed(2)} MiB/s`,
-      phase: value.paused ? 'Paused' : phases[phase],
+      phase: value.paused ? 'Paused' : phase === 'downloading' && value.reusedBytes !== undefined ? 'Updating files from local data and downloads' : phases[phase],
       status: value.paused ? 'paused' : 'running',
       canPause: value.canPause && phase === 'downloading', controlPending: false,
     };

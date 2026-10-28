@@ -26,7 +26,7 @@ describe('Settings diagnostics', () => {
   });
   it('keeps technical details in a closed disclosure, without a CLI command list', () => {
     const html = renderToStaticMarkup(<SettingsPage data={demoSnapshot()} toast={() => {}} />);
-    const details = html.match(/<details\b[^>]*>[\s\S]*?<\/details>/)?.[0];
+    const details = html.match(/<details\b[^>]*class="settings-card settings-diagnostics"[^>]*>[\s\S]*?<\/details>/)?.[0];
     expect(details).toBeDefined();
     expect(details?.split('>')[0]).not.toMatch(/\bopen\b/);
     expect(details).toContain('Build dependencies');

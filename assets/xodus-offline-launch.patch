@@ -1,0 +1,217 @@
+diff --git a/crates/xodus-cli/src/commands/license.rs b/crates/xodus-cli/src/commands/license.rs
+index 7bb7bdd..4540549 100644
+--- a/crates/xodus-cli/src/commands/license.rs
++++ b/crates/xodus-cli/src/commands/license.rs
+@@ -13,7 +13,7 @@ pub async fn run(
+     market: String,
+     ciks: String,
+ ) -> ExitCode {
+-    let license = get_license(client, tokens, content_id, market, None).await;
++    let license = get_license(client, tokens, content_id, market, None, false).await;
+     if let Err(err) = license {
+         eprintln!("{}", err);
+         return ExitCode::FAILURE;
+diff --git a/crates/xodus-cli/src/commands/run.rs b/crates/xodus-cli/src/commands/run.rs
+index 88429bc..2a5b934 100644
+--- a/crates/xodus-cli/src/commands/run.rs
++++ b/crates/xodus-cli/src/commands/run.rs
+@@ -547,6 +547,7 @@ pub async fn run(
+     materialize_chain: bool,
+     market: Option<String>,
+     license_cache: Option<String>,
++    offline: bool,
+ ) -> ExitCode {
+     let mut lfiles: HashMap<String, SegmentFile> = HashMap::new();
+ 
+@@ -597,6 +598,7 @@ pub async fn run(
+         xvd.content_id().to_string(),
+         market.unwrap_or("neutral".to_string()),
+         license_cache.as_deref(),
++        offline,
+     )
+     .await;
+     if let Err(err) = license {
+@@ -750,7 +752,13 @@ pub async fn run(
+         .arg(&stub_path)
+         .env("WINE_DLL_FILE_MAP", env_value)
+         .env("WINE_EXE_FILE_MAP", exe_env_value);
+-    if crate::license::OFFLINE_LICENSE_USED.load(std::sync::atomic::Ordering::Relaxed) {
++    if offline {
++        // The runtime treats the network as unreachable at once and completes
++        // the Xbox sign-in from its cached identity instead of waiting for
++        // its own connect timeouts (xuser-offline-identity-v1).
++        command.env("XODUS_FORCE_OFFLINE", "1");
++    }
++    if offline || crate::license::OFFLINE_LICENSE_USED.load(std::sync::atomic::Ordering::Relaxed) {
+         eprintln!("Microsoft is unreachable; skipping PlayFab authorisation (the runtime signs in with its cached identity)");
+     } else {
+         match playfab_auth_header(client, tokens).await {
+diff --git a/crates/xodus-cli/src/commands/streaming.rs b/crates/xodus-cli/src/commands/streaming.rs
+index 0a11b6c..b5c8b3f 100644
+--- a/crates/xodus-cli/src/commands/streaming.rs
++++ b/crates/xodus-cli/src/commands/streaming.rs
+@@ -427,6 +427,7 @@ where
+         market.unwrap_or("neutral".to_string()),
+         // Downloads stay online-only; offline licenses are for launching installed games.
+         None,
++        false,
+     )
+     .await;
+     if let Err(err) = license {
+diff --git a/crates/xodus-cli/src/license.rs b/crates/xodus-cli/src/license.rs
+index 7715f77..d1b35ed 100644
+--- a/crates/xodus-cli/src/license.rs
++++ b/crates/xodus-cli/src/license.rs
+@@ -40,15 +40,32 @@ pub struct OnlineLicense {
+ 
+ /// Fetches the content license online. `cache` enables device-bound offline
+ /// use: a license that arrives with an offline lease is recorded there and
+-/// consulted only when Microsoft is unreachable.
++/// consulted only when Microsoft is unreachable. `offline` states that the
++/// caller already found Microsoft unreachable: no request is made and only
++/// the stored license can satisfy the launch.
+ pub async fn get_license(
+     client: &reqwest::Client,
+     tokens: &TokenManager,
+     content_id: String,
+     market: String,
+     cache: Option<&Path>,
++    offline: bool,
+ ) -> std::result::Result<(DeviceKey, SPLicense), String> {
+     let user = tokens.get_user().map_err(|error| error.to_string())?;
++    if offline {
++        // Skip the ticket and license requests and their connect timeouts;
++        // the stored license is held to the same rules as after a failed
++        // request, so nothing is granted that an unreachable Microsoft would
++        // not have allowed.
++        return recover_offline(
++            tokens,
++            cache,
++            &content_id,
++            &user.puid,
++            OnlineFailure::Unreachable("Microsoft is unreachable (offline launch requested).".to_string()),
++            unix_now(),
++        );
++    }
+     match fetch_online(client, tokens, &user, content_id.clone(), market.clone()).await {
+         Ok(license) => {
+             let material = license_material(tokens, &license.key.splicense_block)?;
+@@ -456,6 +473,49 @@ mod tests {
+         assert!(!root.path().join("content-a.json").exists());
+     }
+ 
++    #[tokio::test]
++    async fn offline_launch_never_contacts_microsoft_and_uses_only_the_stored_license() {
++        let tokens = TokenManager::with_memory();
++        tokens
++            .save_user(&xodus::models::secrets::User { puid: "puid".into(), username: "user@example.com".into() })
++            .unwrap();
++        let root = tempfile::tempdir().unwrap();
++        let block = BASE64_STANDARD.encode([0u8; 8]);
++        let now = unix_now();
++        LicenseCache::new(root.path())
++            .store("content-a", "puid", "US", &synthetic(&block, None), Some(now + 20 * 24 * 60 * 60), now)
++            .unwrap();
++        // Any request would have to connect within a millisecond and fail: the
++        // offline path must never issue one.
++        let client = reqwest::ClientBuilder::new()
++            .connect_timeout(std::time::Duration::from_millis(1))
++            .build()
++            .unwrap();
++
++        // The stored block is accepted and the flow proceeds to the device key,
++        // exactly as after a failed request.
++        let error = get_license(&client, &tokens, "content-a".into(), "US".into(), Some(root.path()), true)
++            .await
++            .err()
++            .unwrap();
++        assert!(!error.contains("offline launch requested"), "{error}");
++        assert!(root.path().join("content-a.json").exists());
++        assert!(OFFLINE_LICENSE_USED.load(std::sync::atomic::Ordering::Relaxed));
++
++        // Without a stored license the launch fails closed and says why.
++        let error = get_license(&client, &tokens, "content-b".into(), "US".into(), Some(root.path()), true)
++            .await
++            .err()
++            .unwrap();
++        assert!(error.starts_with("Microsoft is unreachable (offline launch requested)."), "{error}");
++        assert!(error.contains("No valid offline license is stored"), "{error}");
++        let error = get_license(&client, &tokens, "content-a".into(), "US".into(), None, true)
++            .await
++            .err()
++            .unwrap();
++        assert!(error.starts_with("Microsoft is unreachable (offline launch requested)."), "{error}");
++    }
++
+     #[test]
+     fn offline_recovery_purges_the_stored_license_when_microsoft_refuses() {
+         let tokens = TokenManager::with_memory();
+diff --git a/crates/xodus-cli/src/main.rs b/crates/xodus-cli/src/main.rs
+index 1c86802..d668834 100644
+--- a/crates/xodus-cli/src/main.rs
++++ b/crates/xodus-cli/src/main.rs
+@@ -168,6 +168,13 @@ enum SubCommand {
+         market: Option<String>,
+         #[arg(long = "license-cache", help = "Directory for device-bound offline licenses (--license-cache) used when Microsoft is unreachable")]
+         license_cache: Option<String>,
++        #[arg(
++            long,
++            default_value_t = false,
++            requires = "license_cache",
++            help = "Launch on the stored offline license without contacting Microsoft (the launcher sets this once it finds Microsoft unreachable)"
++        )]
++        offline: bool,
+     },
+     #[command(about = "Generate or decrypt base64-encoded CLEP challenge data")]
+     Clep {
+@@ -314,10 +321,31 @@ async fn main() -> ExitCode {
+             | SubCommand::SpLicense { .. }
+             | SubCommand::Logout { .. }
+     );
+-    if needs_device_credentials {
++    // An offline launch never contacts Microsoft: the stored device license
++    // and the stored offline content license are all it uses.
++    #[cfg(unix)]
++    let offline_launch = matches!(args.command, SubCommand::Run { offline: true, .. });
++    #[cfg(not(unix))]
++    let offline_launch = false;
++    // A launch with an offline license cache may outlive the device token
++    // (it expires while the device is offline). Renewal needs Microsoft, so a
++    // failed renewal must not end the launch before the content-license step,
++    // which still decides: only an unreachable Microsoft lets the stored
++    // offline license stand in, a refusal fails as before.
++    #[cfg(unix)]
++    let launch_with_license_cache = matches!(args.command, SubCommand::Run { license_cache: Some(_), .. });
++    #[cfg(not(unix))]
++    let launch_with_license_cache = false;
++    if needs_device_credentials && !offline_launch {
+         if let Err(error) = xodus::tokens::device::ensure_device_credentials(&client, &tokens).await {
+-            error.report();
+-            return ExitCode::FAILURE;
++            if launch_with_license_cache && tokens.get_device_license().is_ok() {
++                eprintln!(
++                    "Device credential renewal failed; continuing with the stored device license. If Microsoft is unreachable, the offline license stored on this device is used."
++                );
++            } else {
++                error.report();
++                return ExitCode::FAILURE;
++            }
+         }
+     }
+ 
+@@ -437,6 +465,7 @@ async fn main() -> ExitCode {
+             materialize_chain,
+             market,
+             license_cache,
++            offline,
+         } => {
+             commands::run::run(
+                 &client,
+@@ -448,6 +477,7 @@ async fn main() -> ExitCode {
+                 materialize_chain,
+                 market,
+                 license_cache,
++                offline,
+             )
+             .await
+         }

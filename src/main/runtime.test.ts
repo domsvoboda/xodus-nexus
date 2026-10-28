@@ -28,7 +28,7 @@ describe('previewBaseRelease', () => {
         ],
       },
     ]), { status: 200, headers: { 'Content-Type': 'application/json' } })) as typeof fetch;
-    const manager = new RuntimeManager('/tmp/unused', () => undefined, () => false, fetcher);
+    const manager = new RuntimeManager('/tmp/unused', () => undefined, () => false, fetcher, 'x64');
     const status = await manager.checkNexus();
     expect(status.nexusAvailable).toBe(true);
     expect(status.nexusVersion).toBe('runtime-11.0-20261011-g3fd4ae10');
@@ -56,10 +56,31 @@ describe('previewBaseRelease', () => {
       runtime('undated', 'invalid'),
     ];
     const fetcher = (async () => new Response(JSON.stringify(releases))) as typeof fetch;
-    const manager = new RuntimeManager('/tmp/unused', () => undefined, () => false, fetcher);
+    const manager = new RuntimeManager('/tmp/unused', () => undefined, () => false, fetcher, 'x64');
     const status = await manager.checkNexus();
     expect(status.nexusVersion).toBe(newer.tag_name);
     expect(status.nexusName).toBe(newer.assets[0].name);
+  });
+
+  it.each([['x64', 'x86_64'], ['arm64', 'aarch64']])('installs the runtime archive built for a %s host', async (arch, suffix) => {
+    // One nexus-runtime release can carry both architectures.
+    const names = ['nexus-runtime-11.0-experimental-g7a94df49-x86_64', 'nexus-runtime-11.0-experimental-arm64-g62a1e424-aarch64'];
+    const fetcher = (async () => new Response(JSON.stringify([{
+      tag_name: 'runtime-11.0-g62a1e424', published_at: '2026-10-28T00:00:00Z',
+      assets: names.flatMap(name => [`${name}.tar.xz`, `${name}.sha512sum`]).map(name => ({ name, browser_download_url: `https://example.com/${name}` })),
+    }]))) as typeof fetch;
+    const status = await new RuntimeManager('/tmp/unused', () => undefined, () => false, fetcher, arch).checkNexus();
+    expect(status.nexusName).toBe(`${names.find(name => name.endsWith(suffix))}.tar.xz`);
+    expect(nexusReleaseName(status.nexusName!)).toBe(names.find(name => name.endsWith(suffix))!.replace(`-${suffix}`, ''));
+  });
+
+  it('never offers an x86_64 runtime to an arm64 host or any runtime to other hosts', async () => {
+    const name = 'nexus-runtime-11.0-experimental-g7a94df49-x86_64';
+    const fetcher = (async () => new Response(JSON.stringify([{
+      tag_name: 'runtime-11.0-g7a94df49', assets: [`${name}.tar.xz`, `${name}.sha512sum`].map(asset => ({ name: asset, browser_download_url: `https://example.com/${asset}` })),
+    }]))) as typeof fetch;
+    expect((await new RuntimeManager('/tmp/unused', () => undefined, () => false, fetcher, 'arm64').checkNexus()).nexusAvailable).toBe(false);
+    expect((await new RuntimeManager('/tmp/unused', () => undefined, () => false, fetcher, 'riscv64').checkNexus()).nexusError).toContain('not built for riscv64');
   });
 
   it('reports no Nexus runtime when no release carries one', async () => {
@@ -69,7 +90,7 @@ describe('previewBaseRelease', () => {
         assets: [{ name: 'Xodus-Nexus-0.5.24-x86_64.AppImage', browser_download_url: 'https://example.com/app.AppImage' }],
       },
     ]), { status: 200, headers: { 'Content-Type': 'application/json' } })) as typeof fetch;
-    const manager = new RuntimeManager('/tmp/unused', () => undefined, () => false, fetcher);
+    const manager = new RuntimeManager('/tmp/unused', () => undefined, () => false, fetcher, 'x64');
     const status = await manager.checkNexus();
     expect(status.nexusAvailable).toBe(false);
     expect(status.nexusError).toContain('No Nexus runtime release has been published yet');
@@ -86,13 +107,13 @@ describe('previewBaseRelease', () => {
       { tag_name: 'mismatched', assets: [asset(name), asset('xodus-nexus-runtime-different-x86_64.sha512sum')] },
       { tag_name: 'runtime-tested', assets: pair },
     ]))) as typeof fetch;
-    const manager = new RuntimeManager('/tmp/unused', () => undefined, () => false, fetcher);
+    const manager = new RuntimeManager('/tmp/unused', () => undefined, () => false, fetcher, 'x64');
     expect((await manager.checkNexus()).nexusVersion).toBe('runtime-tested');
   });
 
   it('does not download or replace a runtime during an active operation', async () => {
     const fetcher = (async () => { throw new Error('No download may start'); }) as typeof fetch;
-    const manager = new RuntimeManager('/tmp/unused', () => undefined, () => true, fetcher);
+    const manager = new RuntimeManager('/tmp/unused', () => undefined, () => true, fetcher, 'x64');
     await expect(manager.installNexus(() => undefined)).rejects.toThrow('while a Xodus operation is active');
   });
 
@@ -109,7 +130,7 @@ describe('previewBaseRelease', () => {
       }
       return new Response(JSON.stringify([{ tag_name: 'previous', assets: pair(old) }]));
     }) as typeof fetch;
-    const status = await new RuntimeManager('/tmp/unused', () => undefined, () => false, fetcher).checkNexus();
+    const status = await new RuntimeManager('/tmp/unused', () => undefined, () => false, fetcher, 'x64').checkNexus();
     expect(status.nexusName).toBe(old);
     expect(calls).toHaveLength(2);
   });
@@ -125,7 +146,7 @@ describe('previewBaseRelease', () => {
         expect(String(input)).toContain('/domsvoboda/nexus-runtime/releases?'); calls++;
         return new Response(JSON.stringify([{ tag_name: 'next', assets: [name, name.replace('.tar.xz', '.sha512sum')].map(name => ({ name, browser_download_url: `https://example.com/${name}` })) }]));
       }) as typeof fetch;
-      const status = await new RuntimeManager(root, () => undefined, () => false, fetcher).checkNexus();
+      const status = await new RuntimeManager(root, () => undefined, () => false, fetcher, 'x64').checkNexus();
       expect(status.nexusName).toBe(name); expect(calls).toBe(1);
       expect(JSON.parse(await fs.readFile(path.join(root, 'current.json'), 'utf8'))).toEqual(previous);
       expect(await fs.readdir(root)).toEqual(['current.json']);
@@ -135,7 +156,7 @@ describe('previewBaseRelease', () => {
   it.each([403, 500])('does not silently downgrade after a fork repository error: %s', async status => {
     let calls = 0;
     const fetcher = (async () => { calls++; return new Response('', { status }); }) as typeof fetch;
-    const result = await new RuntimeManager('/tmp/unused', () => undefined, () => false, fetcher).checkNexus();
+    const result = await new RuntimeManager('/tmp/unused', () => undefined, () => false, fetcher, 'x64').checkNexus();
     expect(result.nexusAvailable).toBe(false); expect(result.nexusError).toContain('could not be read'); expect(calls).toBe(1);
   });
 
@@ -166,7 +187,7 @@ describe('previewBaseRelease', () => {
       const file = path.join(build, url.split('/').pop()!);
       return new Response(await fs.readFile(file), { status: 200 });
     }) as typeof fetch;
-    const manager = new RuntimeManager(root, () => undefined, () => false, fetcher);
+    const manager = new RuntimeManager(root, () => undefined, () => false, fetcher, 'x64');
     const originalPreload = process.env.LD_PRELOAD;
     if (scenario === 'stderr-warning') process.env.LD_PRELOAD = path.join(root, 'nonexistent-test-overlay.so');
     try {
@@ -199,6 +220,32 @@ describe('previewBaseRelease', () => {
     }
   });
 
+  it('activates the native loader of an arm64 runtime on an arm64 host', async () => {
+    const releaseName = 'nexus-runtime-11.0-experimental-arm64-g62a1e424';
+    const archive = `${releaseName}-aarch64.tar.xz`, checksum = `${releaseName}-aarch64.sha512sum`;
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), 'xodus-nexus-arm64-install-'));
+    try {
+      const build = path.join(root, 'build');
+      // Proton's arm64 build also ships files/bin; the native loader must win.
+      for (const bin of ['bin', 'bin-arm64']) {
+        await fs.mkdir(path.join(build, releaseName, 'files', bin), { recursive: true });
+        await fs.writeFile(path.join(build, releaseName, 'files', bin, 'wine'), `#!/bin/sh\necho wine-11.0-${bin}\n`, { mode: 0o755 });
+      }
+      if ((await run('tar', ['-cJf', path.join(build, archive), '-C', build, releaseName])).code !== 0) throw new Error('The tar fixture could not be created.');
+      await fs.writeFile(path.join(build, checksum), `${createHash('sha512').update(await fs.readFile(path.join(build, archive))).digest('hex')}  ${archive}\n`);
+      const fetcher = (async (input: URL | RequestInfo) => {
+        const url = String(input);
+        if (url.includes('/releases?')) return new Response(JSON.stringify([{ tag_name: 'runtime-arm64', assets: [archive, checksum].map(name => ({ name, browser_download_url: `https://example.com/${name}` })) }]));
+        return new Response(await fs.readFile(path.join(build, url.split('/').pop()!)));
+      }) as typeof fetch;
+      const manager = new RuntimeManager(root, () => undefined, () => false, fetcher, 'arm64');
+      await manager.refresh();
+      const winePath = await manager.installNexus(() => undefined);
+      expect(winePath).toBe(path.join(root, 'releases', releaseName, 'files', 'bin-arm64', 'wine'));
+      expect(JSON.parse(await fs.readFile(path.join(root, 'current.json'), 'utf8')).winePath).toBe(winePath);
+    } finally { await fs.rm(root, { recursive: true, force: true }); }
+  });
+
   it('extracts the preserved base release', () => {
     expect(previewBaseRelease('proton-xodus-test-offline-v2-xgamesave-pr28-3fd4ae1091')).toBe('proton-xodus-test-offline-v2');
     expect(previewBaseRelease('proton-xodus-test-offline-v2-xgamesave-pr28-3fd4ae1091-bridge-v1')).toBe('proton-xodus-test-offline-v2');
@@ -223,7 +270,7 @@ describe('previewBaseRelease', () => {
       await fs.writeFile(path.join(root, 'current.json'), JSON.stringify({
         name: `${base}-xgamesave-pr28-3fd4ae1091`, winePath: '/preview/wine', commit: 'abc', installedAt: 'before',
       }));
-      const manager = new RuntimeManager(root, () => undefined, () => false);
+      const manager = new RuntimeManager(root, () => undefined, () => false, fetch, 'x64');
       expect(await manager.rollbackCloudSavePreview(() => undefined)).toBe(winePath);
       const pointer = JSON.parse(await fs.readFile(path.join(root, 'current.json'), 'utf8')) as { name: string; winePath: string };
       expect(pointer.name).toBe(base);

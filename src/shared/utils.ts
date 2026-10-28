@@ -28,12 +28,14 @@ export function parseBackendHelp(help: string): BackendCapabilities {
     gameActivity: commands.includes('game-activity'),
     achievements: commands.includes('achievements'),
     library: commands.includes('library'),
+    nativeSocial: commands.includes('native-social'),
     login: commands.includes('login'),
     externalAuth: /(?:^|\s)--external-webview-stdio(?:\s|$)/m.test(help),
     logout: commands.includes('logout'),
     download: commands.includes('download'),
     streaming: commands.includes('streaming'),
     run: commands.includes('run'),
+    offlinePc: commands.includes('offline-pc'),
     version,
   };
 }

@@ -116,11 +116,11 @@ the normal install path never clones moving `main` or silently compiles.
 The backend workflow builds CLI + service on Ubuntu 22.04, runs the account-free
 launch-chain tests and CLI capability checks, then packages:
 
-- `xodus-nexus-backend-<version>-linux-x86_64.tar.xz` and SHA-512
+- `xodus-nexus-backend-<version>-linux-x86_64.tar.xz` and `...-linux-aarch64.tar.xz` with SHA-512 (one job per architecture on `ubuntu-22.04` and `ubuntu-22.04-arm`, merged into one candidate)
 - matching `.manifest.json` (recipe/source identity and per-file hashes)
 - matching `-source.tar.xz` and SHA-512 (patched upstream, vendored dependencies,
   offline Cargo configuration, recipe, build instructions and retained licenses)
-- `candidate.json` binding all five assets to the Nexus commit and workflow run
+- `candidate.json` binding each architecture's five assets to the Nexus commit and workflow run
 
 Native build dependencies: Git, Rust from the lock, Node 22, Cargo, pkg-config,
 C/C++ toolchain, OpenSSL, protoc, CMake, D-Bus development headers,
@@ -148,10 +148,10 @@ the active pointer atomically only while idle; older builds remain available.
 An unavailable/private release, incompatible system libraries or failed checksum
 never causes automatic compilation or a production backend replacement.
 
-Default install needs no Git/Cargo/protoc/GitHub authentication. Linux x86_64,
+Default install needs no Git/Cargo/protoc/GitHub authentication. Linux x86_64 or aarch64,
 glibc compatible with Ubuntu 22.04, OpenSSL 3, D-Bus, tar/xz and the desktop's
-secret service are needed. Other architectures/musl and other distributions
-have not been validated. Missing-library failures are shown in Settings.
+secret service are needed. ARM64 support is experimental; musl builds are not
+provided. Missing-library failures are shown in Settings.
 
 Advanced / Diagnostics retains an explicit local build from the same source
 and patches, for developers only. It does not build the Wine runtime. No probe
@@ -190,3 +190,49 @@ only. It activates that existing user service if the standard Secret Service
 name has neither an owner nor an activation provider. Existing/default providers
 are left alone. No packages, keyring configuration or plaintext fallback are
 introduced, and keyring failures remain errors.
+
+## Incremental game updates
+
+Streaming updates stage one changed file at a time in `.nexus-update-v1` under
+its game folder. The space check counts the largest replacement plus net growth
+and a metadata reserve, rather than requiring another full installation. A
+finished file is synced and atomically renamed; incomplete files and checkpoints
+remain available for Retry. The completed package marker changes only after all
+files finish. Before the first replacement the backend syncs an
+`.nexus-update-incomplete-v1` barrier. A cancelled or failed update retains this
+barrier, so the launcher and `run` refuse to start the incomplete installation,
+even after queue history is cleared or the launcher restarts. **Resume update**
+continues installation and clears the barrier only after the final package
+metadata has been committed and synced. This is per-file protection, not
+whole-game rollback. The streaming help advertises `update-recovery-v1`;
+the launcher requires that capability before updating an installed game.
+
+Matching package page hashes can identify old data even after archive offsets
+move. Before reuse, installed plaintext is encrypted in memory with the normal
+licensed package key and the new page's XTS parameters, then checked against the
+new package's truncated SHA-256. Ciphertext files are checked directly. Modified,
+missing, short or unverifiable pages are downloaded using the existing bounded
+HTTP transfer path. No keys are written to the update journal. Small reusable
+islands between missing pages may also be downloaded to avoid tiny HTTP requests.
+This does not implement Microsoft's XSP delta format, and a full download remains
+the fallback when no local data verifies.
+
+Nexus shows separate local-reuse and network byte counters. Overall progress and
+ETA measure files rebuilt, including local copying; they are not network totals.
+Unchanged optional archives retain their existing zero-byte placeholders; updates
+do not implicitly install omitted language/content packs. Encrypted executables
+still receive the existing truncated-ciphertext repair check.
+
+`cargo test --no-default-features -p xodus-cli -p msixvc streaming_` covers relocated
+and corrupt pages, partial staged resumes, licensed plaintext/ciphertext checks,
+wrong keys, space accounting, safe replacement, plus existing HTTP/pause/resume
+and failure handling. Tests use synthetic fixtures and loopback HTTP only.
+
+## Native social API
+
+The optional `native-social` command provides the account-bound people, profile,
+conversation and relationship services alongside the existing `social --json`
+interface. Explicit writes use the signed session and are never silently retried.
+The launcher exposes these operations through a separate `nativeSocial` IPC API.
+Window, party and overlay features register their own authorized senders and lifecycle
+callbacks; the API foundation performs no automatic writes.

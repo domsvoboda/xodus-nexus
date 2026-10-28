@@ -2,7 +2,19 @@
 
 ## Unreleased
 
+- Add native arm64 launcher and backend builds, with architecture-aware downloads and updates. Thanks @indiesaudi.
+
+- Overlap local data verification and staged writes during game updates without changing checkpoint recovery.
+- Reduce download preparation time and memory use while preserving existing update checkpoints.
+- Improve game download and update performance with batched writes, parallel update transfers and fewer repeated local reads.
+- Add a redesigned Social panel with conversations, player profiles and friend management. Thanks @Rbanh.
+- Show unread conversations and game updates in a notification bell beside the account, and open chats at the latest message.
+- Reduce disk space and downloads for game updates by reusing verified local data, and support recovery of interrupted updates. Thanks @Rbanh.
+- Remove abandoned temporary game launch directories while preserving active sessions and directories without a usable session lock. Thanks @xerhab.
+- Add **Settings → Offline permissions** and lease-checked offline launches with a compatible runtime. Each game needs an online launch after designating the device. Thanks @indiesaudi.
+- Remove stored offline licenses and offline sign-ins whenever offline play ends: turning it off, Microsoft reporting another device as the offline device, another account, sign-out, or a licensing refusal.
 - Fix Xbox sign-in, downloads and profiles failing with "Xbox authentication request failed" for accounts that receive compact JWE delegation tickets; other tickets are unchanged. Thanks @burghr.
+- Skip the administrator password prompt for hardware data at sign-in on devices without a firmware SMBIOS table, such as most ARM devices; other devices are unchanged. Thanks @burghr.
 - Handle reordered game sign-in responses and return authentication failures without crashing the account service.
 - Return a normal sign-in error for invalid or refused device registration responses instead of crashing.
 - Preserve Microsoft broker headers on both hosted sign-in steps. Thanks @Wyze3306 for the upstream fix adapted here.

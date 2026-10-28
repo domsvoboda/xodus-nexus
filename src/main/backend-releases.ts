@@ -6,6 +6,7 @@ import {
   BACKEND_REPOSITORY, backendPackageName, backendAssetUrl, compareVersions, minimumBackendVersion,
   validateBackendManifest, validateBackendArchive, type BackendPackageManifest,
 } from './backend-package.js';
+import { BACKEND_ARCH_SUFFIX, currentArch, isLinuxElf64, nexusArch, type NexusArch } from './arch.js';
 
 export interface BackendArtifact { tag: string; manifest: BackendPackageManifest; archiveUrl: string }
 
@@ -27,7 +28,7 @@ async function bytes(url: string, fetcher: typeof fetch, limit: number): Promise
   return Buffer.concat(parts);
 }
 
-export async function discoverBackend(fetcher: typeof fetch): Promise<BackendArtifact> {
+export async function discoverBackend(fetcher: typeof fetch, arch: NexusArch = currentArch()): Promise<BackendArtifact> {
   const releases = JSON.parse((await bytes(`https://api.github.com/repos/${BACKEND_REPOSITORY}/releases?per_page=100`, fetcher, 2_000_000)).toString()) as Array<{
     tag_name?: string; draft?: boolean; prerelease?: boolean;
     assets?: Array<{ name?: string; browser_download_url?: string }>;
@@ -39,14 +40,19 @@ export async function discoverBackend(fetcher: typeof fetch): Promise<BackendArt
     if (item.draft || item.prerelease) continue;
     const match = /^backend-v(\d+\.\d+\.\d+)$/.exec(item.tag_name ?? '');
     if (!match || compareVersions(match[1], minimumBackendVersion) < 0) continue;
+    // A newer release may not ship this architecture. Never select its other
+    // architecture or let it hide the newest complete matching release.
+    const name = backendPackageName(match[1], arch);
+    const required = ['.tar.xz', '.manifest.json', '.sha512sum', '-source.tar.xz', '-source.sha512sum'];
+    if (!required.every(suffix => item.assets?.some(asset => asset.name === name + suffix))) continue;
     if (!selected || compareVersions(match[1], selected.version) > 0) selected = { tag: item.tag_name!, version: match[1], release: item };
   }
   if (!selected) throw new Error('No compatible Nexus backend release has been published yet.');
   const tag = selected.tag;
-  const packageName = backendPackageName(selected.version);
+  const packageName = backendPackageName(selected.version, arch);
   const asset = (name: string) => backendAssetUrl(tag, name, selected!.release.assets?.find(item => item.name === name)?.browser_download_url);
   const archive = `${packageName}.tar.xz`;
-  const manifest = validateBackendManifest(JSON.parse((await bytes(asset(`${packageName}.manifest.json`), fetcher, 100_000)).toString()));
+  const manifest = validateBackendManifest(JSON.parse((await bytes(asset(`${packageName}.manifest.json`), fetcher, 100_000)).toString()), arch);
   if (manifest.version !== selected.version) throw new Error('The backend release does not match its manifest.');
   const checksum = (await bytes(asset(`${packageName}.sha512sum`), fetcher, 1000)).toString().trim();
   if (checksum !== `${manifest.archiveSha512}  ${archive}`) throw new Error('Backend SHA-512 manifest mismatch.');
@@ -61,7 +67,7 @@ export async function installBackend(
   validate: (cli: string) => Promise<void>, assertIdle: () => Promise<void>,
   phase: (message: string) => void, runner: typeof run = run,
 ): Promise<string> {
-  if (process.platform !== 'linux' || process.arch !== 'x64') throw new Error('The prebuilt backend currently supports x86_64 Linux only.');
+  if (process.platform !== 'linux' || !nexusArch()) throw new Error('The prebuilt backend supports x86_64 and arm64 Linux only.');
   await assertIdle();
   const manifest = validateBackendManifest(artifact.manifest);
   const staging = path.join(managedRoot, `.download-${randomUUID()}`);
@@ -106,8 +112,8 @@ export async function installBackend(
       }
       for (const name of ['xodus-cli', 'xodus-service']) {
         const header = await fs.readFile(path.join(root, name));
-        if (header.length < 64 || header.subarray(0, 4).toString('hex') !== '7f454c46' || header[4] !== 2 || header[5] !== 1 || header.readUInt16LE(18) !== 62) {
-          throw new Error('The backend binary is not a Linux x86_64 ELF executable.');
+        if (!isLinuxElf64(header, currentArch())) {
+          throw new Error(`The backend binary is not a Linux ${BACKEND_ARCH_SUFFIX[currentArch()]} ELF executable.`);
         }
         await fs.chmod(path.join(root, name), 0o755);
         await fs.access(path.join(root, name), constants.X_OK);

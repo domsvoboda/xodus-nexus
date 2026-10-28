@@ -5,6 +5,7 @@ import { Readable } from 'node:stream';
 import { pipeline } from 'node:stream/promises';
 import type { RuntimeStatus } from '../shared/types.js';
 import { run } from './process.js';
+import { runtimeArchiveArch, runtimeLoader } from './proton-layout.js';
 
 const REPOSITORY = 'xodus-gaming/Proton';
 const BRANCH = 'xodus/bleeding-edge';
@@ -44,7 +45,7 @@ export function canonicalSnapshotName(commit: string): string {
 }
 
 export function nexusReleaseName(archiveAssetName: string): string {
-  return archiveAssetName.replace(/-x86_64\.tar\.xz$/, '');
+  return archiveAssetName.replace(/-(?:x86_64|aarch64)\.tar\.xz$/, '');
 }
 
 export function previewBaseRelease(name: string): string | null {
@@ -59,11 +60,13 @@ export class RuntimeManager {
   private latestArtifact?: ArtifactInfo;
   private nexusArtifact?: NexusArtifact;
   private readonly fetcher: typeof fetch;
+  private readonly hostArch: string;
 
-  constructor(runtimeRoot: string, emitLog: (scope: string, line: string) => void, isOperationActive: () => boolean, fetcher: typeof fetch = fetch) {
+  constructor(runtimeRoot: string, emitLog: (scope: string, line: string) => void, isOperationActive: () => boolean, fetcher: typeof fetch = fetch, hostArch: string = process.arch) {
     this.emitLog = emitLog;
     this.isOperationActive = isOperationActive;
     this.fetcher = fetcher;
+    this.hostArch = hostArch;
     this.status = {
       installed: false,
       checking: false,
@@ -119,6 +122,7 @@ export class RuntimeManager {
   }
 
   private async discoverArtifact(): Promise<ArtifactInfo> {
+    if (this.hostArch !== 'x64') throw new Error('The upstream runtime snapshot supports x86_64 only. Install the native Nexus runtime instead.');
     const remote = await run('git', ['ls-remote', REPOSITORY_URL, `refs/heads/${BRANCH}`], { maxOutput: 30_000 });
     if (remote.code !== 0) throw new Error('Could not resolve the Xodus Proton branch HEAD.');
     const upstreamCommit = remote.output.trim().split(/\s+/)[0];
@@ -244,7 +248,7 @@ export class RuntimeManager {
       let result = await run('tar', ['-xJf', archivePath, '-C', extracted], { onLine: (line) => this.emitLog('runtime', line), maxOutput: 1_000_000 });
       if (result.code !== 0) throw new Error('Runtime extraction failed.');
       const candidateRoot = path.join(extracted, top);
-      const candidateWine = path.join(candidateRoot, 'files', 'bin', 'wine');
+      const candidateWine = await runtimeLoader(candidateRoot, this.hostArch, false);
       if (!await this.validateWine(candidateWine)) throw new Error('The downloaded Wine failed --version validation.');
       if (this.isOperationActive()) throw new Error('Another operation started during installation; the runtime was not activated.');
 
@@ -256,7 +260,7 @@ export class RuntimeManager {
       } catch {
         await fs.rename(candidateRoot, releaseRoot);
       }
-      const winePath = path.join(releaseRoot, 'files', 'bin', 'wine');
+      const winePath = path.join(releaseRoot, path.relative(candidateRoot, candidateWine));
       if (!await this.validateWine(winePath)) throw new Error('The activated runtime is not executable.');
       const pointer: RuntimePointer = { name: releaseName, winePath, commit, installedAt: new Date().toISOString() };
       await fs.mkdir(this.status.runtimeRoot, { recursive: true });
@@ -278,6 +282,8 @@ export class RuntimeManager {
     this.status.nexusChecking = true;
     this.status.nexusError = undefined;
     try {
+      // Each host installs the runtime built for it: -x86_64 or -aarch64.
+      const suffix = runtimeArchiveArch(this.hostArch);
       for (const repository of [NEXUS_RUNTIME_REPOSITORY, NEXUS_REPOSITORY]) {
         const response = await this.fetcher(`https://api.github.com/repos/${repository}/releases?per_page=30`, {
           headers: { Accept: 'application/vnd.github+json' },
@@ -295,7 +301,7 @@ export class RuntimeManager {
             name: typeof asset.name === 'string' ? asset.name : '',
             url: typeof asset.browser_download_url === 'string' ? asset.browser_download_url : '',
           }));
-          const pattern = repository === NEXUS_RUNTIME_REPOSITORY ? /^nexus-runtime-[A-Za-z0-9._-]+-x86_64\.tar\.xz$/ : /^xodus-nexus-runtime-[A-Za-z0-9._-]+-x86_64\.tar\.xz$/;
+          const pattern = new RegExp(`^${repository === NEXUS_RUNTIME_REPOSITORY ? 'nexus-runtime' : 'xodus-nexus-runtime'}-[A-Za-z0-9._-]+-${suffix}\\.tar\\.xz$`);
           const archive = assets.find((asset) => pattern.test(asset.name) &&
             /^https:\/\//.test(asset.url) && assets.some((sum) => sum.name === asset.name.replace(/\.tar\.xz$/, '.sha512sum') && /^https:\/\//.test(sum.url)));
           const checksum = archive && assets.find((asset) => asset.name === archive.name.replace(/\.tar\.xz$/, '.sha512sum'));
@@ -377,7 +383,7 @@ export class RuntimeManager {
     const current = await this.readPointer();
     const baseName = current ? previewBaseRelease(current.name) : null;
     if (!current || !baseName) throw new Error('No cloud-save preview is active.');
-    const winePath = path.join(this.status.runtimeRoot, 'releases', baseName, 'files', 'bin', 'wine');
+    const winePath = await runtimeLoader(path.join(this.status.runtimeRoot, 'releases', baseName), this.hostArch);
     if (!await this.validateWine(winePath)) throw new Error('The previous runtime is missing or failed validation. The preview remains active.');
     this.status.updating = true;
     onStatus();

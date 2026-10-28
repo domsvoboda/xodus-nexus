@@ -1,0 +1,23 @@
+.account-header { display: flex; align-items: center; gap: 2px; position: relative; }
+.account-header .account-summary { flex: 1; min-width: 0; grid-template-columns: 36px minmax(0,1fr); gap: 8px; }
+.notifications { flex: 0 0 36px; }
+.notification-bell { width: 36px; height: 38px; border: 0; border-radius: 4px; background: transparent; cursor: pointer; position: relative; display: grid; place-items: center; }
+.notification-bell:hover, .notification-bell[aria-expanded="true"] { background: #3a3e44; }
+.notification-bell > svg { width: 19px; height: 19px; }
+.notification-badge { position: absolute; top: 1px; right: 0; min-width: 15px; padding: 1px 3px; border-radius: 4px; background: #378a39; border: 1px solid #272a30; color: white; font-size: 10px; font-weight: 700; line-height: 13px; }
+.notification-panel { position: absolute; top: calc(100% + 8px); left: 0; width: min(360px,calc(100vw - 32px)); max-height: min(560px,calc(100vh - 110px)); overflow: auto; z-index: 75; border: 1px solid #4b5058; border-radius: 7px; background: #25292e; box-shadow: 0 12px 38px #0009; }
+.notification-panel header { display: flex; align-items: center; justify-content: space-between; padding: 12px 14px; border-bottom: 1px solid #3d4248; }
+.notification-panel h2 { margin: 0; font-size: 17px; }
+.notification-panel header button { display: grid; place-items: center; background: transparent; border: 0; border-radius: 3px; width: 30px; height: 30px; cursor: pointer; }
+.notification-panel header svg { width: 17px; height: 17px; }
+.notification-panel > p { padding: 8px 16px; color: #bac0c7; font-size: 12px; line-height: 1.5; }
+.notification-panel ul { list-style: none; padding: 4px; margin: 0; }
+.notification-panel li button { width: 100%; display: flex; align-items: center; gap: 11px; padding: 13px 10px; border: 0; border-radius: 4px; text-align: left; background: transparent; cursor: pointer; }
+.notification-panel li button:hover { background: #393f47; }
+.notification-panel li button.unread { background: #30382f; }
+.notification-panel li button.unread:hover { background: #3a4936; }
+.notification-panel li svg { flex: 0 0 20px; width: 20px; color: #b9c6b3; }
+.notification-panel li span { flex: 1; min-width: 0; display: grid; gap: 5px; }
+.notification-panel strong { font-size: 13px; overflow-wrap: anywhere; }
+.notification-panel small { font-size: 11px; color: #bac0c7; }
+.notification-panel i { width: 6px; height: 6px; border-radius: 50%; background: #83cc6b; flex: 0 0 6px; }

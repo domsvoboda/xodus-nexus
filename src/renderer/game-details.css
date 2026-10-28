@@ -17,6 +17,12 @@ html[data-gamepad-navigation] .gd-back-hint { display: inline-grid; }
 .gd-tags { display: flex; gap: 7px; flex-wrap: wrap; }
 .gd-tags span { background: #ffffff14; border: 1px solid #ffffff23; border-radius: 4px; padding: 5px 8px; color: #d9dee3; font-size: 11px; }
 .gd-page-content { padding: 0 4px; }
+.gd-ready.not-installed { color: #c4c9ce; }
+.gd-install-options { padding: 16px 0; border-bottom: 1px solid var(--line); }
+.gd-install-options > p { margin: 0 0 12px; color: var(--gd-muted); font-size: 12px; }
+.gd-install-options > label { display: grid; gap: 8px; max-width: 620px; }
+.gd-install-options input { width: 100%; min-width: 0; height: 40px; border: 1px solid #4b5056; background: #17191c; padding: 0 11px; outline: 0; font-size: 12px; }
+.gd-install-options input:focus { border-color: #eee; }
 .gd-play-row { display: flex; align-items: center; gap: 26px; padding: 22px 0; border-bottom: 1px solid var(--line); }
 .gd-play { min-width: 125px; min-height: 46px; font-size: 15px; }
 .gd-play svg { width: 19px; }

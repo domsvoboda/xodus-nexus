@@ -28,8 +28,11 @@ const h = vi.hoisted(() => ({
   holdAccountReads: false,
   contentSupported: false,
   discoverySupported: false,
+  offlineRuntimeSupported: false,
+  connectivityState: 'unknown' as 'unknown'|'online'|'offline',
   libraryReads: 0,
   launchEnvironments: [] as NodeJS.ProcessEnv[],
+  launchArguments: [] as string[][],
   backendRefreshes: 0, runtimeRefreshes: 0,
   accountRequests: 0,
   prefixLocales: [] as (string | undefined)[],
@@ -42,11 +45,12 @@ vi.mock('electron', () => ({
   Notification: class { static isSupported() { return true; } constructor(private options: { title: string; body: string }) {} on() {} show() { h.notifications.push(this.options); } },
   app: { requestSingleInstanceLock: () => true, getPath: (name: string) => path.join(h.root, name),
     setPath: vi.fn(), on: (name: string, callback: (...args: any[]) => any) => h.events.set(name, callback), once: vi.fn(),
-    whenReady: () => Promise.resolve(), getVersion: () => '0.0.0', isPackaged: false, quit: h.quit },
-  ipcMain: { handle: (name: string, callback: (...args: any[]) => any) => h.handlers.set(name, callback) },
+    whenReady: () => Promise.resolve(), getVersion: () => '0.0.0', isPackaged: false, emit:vi.fn(), quit: h.quit },
+  ipcMain: { handle: (name: string, callback: (...args: any[]) => any) => h.handlers.set(name, callback),removeHandler:(name:string)=>h.handlers.delete(name) },
   BrowserWindow: class { webContents = { on: vi.fn(), send: vi.fn(), setWindowOpenHandler: vi.fn() };
     on() {} once() {} show() {} focus() {} maximize = h.maximize; isDestroyed() { return false; } async loadFile() {} },
   screen: { getPrimaryDisplay: () => ({ workArea: { x: 0, y: 0, width: 1440, height: 900 } }) },
+  globalShortcut:{register:vi.fn(()=>false),unregister:vi.fn()},
   dialog: { showMessageBox: h.showMessage, showSaveDialog: h.showSave }, nativeImage: {}, shell: { trashItem: h.trash }, powerSaveBlocker: { start: h.blockDisplay, stop: h.releaseDisplay },
 }));
 vi.mock('./backend.js', () => ({ LINUX_RUN_PATCH: 'test-patch', BackendManager: class {
@@ -56,6 +60,9 @@ vi.mock('./runtime.js', () => ({ RuntimeManager: class { get current() { return 
 vi.mock('./catalog.js', () => ({ CatalogService: class { async artwork() { return new Map(); } posters = h.posters; } }));
 vi.mock('./account-profile.js', () => ({ AccountProfile: class { async select() {} cancel() {} } }));
 vi.mock('./launcher-update.js', () => ({ LauncherUpdater: class { state = {}; async initialize() {} async check() {} cancel() {} } }));
+// Keep download integration fixtures isolated from the real compositor and shortcut portal.
+vi.mock('./xbox-game-guide.js',()=>({XboxGameGuide:class {reset(){} bind(){} unbind(){} publish(){} async shutdown(){}}}));
+vi.mock('./xbox-overlay-shortcut.js',()=>({ensureOverlayDesktopEntry:async()=>{},XboxOverlayShortcut:class {current={state:'disabled'};async configure(){}async shutdown(){}}}));
 vi.mock('./launcher-fonts.js', () => ({ adoptLauncherFonts: () => undefined, externalFontEnvironment: (env: unknown) => env }));
 // Deletion is restricted to disposable fixture directories, never real games.
 vi.mock('./game-delete.js', () => ({ deleteGameDirectory: (target: { path: string }) => h.deleteFiles(target.path) }));
@@ -74,7 +81,14 @@ vi.mock('./install-plan.js', async original => ({ ...await original<typeof impor
   }),
 }));
 vi.mock('./xodus-service.js', () => ({ cloudSaveRuntime: async () => false, unbridgedCloudSaveRuntime: async () => false,
+  gameInviteRuntime: async () => false,
+  offlineIdentityRuntime: async () => h.offlineRuntimeSupported,
   selectedWinePath: () => h.wine, storeContentRuntime: async () => h.contentSupported, storeDiscoveryRuntime: async () => h.discoverySupported, startXodusService: vi.fn() }));
+// No public connectivity probes from an account-free launch integration fixture.
+vi.mock('./connectivity.js',()=>({ConnectivityMonitor:class {
+  get current(){return {state:h.connectivityState};} start(){} stop(){}
+  async check(){return this.current;}
+}}));
 vi.mock('./proton.js', () => ({ prepareProtonRunner: async () => undefined, syncPrefixUserLocale: async (_wine: string, _prefix: string, locale: string | undefined) => { h.prefixLocales.push(locale); }, syncUnrealCultureGameIni: async () => {} }));
 vi.mock('./game-wrapper.js', () => ({ prepareGameWrapper: async () => ({ command: h.wine, cleanup: async () => {} }) }));
 vi.mock('./process.js', () => ({
@@ -99,6 +113,7 @@ vi.mock('./process.js', () => ({
   },
 }));
 vi.mock('./game-process.js', () => ({ spawnGameProcess: async (_command:string,_args:string[],options:{env:NodeJS.ProcessEnv}) => {
+  h.launchArguments.push([..._args]);
   h.launchEnvironments.push({...options.env});
   let resolve!: (result: { code: number; output: string }) => void;
   const result = new Promise<{ code: number; output: string }>(done => { resolve = done; });
@@ -172,7 +187,7 @@ it.each(['market','winePath','externalXodusRoot','runtimeRoot'] as const)
 beforeAll(async () => {
   h.root = await fs.mkdtemp(path.join(os.tmpdir(), 'nexus-install-integration-'));
   h.wine = path.join(h.root, 'runtime', 'wine'); await fs.mkdir(path.dirname(h.wine)); await fs.writeFile(h.wine, 'fixture', { mode: 0o700 });
-  const data = demoSnapshot(); h.backend = { ...data.backend, capabilities: { ...data.backend.capabilities, packageSelection: true }, binaryPath: path.join(h.root, 'synthetic-cli'), linuxRunPatch: 'test-patch' }; h.runtime = data.runtime;
+  const data = demoSnapshot(); h.backend = { ...data.backend, capabilities: { ...data.backend.capabilities, packageSelection: true, streamingUpdateRecovery: true }, binaryPath: path.join(h.root, 'synthetic-cli'), linuxRunPatch: 'test-patch' }; h.runtime = data.runtime;
   const store = new StateStore(path.join(h.root, 'userData'));
   await store.setSettings({ firstRunCompleted: true, market: 'US', runtimeRoot: path.join(h.root, 'runtime'), winePath: h.wine });
   h.savedPausedId=randomUUID();
@@ -496,6 +511,39 @@ it('saves and launches locale overrides without catalog or exhaustive manifest l
   }
 });
 
+it('launches offline only with both compatible components and discards inherited identity modes', async () => {
+  const keys=['XODUS_FORCE_OFFLINE','XODUS_OFFLINE_IDENTITY','XODUS_ACCOUNT_HASH'] as const;
+  const old=keys.map(key=>process.env[key]);
+  const cache=h.backend.capabilities.licenseCache,launch=h.backend.capabilities.offlineLaunch;
+  try {
+    for(const key of keys)process.env[key]='foreign';
+    h.connectivityState='offline';h.offlineRuntimeSupported=false;
+    const count=h.launchEnvironments.length;
+    await expect(ipc('launch-game','sample')).rejects.toThrow('compatible Nexus backend and runtime');
+    expect(h.launchEnvironments).toHaveLength(count);
+    h.offlineRuntimeSupported=true;h.backend.capabilities.offlineLaunch=false;
+    await expect(ipc('launch-game','sample')).rejects.toThrow('compatible Nexus backend and runtime');
+    expect(h.launchEnvironments).toHaveLength(count);
+    h.backend.capabilities.licenseCache=true;h.backend.capabilities.offlineLaunch=true;
+    for(const offline of [false,true]) {
+      h.connectivityState=offline?'offline':'online';
+      await ipc('launch-game','sample');
+      const env=h.launchEnvironments.at(-1)!,args=h.launchArguments.at(-1)!;
+      expect(env.XODUS_FORCE_OFFLINE).toBe(offline?'1':undefined);
+      expect(env.XODUS_OFFLINE_IDENTITY).toBeUndefined();
+      expect(env.XODUS_ACCOUNT_HASH).toMatch(/^[a-f0-9]{32}$/);
+      expect(args.includes('--offline')).toBe(offline);expect(args).toContain('--license-cache');
+      h.game!.finish(0);await vi.waitFor(()=>expect(snapshot().gameOperation.status).toBe('complete'));
+      await new Promise(resolve=>setTimeout(resolve,10));
+    }
+  } finally {
+    keys.forEach((key,index)=>{if(old[index]===undefined)delete process.env[key];else process.env[key]=old[index];});
+    h.backend.capabilities.licenseCache=cache;h.backend.capabilities.offlineLaunch=launch;
+    h.connectivityState='unknown';h.offlineRuntimeSupported=false;
+    h.blockDisplay.mockClear();h.releaseDisplay.mockClear();
+  }
+});
+
 it('shows safe specific licensing guidance on failed launch and preserves later non-license errors', async () => {
   for (const [output, expected] of [
     ['NEXUS_CONTENT_LICENSE_DIAGNOSTIC_V1 content-device-limit 200\nprivate@example.test t=SECRET', 'Microsoft Store device limit reached'],
@@ -515,6 +563,67 @@ it('shows safe specific licensing guidance on failed launch and preserves later 
     await new Promise(resolve => setTimeout(resolve, 10));
   }
   h.blockDisplay.mockClear(); h.releaseDisplay.mockClear();
+});
+
+it('keeps interrupted updates blocked after cancellation and queue removal, then permits verified recovery (#405)', async () => {
+  const directory = path.join(h.root, 'update-recovery'); await fs.mkdir(directory);
+  await fs.writeFile(path.join(directory, 'MicrosoftGame.config'), '<Game><Identity Name="Recovery.Base" Version="1.0.0.0"/><ShellVisuals DefaultDisplayName="Recovery game"/><ExecutableList><Executable Name="Recovery.exe"/></ExecutableList><StoreId>9RRRRRRRRRRR</StoreId></Game>');
+  await fs.writeFile(path.join(directory, 'Recovery.exe'), 'MZ old fixture');
+  await fs.writeFile(path.join(directory, '.xodus-streaming.msixvc'), 'old fixture metadata');
+  const game = await ipc('import-game', directory), marker = path.join(directory, '.nexus-update-incomplete-v1');
+  const launches = h.launchEnvironments.length;
+  const notifications = h.notifications.length;
+  const row = (id: string) => snapshot().downloads.find((task: any) => task.id === id);
+  const installed = () => snapshot().games.find((entry: any) => entry.id === game.id);
+  h.backend.capabilities.streamingUpdateRecovery = false;
+  const count = h.downloads.length;
+  await expect(ipc('update-installed-game', game.id)).rejects.toThrow('Update the Nexus backend');
+  expect(h.downloads).toHaveLength(count);
+  expect(await fs.access(marker).then(() => true, () => false)).toBe(false);
+  h.backend.capabilities.streamingUpdateRecovery = true;
+  const start = async () => {
+    h.downloads.splice(0);
+    const id = await ipc('update-installed-game', game.id);
+    await vi.waitFor(() => expect(h.downloads).toHaveLength(1));
+    return id as string;
+  };
+  const cancelled = await start();
+  await fs.writeFile(marker, ''); // Model backend replacing the first file.
+  await fs.writeFile(path.join(directory, 'Recovery.exe'), 'MZ new fixture');
+  await ipc('cancel-download', cancelled, 'keep');
+  expect(row(cancelled).status).toBe('cancelled');
+  expect(installed()).toMatchObject({ installState: 'incomplete', updateIncomplete: true });
+  await ipc('remove-download', cancelled);
+  await ipc('clear-finished-downloads');
+  const restarted = new StateStore(path.join(h.root, 'userData')); await restarted.load();
+  expect(restarted.games.find(entry => entry.id === game.id)).toMatchObject({ installState: 'incomplete', updateIncomplete: true });
+  await expect(ipc('launch-game', game.id)).rejects.toThrow('Resume the update');
+  expect(h.launchEnvironments).toHaveLength(launches);
+  // Reimporting or deleting queue history cannot erase the on-disk barrier.
+  expect(await ipc('import-game', directory)).toMatchObject({ installState: 'incomplete', updateIncomplete: true });
+  const manifest = path.join(directory, 'MicrosoftGame.config');
+  await fs.rename(manifest, manifest + '.saved');
+  await expect(ipc('launch-game', game.id)).rejects.toThrow('Resume the update');
+  const failed = await start(); // Recovery must still work if the interrupted manifest is missing.
+  await fs.rename(manifest + '.saved', manifest);
+  h.downloads[0].finish(1);
+  await vi.waitFor(() => expect(row(failed).status).toBe('failed'));
+  expect(installed().updateIncomplete).toBe(true);
+  const unconfirmed = await start();
+  h.downloads[0].progress(false, 'complete'); h.downloads[0].finish(0);
+  await vi.waitFor(() => expect(row(unconfirmed).status).toBe('failed'));
+  expect(row(unconfirmed).error).toContain('Resume the update');
+  expect(h.notifications).toHaveLength(notifications);
+  const recovered = await start();
+  await fs.unlink(marker); // Only a successful native metadata commit removes it.
+  h.downloads[0].progress(false, 'complete'); h.downloads[0].finish(0);
+  await vi.waitFor(() => expect(row(recovered).status).toBe('complete'));
+  await vi.waitFor(() => expect(h.notifications).toHaveLength(notifications + 1));
+  expect(installed()).toMatchObject({ installState: 'ready' });
+  expect(installed().updateIncomplete).toBeUndefined();
+  expect(await fs.readFile(path.join(directory, 'Recovery.exe'), 'utf8')).toBe('MZ new fixture');
+  await ipc('remove-game', game.id, 'library');
+  h.downloads.splice(0); h.notifications.splice(notifications);
 });
 
 it('runs real queue IPC, pause/cancel/failure/restart and simultaneous play/download safely', async () => {
@@ -553,4 +662,13 @@ it('runs real queue IPC, pause/cancel/failure/restart and simultaneous play/down
   expect(h.downloads).toHaveLength(4);
   expect(h.notifications).toHaveLength(1); // no completion toast for cancelled/stopped jobs
   expect(h.releaseDisplay).toHaveBeenCalledWith(7);
+});
+
+it('saves overlay preferences without refreshing account or runtime access',async()=>{
+  const before=h.accountReads.length;
+  const saved=await ipc('update-settings',{overlayShortcut:'Control+Shift+G',overlaySide:'right',overlayEnabled:true});
+  expect(saved).toMatchObject({overlayShortcut:'Control+Shift+G',overlaySide:'right',overlayEnabled:true});
+  expect(h.accountReads).toHaveLength(before);
+  const persisted=new StateStore(path.join(h.root,'userData'));await persisted.load();expect(persisted.settings.overlaySide).toBe('right');
+  await expect(ipc('update-settings',{overlayShortcut:'not a shortcut'})).rejects.toThrow('shortcut');
 });

@@ -8,6 +8,7 @@ import { systemGameLocale } from './game-locale.js';
 import { windowsGameLocale } from '../shared/game-language.js';
 import { prepareShaderCache } from './shader-cache.js';
 import { DEFAULT_SHADER_CACHE_GIB, shaderCacheLimits } from '../shared/shader-cache.js';
+import { layoutOfWine, protonRootOf, type ProtonLayout } from './proton-layout.js';
 
 function shellQuote(value: string): string {
   return `'${value.replace(/'/g, `'"'"'`)}'`;
@@ -26,10 +27,12 @@ const REQUIRED_PREFIX_FILES = [
   'drive_c/windows/system32/d3d12.dll',
 ];
 
-async function missingPrefixFiles(compatibilityDataPath: string): Promise<string[]> {
+async function missingPrefixFiles(compatibilityDataPath: string, layout: ProtonLayout): Promise<string[]> {
   const prefix = path.join(compatibilityDataPath, 'pfx');
   const missing: string[] = [];
-  for (const relative of REQUIRED_PREFIX_FILES) {
+  // Proton builds Wine's separate vkd3d DLLs only for x86 PE targets.
+  const required = layout.peArch === 'x86_64-windows' ? REQUIRED_PREFIX_FILES : REQUIRED_PREFIX_FILES.filter(file => !file.endsWith('/libvkd3d-utils-1.dll'));
+  for (const relative of required) {
     try { await fs.access(path.join(prefix, relative), constants.R_OK); }
     catch { missing.push(relative); }
   }
@@ -342,12 +345,18 @@ export async function syncUnrealCultureGameIni(
  * Like the Nexus runtime's Proton, a 32-bit exe also gets vector TSO unless
  * the runtime's i386 xgameruntime.dll carries the FEX-safe atomics marker.
  */
-export function fexEnvironment(configFile: string, profiles: string | undefined, i386XGameRuntime?: string): string[] {
+export function fexEnvironment(configFile: string, i386XGameRuntime?: string): string[] {
+  const profiles = path.join(path.dirname(configFile), 'fex-emu');
   return [
     'if [ "$(uname -m)" = aarch64 ]; then',
     '  if [ "${FEX_DISKCACHE+x}" != x ]; then export FEX_DISKCACHE=1; fi',
-    ...(profiles ? ['  if [ "${FEX_APP_CONFIG_LOCATION+x}" != x ]; then', `    export FEX_APP_CONFIG_LOCATION=${shellQuote(profiles)}`, '  fi'] : []),
-    '  if [ -z "${FEX_APP_CONFIG:-}" ]; then',
+    '  if [ "${FEX_APP_CONFIG_LOCATION+x}" != x ]; then',
+    // FEX creates AppConfig here. Its global shipped profiles are still read
+    // from the runtime, but local state must never mutate that runtime.
+    `    mkdir -p ${shellQuote(path.join(profiles, 'AppConfig'))} || exit 1`,
+    `    export FEX_APP_CONFIG_LOCATION=${shellQuote(profiles + '/')}`,
+    '  fi',
+    '  if [ "${FEX_APP_CONFIG+x}" != x ]; then',
     '    fex_tso=; fex_multiblock=',
     '    case "${STEAM_FEX_TSOENABLED:-}" in 0|1) fex_tso=$STEAM_FEX_TSOENABLED;; esac',
     '    case "${STEAM_FEX_MULTIBLOCK:-}" in 0|1) fex_multiblock=$STEAM_FEX_MULTIBLOCK;; esac',
@@ -372,7 +381,8 @@ export function fexEnvironment(configFile: string, profiles: string | undefined,
       '      break',
       '    done',
     ] : []),
-    `    printf '{\\n  "Config": {%s},\\n  "ThunksDB": {}\\n}\\n' "$fex_config" > ${shellQuote(configFile + '.tmp')} && mv -f ${shellQuote(configFile + '.tmp')} ${shellQuote(configFile)}`,
+    `    fex_tmp=$(mktemp ${shellQuote(configFile + '.tmp.XXXXXX')}) || exit 1`,
+    `    printf '{\\n  "Config": {%s},\\n  "ThunksDB": {}\\n}\\n' "$fex_config" > "$fex_tmp" && mv -f "$fex_tmp" ${shellQuote(configFile)} || { rm -f "$fex_tmp"; exit 1; }`,
     `    export FEX_APP_CONFIG=${shellQuote(configFile)}`,
     '  fi',
     'fi',
@@ -387,9 +397,12 @@ export async function prepareProtonRunner(
   shaderCacheLimitGiB = DEFAULT_SHADER_CACHE_GIB,
 ): Promise<ProtonRunner | undefined> {
   const cacheLimits = shaderCacheLimits(shaderCacheLimitGiB);
-  const protonRoot = path.resolve(path.dirname(winePath), '..', '..');
+  // An arm64 runtime keeps its own loader, prefix and ARM64X modules; Proton's
+  // `run` selects the same layout itself when it creates the prefix.
+  const layout = layoutOfWine(winePath);
+  const protonRoot = protonRootOf(winePath);
   const proton = path.join(protonRoot, 'proton');
-  const defaultPrefix = path.join(protonRoot, 'files', 'share', 'default_pfx');
+  const defaultPrefix = path.join(protonRoot, 'files', 'share', layout.defaultPrefix);
   try {
     await fs.access(proton, constants.X_OK);
     await fs.access(defaultPrefix, constants.R_OK);
@@ -400,7 +413,7 @@ export async function prepareProtonRunner(
   await prepareManagedPrefix(compatibilityDataPath);
   await fs.mkdir(steamRoot, { recursive: true });
   await rebaseRuntimeSymlinks(path.join(compatibilityDataPath, 'pfx'), protonRoot);
-  let missing = await missingPrefixFiles(compatibilityDataPath);
+  let missing = await missingPrefixFiles(compatibilityDataPath, layout);
   if (missing.length > 0) {
     const initialized = await run(proton, ['run', 'cmd', '/c', 'exit'], {
       env: {
@@ -414,7 +427,7 @@ export async function prepareProtonRunner(
       },
       maxOutput: 1_000_000,
     });
-    missing = await missingPrefixFiles(compatibilityDataPath);
+    missing = await missingPrefixFiles(compatibilityDataPath, layout);
     if (missing.length > 0) {
       const detail = initialized.output.split('\n').map((line) => line.trim()).filter(Boolean).slice(-5).join(' | ');
       throw new Error(`The Proton prefix was not prepared correctly; missing ${missing.join(', ')}${detail ? `: ${detail}` : ` (code ${initialized.code})`}`);
@@ -434,7 +447,7 @@ export async function prepareProtonRunner(
   let appStateRuntime = false;
   let dxvkRuntime = false;
   try {
-    const metadata = JSON.parse(await fs.readFile(path.join(protonRoot, 'XODUS_NEXUS_PATCH.json'), 'utf8')) as { features?: unknown; components?: Record<string, string> };
+    const metadata = JSON.parse(await fs.readFile(path.join(protonRoot, 'XODUS_NEXUS_PATCH.json'), 'utf8')) as { features?: unknown; components?: Record<string, string>; componentsByArch?: Record<string, Record<string, string>> };
     hostLibraries = Array.isArray(metadata.features) && metadata.features.includes('wine-host-libraries-v1');
     http2Runtime = Array.isArray(metadata.features) && metadata.features.includes('wine-winhttp-http2-v1');
     jsonRuntime = Array.isArray(metadata.features) && metadata.features.includes('winrt-json-v1');
@@ -442,6 +455,9 @@ export async function prepareProtonRunner(
     appStateRuntime = Array.isArray(metadata.features) && metadata.features.includes('appstate-registration-v1');
     dxvkRuntime = Array.isArray(metadata.features) && metadata.features.includes('dxvk-constant-compare-v1');
     const dxvkComponents = ['d3d8.dll', 'd3d9.dll', 'd3d10core.dll', 'd3d11.dll', 'dxgi.dll'];
+    // `components` are the x86_64 checksums; other PE directories are listed
+    // under `componentsByArch` and are never checked against x86_64 bytes.
+    const expectedComponents = metadata.componentsByArch?.[layout.peArch] ?? (layout.peArch === 'x86_64-windows' ? metadata.components : undefined);
     const components = [ ...(http2Runtime ? ['libnghttp2.dll'] : []), ...(jsonRuntime ? ['windows.web.dll'] : []), ...(shaderRuntime ? ['libvkd3d-shader-1.dll'] : []), ...(appStateRuntime ? ['twinapi.appcore.dll'] : []), ...(dxvkRuntime ? dxvkComponents : []) ];
     // Validate every component before changing any prefix entry.
     const verified = await Promise.all(components.map(async (name) => {
@@ -449,8 +465,8 @@ export async function prepareProtonRunner(
       // alone is insufficient in existing prefixes. Validate before replacing
       // a directory entry so symlinks cannot overwrite another runtime.
       const library = name === 'libvkd3d-shader-1.dll' ? 'vkd3d' : dxvkComponents.includes(name) ? 'wine/dxvk' : 'wine';
-      const source = path.join(files, 'lib', library, 'x86_64-windows', name);
-      const expected = metadata.components?.[name];
+      const source = path.join(files, 'lib', library, layout.peArch, name);
+      const expected = expectedComponents?.[name];
       const bytes = await fs.readFile(source);
       if (!expected || createHash('sha256').update(bytes).digest('hex') !== expected) throw new Error(`The shared runtime has an invalid ${name} checksum.`);
       return { name, bytes };
@@ -480,11 +496,11 @@ export async function prepareProtonRunner(
   const protonLibraries = [...(hostLibraries ? ['/usr/lib'] : []), ...libraryDirectories].join(':');
   const gstPlugins = hostLibraries ? '/usr/lib/gstreamer-1.0' : libraryDirectories.map((directory) => path.join(directory, 'gstreamer-1.0')).join(':');
   const wineDllPath = [path.join(files, 'lib', 'vkd3d'), path.join(files, 'lib', 'wine')].join(':');
-  const executablePath = [path.join(files, 'bin'), process.env.PATH ?? ''].filter(Boolean).join(':');
+  const executablePath = [path.join(files, layout.bin), process.env.PATH ?? ''].filter(Boolean).join(':');
+  const wineserver = path.join(files, layout.bin, 'wineserver');
   const eacRuntime = await installedEacRuntime(steamRoot);
   // Keep the caches outside temporary launch views, separately for each prefix.
   const shaderCaches = await prepareShaderCache(compatibilityDataPath);
-  const fexProfiles = await fs.access(path.join(files, 'share', 'fex-emu')).then(() => path.join(files, 'share', 'fex-emu') + '/', () => undefined);
   const defaultEnvironment = (name: string, value: string) => [
     `if [ "\${${name}+x}" != x ]; then`,
     `  export ${name}=${shellQuote(value)}`,
@@ -533,19 +549,19 @@ export async function prepareProtonRunner(
     // Private lifecycle command uses the exact same prefix/library environment
     // as launch. It is only invoked for explicit Stop/launcher shutdown.
     'if [ "${1:-}" = "--nexus-stop-prefix" ]; then',
-    `  exec ${shellQuote(path.join(files, 'bin', 'wineserver'))} -k`,
+    `  exec ${shellQuote(wineserver)} -k`,
     'fi',
-    ...fexEnvironment(path.join(compatibilityDataPath, 'proton-fex-config.json'), fexProfiles, path.join(files, 'lib', 'wine', 'i386-windows', 'xgameruntime.dll')),
+    ...fexEnvironment(path.join(compatibilityDataPath, 'proton-fex-config.json'), path.join(files, 'lib', 'wine', 'i386-windows', 'xgameruntime.dll')),
     // Launchers (including EAC) may finish before the game they spawned.
     // Keep Xodus and its temporary launch view/account service alive until
     // the isolated game prefix has no remaining Wine processes.
-    `if [ ! -x ${shellQuote(path.join(files, 'bin', 'wineserver'))} ]; then`,
+    `if [ ! -x ${shellQuote(wineserver)} ]; then`,
     `  exec ${shellQuote(launchWine)} "$@"`,
     'fi',
     'launch_status=0',
     `${shellQuote(launchWine)} "$@" || launch_status=$?`,
     'wait_status=0',
-    `${shellQuote(path.join(files, 'bin', 'wineserver'))} -w || wait_status=$?`,
+    `${shellQuote(wineserver)} -w || wait_status=$?`,
     'if [ "$launch_status" -ne 0 ]; then exit "$launch_status"; fi',
     'exit "$wait_status"',
     '',

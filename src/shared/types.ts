@@ -1,4 +1,4 @@
-export type Page = 'home' | 'store' | 'library' | 'downloads' | 'settings';
+export type Page = 'home' | 'store' | 'library' | 'downloads' | 'settings' | 'social';
 
 export interface BackendCapabilities {
   commands: string[];
@@ -7,14 +7,24 @@ export interface BackendCapabilities {
   gameActivity?: boolean;
   achievements?: boolean;
   library?: boolean;
+  nativeSocial?: boolean;
   login: boolean;
   externalAuth?: boolean;
   logout: boolean;
   download: boolean;
   streaming: boolean;
   streamingProgressJson?: boolean;
+  /** `run --license-cache` and `offline-pc --license-cache`: device-bound offline
+   * licenses that the backend validates against their lease on every load and
+   * removes on every known revocation. Older caches are never handed a path. */
+  licenseCache?: boolean;
+  /** `offline-pc`: show or change the account's designated offline PC. */
+  offlinePc?: boolean;
+  /** `run --offline`: skip Microsoft entirely and launch on the stored offline license. */
+  offlineLaunch?: boolean;
   streamingControls?: boolean;
   streamingBandwidthLimit?: boolean;
+  streamingUpdateRecovery?: boolean;
   packageSelection?: boolean;
   contentPackageSelection?: boolean;
   run: boolean;
@@ -111,6 +121,7 @@ export interface Game {
   heroUrl?: string; // Wide Store artwork for the game detail panel.
   installState: 'ready' | 'incomplete' | 'imported';
   installMessage?: string;
+  updateIncomplete?: boolean; // Refreshed from the backend's on-disk update barrier.
   vcRedistEncrypted?: boolean;
   antiCheat?: {
     provider: 'Easy Anti-Cheat';
@@ -142,6 +153,8 @@ export interface DownloadTask {
   cancelling?: boolean;
   progress: number | null;
   downloadedBytes?: number;
+  networkBytes?: number;
+  reusedBytes?: number;
   totalBytes?: number;
   transferRate?: string;
   coverUrl?: string; // Store box art for the queued product, for the queue list.
@@ -180,6 +193,9 @@ export interface Settings {
   externalXodusRoot: string;
   runtimeRoot: string;
   verboseLogs: boolean;
+  overlayEnabled?:boolean;
+  overlayShortcut?:string;
+  overlaySide?:'left'|'right';
   firstRunCompleted?: boolean;
 }
 
@@ -218,10 +234,36 @@ export interface KeyringStatus {
   message: string;
 }
 
+export interface LauncherApi {setXboxOverlayRecording(recording:boolean):Promise<void>;}
+/** The Xbox app's "Offline permissions" setting for this device, as Microsoft reports it. */
+export interface OfflinePermissions {
+  /** Local launcher check, not a licensing grant or a Microsoft response field. */
+  launchSupported?: boolean;
+  enabled: boolean;
+  /** For a change: whether Microsoft applied it. */
+  requestSuccess: boolean;
+  remainingToggles?: number;
+  maxToggles?: number;
+  periodDays?: number;
+  /** When the next change becomes possible once none remain. */
+  nextChangeAt?: string;
+  checkedAt: string;
+}
+
+/** Reachability of Microsoft's sign-in hosts, probed by the launcher. */
+export interface ConnectivityStatus {
+  state: 'online' | 'offline' | 'unknown';
+  checkedAt?: string;
+  /** Why the launcher considers Microsoft unreachable. */
+  reason?: string;
+}
+
 export interface AppSnapshot {
+ overlayShortcut?:{state:'disabled'|'recording'|'requested'|'registered'|'unavailable';message?:string;backend?:string};
   social?: import('./game-invites.js').GameInviteState;
   backend: BackendStatus;
   runtime: RuntimeStatus;
+  connectivity?: ConnectivityStatus;
   games: Game[];
   downloads: DownloadTask[];
   settings: Settings;
@@ -298,6 +340,9 @@ export interface CatalogProduct {
   supportNote: string;
 }
 
+/** A saved installation ID, or an explicit read-only Store catalog identity. */
+export type GameDetailsTarget = string | {productId:string};
+
 /** Public catalog data only, never an ownership/installation decision. */
 export interface GameStoreDetails {
   productId: string;
@@ -307,6 +352,7 @@ export interface GameStoreDetails {
   heroUrl?: string;
   categories: string[];
   screenshots: string[];
+  xboxTitleId?: string;
   releaseDate?: string;
 }
 
@@ -360,7 +406,135 @@ export interface AccountLibraryPage {
   skippedEntitlements?: number;
 }
 
+export interface XboxFriend {
+  xuid: string;
+  avatarUrl?:string|null;
+  gamertag: string;
+  online: boolean;
+  presence: string;
+  favorite: boolean;
+  inParty: boolean;
+}
+export interface XboxMessage { id: string; sender: string; timestamp: string | null; text: string; hidden: boolean; mine: boolean }
+export interface XboxPlayerProfile { xuid:string;gamertag:string;gamerscore:string|null;avatarUrl?:string|null }
+export type XboxPeopleList = 'search'|'recent'|'suggested'|'blocked'|'received-requests'|'sent-requests';
+export type XboxRelationshipAction = 'send-request'|'accept-request'|'cancel-request'|'decline-request'|'remove-friend'|'favorite'|'unfavorite'|'block'|'unblock';
+export interface XboxRelationship {
+  xuid:string;isFriend:boolean;isFollowing:boolean;isFollower:boolean;favorite:boolean;blocked:boolean;
+  requestState:'none'|'incoming'|'outgoing'|'unknown';
+}
+export interface XboxPerson extends XboxFriend {reason?:string;lastSeen?:string}
+export interface XboxPeoplePage {items:XboxPerson[];continuation?:string|null;truncated?:boolean}
+export interface XboxPlayerDetails extends XboxPlayerProfile {
+  isSelf?:boolean;
+  bio?:string;location?:string;tenure?:string;
+  colors?:{primary?:string;secondary?:string;tertiary?:string};
+  counts?:{friends?:number;followers?:number;following?:number};
+  relationship?:XboxRelationship;
+}
+export interface XboxProfileGame {
+  titleId:string;name:string;imageUrl?:string;lastPlayed?:string;
+  currentGamerscore?:number;totalGamerscore?:number;achievementsUnlocked?:number;achievementsTotal?:number;
+}
+export interface XboxProfileGames {items:XboxProfileGame[];continuation?:string|null;truncated?:boolean}
+export interface XboxProfileRequest { id:string;xuid:string }
+export interface XboxConversation {
+  id: string;
+  avatarUrl?:string|null;
+  type: string | null;
+  participants: string[];
+  gamertag: string;
+  unread: boolean;
+  lastMessage: XboxMessage | null;
+}
+export interface XboxPartyState {
+  phase: 'idle' | 'connecting' | 'connected' | 'leaving' | 'error';
+  id?: string;
+  selfXuid?: string;
+  members: {xuid:string;role:string|null}[];
+  error?: string;
+}
+export interface XboxPartyAnswer { id:string;answer:{sdpType:'answer';sdp:string;iceCandidates:RTCIceCandidateInit[]} }
+export interface XboxInvite {
+  id:string;kind:'party'|'game';gamertag:string;sender:string;
+  expiresAt:number;sentAt:number|null;titleId:string|null;titleName:string|null;
+}
+export interface XboxVoiceApi {
+  getXboxParty(): Promise<XboxPartyState>;
+  startXboxParty(offer:string,partyId?:string): Promise<XboxPartyAnswer>;
+  getXboxActiveParties(): Promise<string[]>;
+  leaveExistingXboxParty(id:string): Promise<void>;
+  confirmXboxParty(id:string): Promise<void>;
+  leaveXboxParty(): Promise<void>;
+  inviteXboxPartyFriend(xuid:string): Promise<void>;
+  xboxVoiceAllowed(xuid:string): Promise<boolean>;
+  allowXboxMicrophone(): Promise<void>;
+  onXboxPartyState(callback:(state:XboxPartyState)=>void):()=>void;
+  getXboxInvites():Promise<XboxInvite[]>;
+  acceptXboxPartyInvite(offer:string,id:string):Promise<XboxPartyAnswer>;
+  onXboxInvitesChanged(callback:(invites:XboxInvite[])=>void):()=>void;
+}
+
+export interface XboxVoiceState {
+  connected:boolean;muted:boolean;audioBlocked:boolean;mutedMembers:string[];error?:string;
+}
+export type XboxVoiceCommand =
+  | {type:'start';partyId?:string}
+  | {type:'accept';inviteId:string}
+  | {type:'mute';xuid:string;muted:boolean}
+  | {type:'setMuted';muted:boolean}
+  | {type:'leave'}
+  | {type:'resume'};
+export interface XboxVoiceControlApi {
+  getXboxVoiceState():Promise<XboxVoiceState>;
+  onXboxVoiceState(callback:(state:XboxVoiceState)=>void):()=>void;
+  controlXboxVoice(command:XboxVoiceCommand):Promise<void>;
+}
+export interface XboxVoiceHostApi {
+  xboxVoiceHostReady():Promise<void>;
+  publishXboxVoiceHostState(state:XboxVoiceState):Promise<void>;
+  onXboxVoiceHostCommand(callback:(request:{id:string;command:XboxVoiceCommand})=>void):()=>void;
+  completeXboxVoiceHostCommand(id:string,error?:string):Promise<void>;
+}
+export type XboxPartyControlApi = Pick<XboxVoiceApi,
+  'getXboxParty'|'getXboxActiveParties'|'leaveExistingXboxParty'|'inviteXboxPartyFriend'|
+  'onXboxPartyState'|'getXboxInvites'|'onXboxInvitesChanged'> & XboxVoiceControlApi;
+
+
+export interface LauncherApi extends XboxVoiceApi,XboxVoiceControlApi,XboxVoiceHostApi {}
+export interface XboxSocialApi {
+ openXboxPlayerProfile(xuid:string):Promise<void>;
+ popOutXboxChat?(xuid:string):Promise<void>;
+ getXboxProfileRequest?():Promise<XboxProfileRequest|undefined>;
+ onXboxProfileRequest?(callback:(request:XboxProfileRequest|undefined)=>void):()=>void;
+ completeXboxProfileRequest?(id:string,hide?:boolean):Promise<void>;
+ getXboxGameInviteAvailability():Promise<XboxGameInviteAvailability>;
+ sendXboxGameInvite(xuid:string):Promise<void>;
+
+ getXboxPlayerDetails(xuid:string):Promise<XboxPlayerDetails>;
+ getXboxPlayerGames(xuid:string):Promise<XboxProfileGames>;
+ getXboxPeople(list:XboxPeopleList,query?:string):Promise<XboxPeoplePage>;
+ getXboxRelationship(xuid:string):Promise<XboxRelationship>;
+ changeXboxRelationship(account:string,xuid:string,action:XboxRelationshipAction):Promise<void>;
+ getXboxPlayerProfile(xuid:string):Promise<XboxPlayerProfile>;
+ getXboxFriends():Promise<XboxFriend[]>;
+ getXboxInbox():Promise<XboxConversation[]>;
+ getXboxConversation(xuid:string):Promise<XboxMessage[]>;
+ sendXboxMessage(account:string,xuid:string,text:string):Promise<XboxMessageReceipt>;
+}
+export interface XboxMessageReceipt {id:string}
+
+export interface XboxGameInviteAvailability {canInvite:boolean;gameId?:string;title?:string;reason?:string}
+export interface XboxChatReadState {account:string;binary:string;keys:string[]}
 export interface LauncherApi {
+ closeXboxChat():Promise<void>;
+ getXboxChatReads():Promise<XboxChatReadState|undefined>;
+ onXboxChatReads(callback:(state:XboxChatReadState)=>void):()=>void;
+ viewedXboxChat(account:string,binary:string,peer:string,ids:string[]):Promise<void>;
+ getXboxDesktopProfile():Promise<XboxProfileRequest|undefined>;
+ onXboxDesktopProfile(callback:(request:XboxProfileRequest|undefined)=>void):()=>void;
+
+  nativeSocial:XboxSocialApi;
   inviteXboxFriend(gameId:string,xuid:string):Promise<void>;
   chooseGameInviteRecipient(id: string, xuid: string): Promise<void>;
   cancelGameInvite(id: string): Promise<void>;
@@ -399,6 +573,8 @@ export interface LauncherApi {
   saveDiagnosticReport(content: string): Promise<boolean>;
   login(): Promise<void>;
   logout(): Promise<void>;
+  offlinePermissions(): Promise<OfflinePermissions>;
+  setOfflinePermissions(enabled: boolean): Promise<OfflinePermissions>;
   searchCatalog(query: string, cursor?: string): Promise<CatalogSearchResult>;
   getFeaturedCatalog(): Promise<CatalogSearchResult>;
   getAccountLibrary(kind: AccountLibraryPage['kind'], cursor?: string, refresh?: boolean, sort?: AccountLibraryPage['sort']): Promise<AccountLibraryPage>;
@@ -418,9 +594,9 @@ export interface LauncherApi {
   getGameLocales(id: string): Promise<string[]>;
   removeGame(id: string, mode: 'library' | 'delete-files'): Promise<void>;
   getGameLaunchOptions(id: string): Promise<GameLaunchOptions>;
-  getGameDetails(id: string): Promise<GameStoreDetails | undefined>;
-  getGameActivity(id: string, refresh?: boolean): Promise<GameActivity>;
-  getGameAchievements(id: string, refresh?: boolean): Promise<GameAchievements>;
+  getGameDetails(id: GameDetailsTarget): Promise<GameStoreDetails | undefined>;
+  getGameActivity(id: GameDetailsTarget, refresh?: boolean): Promise<GameActivity>;
+  getGameAchievements(id: GameDetailsTarget, refresh?: boolean): Promise<GameAchievements>;
   launchGame(id: string): Promise<void>;
   createGameShortcut(id: string, destination: 'desktop' | 'applications'): Promise<string>;
   addToSteam(id?: string): Promise<string>;

@@ -1,0 +1,1415 @@
+diff --git a/crates/xodus-cli/src/commands.rs b/crates/xodus-cli/src/commands.rs
+index 1e0e96d..3a0793c 100644
+--- a/crates/xodus-cli/src/commands.rs
++++ b/crates/xodus-cli/src/commands.rs
+@@ -16,3 +16,6 @@ pub mod library;
+ pub mod run;
+ pub mod splicense;
+ pub mod streaming;
++
++pub mod native_social;
++pub mod native_social_party;
+diff --git a/crates/xodus-cli/src/commands/native_social.rs b/crates/xodus-cli/src/commands/native_social.rs
+new file mode 100644
+index 0000000..fc05083
+--- /dev/null
++++ b/crates/xodus-cli/src/commands/native_social.rs
+@@ -0,0 +1,654 @@
++//! Nexus social services. Only chat-auth passes a short-lived socket key to the private main-process transport.
++use std::{collections::HashSet, io::{self, Read, BufRead, Write}, process::ExitCode, time::Duration};
++use serde_json::{Value, json};
++use futures_util::{stream,StreamExt};
++use base64::{Engine,prelude::BASE64_STANDARD_NO_PAD};
++use xodus::tokens::TokenManager;
++use super::profile::{bounded, xbox_session_identity};
++#[path = "native_social_session.rs"]
++mod chat_session;
++
++#[derive(clap::Subcommand)]
++pub enum Action {
++    /// Private line-framed transport. Authentication remains in this process.
++    Listen,
++    Friends,
++    Inbox,
++    Invites,
++    Conversation { xuid: String },
++    Profile { xuid: String },
++    /// Read {account,xuid,text} from private stdin; never pass message text in argv.
++    SendMessage,
++    /// Private backend transport bootstrap; never exposed to the renderer.
++    ChatAuth,
++    /// Party service request from the private Nexus controller on stdin.
++    Party,
++    /// Account-bound people reads or one explicit relationship action on private stdin.
++    People,
++}
++
++pub(super) fn xuid(value: &str) -> bool {
++    !value.is_empty() && value.len() <= 20 && value.bytes().all(|b| b.is_ascii_digit())
++        && value.parse::<u64>().is_ok_and(|n| n > 0)
++}
++fn text(value: &Value, limit: usize) -> Option<String> {
++    let s = value.as_str()?;
++    if s.chars().any(|c| c.is_control() && c != '\n' && c != '\r' && c != '\t') { return None; }
++    Some(s.chars().take(limit).collect())
++}
++fn identifier(value: &Value) -> Result<String, &'static str> {
++    text(value, 256).filter(|s| !s.is_empty() && !s.chars().any(char::is_control)).ok_or("social-id")
++}
++fn message(value: &Value, self_xuid: &str) -> Result<Value, &'static str> {
++    let parts = value["contentPayload"]["content"]["parts"].as_array();
++    let mut lines = Vec::new();
++    let mut hidden = false;
++    if value["isDeleted"] == true { lines.push("Message deleted".to_owned()); }
++    else if let Some(parts) = parts {
++        if parts.len() > 32 { return Err("message-parts"); }
++        for part in parts {
++            if part["unsuitableFor"].as_array().is_some_and(|a| !a.is_empty()) {
++                hidden = true; continue;
++            }
++            match part["contentType"].as_str() {
++                Some("text") => if let Some(t) = text(&part["text"], 4096) { lines.push(t); },
++                _ => lines.push("Attachment".to_owned()),
++            }
++        }
++    }
++    if hidden { lines.push("Message hidden by Xbox safety settings".to_owned()); }
++    Ok(json!({"id":identifier(&value["messageId"] )?, "sender":identifier(&value["sender"] )?,
++        "timestamp":text(&value["timestamp"],64), "text":lines.join("\n"), "hidden":hidden,"mine":value["sender"]==self_xuid}))
++}
++fn friends(value: &Value) -> Result<Vec<Value>, &'static str> {
++    let rows = value["people"].as_array().ok_or("friends-shape")?;
++    if rows.len() > 2000 { return Err("friends-count"); }
++    let mut seen = HashSet::new();
++    rows.iter().map(|row| {
++        let id = row["xuid"].as_str().filter(|s| xuid(s)).ok_or("friend-id")?;
++        if !seen.insert(id) { return Err("friend-duplicate"); }
++        let modern=text(&row["modernGamertag"],128).filter(|s|!s.is_empty()).map(|base|{
++            let suffix=text(&row["modernGamertagSuffix"],16).filter(|s|!s.is_empty());
++            suffix.map_or_else(||base.clone(),|suffix|format!("{base}#{suffix}"))});
++        let name = text(&row["uniqueModernGamertag"],128).filter(|s| !s.is_empty()).or(modern)
++            .or_else(|| text(&row["gamertag"],128).filter(|s| !s.is_empty())).ok_or("friend-name")?;
++        let online = match row["presenceState"].as_str() { Some("Online" | "Away") => true, _ => false };
++        Ok(json!({"xuid":id,"gamertag":name,"online":online,"avatarUrl":row["displayPicRaw"].as_str().and_then(super::profile::picture_url).map(|u|u.to_string()),
++            "presence":text(&row["presenceText"],256).filter(|s|!s.is_empty()).unwrap_or_else(|| match row["presenceState"].as_str(){Some("Online"|"Away")=>"Online",Some("Offline")=>"Offline",_=>"Presence unavailable"}.into()),
++            "favorite":row["isFavorite"].as_bool().unwrap_or(false),
++            "inParty":row["multiplayerSummary"]["inParty"].as_u64().unwrap_or(0) > 0}))
++    }).collect()
++}
++fn inbox(value: &Value, self_xuid: &str) -> Result<Vec<Value>, &'static str> {
++    let rows = value["primary"]["conversations"].as_array().ok_or("inbox-shape")?;
++    if rows.len() > 100 { return Err("inbox-count"); }
++    rows.iter().map(|row| {
++        let people = row["participants"].as_array().ok_or("conversation-participants")?;
++        if people.len() > 100 { return Err("conversation-participants"); }
++        let system=people.iter().any(|v| v=="0");
++        let participants: Result<Vec<_>,_> = people.iter().filter(|v| *v != self_xuid && *v != "0")
++            .map(|v| v.as_str().filter(|s| xuid(s)).map(str::to_owned).ok_or("conversation-xuid")).collect();
++        Ok(json!({"id":identifier(&row["conversationId"] )?,"type":if system{Some("System".into())}else{text(&row["type"],32)},
++            "participants":participants?,"gamertag":if system{"Xbox"}else{"Xbox player"},"unread":row["isRead"] == false,
++            "lastMessage":if row["lastMessage"].is_null(){Value::Null}else{message(&row["lastMessage"],self_xuid)?}}))
++    }).collect()
++}
++fn invites(value:&Value)->Result<Vec<Value>,&'static str>{
++    if !value.is_object(){return Err("invites-shape");}
++    let Some(rows)=value.get("items").filter(|v|!v.is_null())else{return Ok(vec![])};
++    let rows=rows.as_array().filter(|a|a.len()<=100).ok_or("invites-count")?;
++    let mut output=Vec::new();
++    for row in rows {
++        let action=&row["Actions"][0];
++        if action["SubscriptionCategory"]!="Microsoft.Xbox.Multiplayer"{continue;}
++        let kind=match action["SubscriptionType"].as_str(){Some("PartyInvites")=>"party",Some("GameInvites"|"GamePartyInvites"|"MultiplayerActivityGameInvites")=>"game",_=>continue};
++        let launch=&action["LaunchInfo"];
++        let activity=action["SubscriptionType"]=="MultiplayerActivityGameInvites";
++        let handle=text(&launch[if activity{"connectionString"}else{"mpsdHandleId"}],4096).filter(|s|!s.is_empty()).ok_or("invite-handle")?;
++        let expiration=text(&launch["expirationTime"],128).ok_or("invite-expiration")?;
++        let actor=&action["Actor"];
++        let sender=actor["Id"].as_str().filter(|s|xuid(s)).ok_or("invite-sender")?;
++        let name=text(&actor["UniqueModernGamertag"],128).filter(|s|!s.is_empty())
++            .or_else(||text(&actor["ClassicGamertag"],128).filter(|s|!s.is_empty())).unwrap_or_else(||"Xbox player".into());
++        let location=&row["NotificationOptions"]["Location"];
++        output.push(json!({"id":identifier(&action["SubscriptionId"] )?,"kind":kind,"handle":handle,"handleType":if activity{"activity"}else{"mpsd"},
++            "expiration":expiration,"timestamp":text(&action["ActionTime"],64),"sender":sender,"gamertag":name,
++            "titleId":text(&location["Id"],64),"titleName":text(&location["Name"],256),
++            "activationInfo":if activity{text(&launch["activationInfo"],16*1024)}else{text(&launch["gameTypes"],16*1024)}}));
++    }
++    Ok(output)
++}
++fn send_request(value: &Value) -> Result<(&str,&str,&str), &'static str> {
++    let account = value["account"].as_str().filter(|s| !s.is_empty() && s.len() <= 512).ok_or("send-account")?;
++    let recipient = value["xuid"].as_str().filter(|s| xuid(s)).ok_or("send-recipient")?;
++    let body = value["text"].as_str().filter(|s| !s.trim().is_empty() && s.chars().count() <= 256
++        && !s.chars().any(|c| c.is_control() && c != '\n' && c != '\r' && c != '\t')).ok_or("send-text")?;
++    Ok((account,recipient,body))
++}
++fn player_profile(value:&Value,id:&str)->Result<Value,&'static str>{
++    let rows=value["profileUsers"].as_array().filter(|a|a.len()==1).ok_or("profile-shape")?;
++    let row=&rows[0];if row["id"]!=id{return Err("profile-user");}
++    let settings=row["settings"].as_array().filter(|a|a.len()<=32).ok_or("profile-settings")?;
++    let setting=|name:&str|settings.iter().find(|s|s["id"]==name).and_then(|s|text(&s["value"],256));
++    let name=setting("Gamertag").filter(|s|!s.is_empty()).ok_or("profile-name")?;
++    let score=setting("Gamerscore").filter(|s|!s.is_empty()&&s.len()<=20&&s.bytes().all(|b|b.is_ascii_digit()));
++    let picture=settings.iter().find(|s|s["id"]=="PublicGamerpic").and_then(|s|s["value"].as_str()).and_then(super::profile::picture_url);
++    Ok(json!({"xuid":id,"gamertag":name,"gamerscore":score,"avatarUrl":picture.map(|u|u.to_string())}))
++}
++fn send_builder(client:&reqwest::Client,recipient:&str,body:&str)->reqwest::RequestBuilder{
++    client.post(format!("https://xblmessaging.xboxlive.com/network/Xbox/users/me/conversations/users/xuid({recipient})"))
++        .header("x-xbl-contract-version","1").header("X-Xbl-ClientSeqNum",chrono::Utc::now().timestamp_millis())
++        .json(&json!({"parts":[{"contentType":"text","version":0,"text":body}]}))
++}
++
++// Public Xbox SDK 1199 (XblPeopleService v7, XblSocialService v3, XblPrivacyService)
++// is retained with REA evidence in work/native-social/people-api-findings.json.
++const PEOPLE_DECORATIONS:&str="detail,preferredColor,presenceDetail,multiplayerSummary";
++struct PeopleInput {account:String,operation:String,target:Option<String>,query:Option<String>}
++impl PeopleInput {
++    fn mutation(&self)->bool {matches!(self.operation.as_str(),"send-request"|"accept-request"|"cancel-request"|"decline-request"|"remove-friend"|"favorite"|"unfavorite"|"block"|"unblock")}
++    fn target(&self)->Result<&str,&'static str>{self.target.as_deref().ok_or("people-xuid")}
++}
++fn people_xuid(id:&str)->bool{xuid(id)&&!id.starts_with('0')}
++fn people_input(input:&str)->Result<PeopleInput,&'static str>{
++    if input.len()>4096{return Err("people-input-size");}
++    let value:Value=serde_json::from_str(input).map_err(|_|"people-json")?;
++    let object=value.as_object().ok_or("people-input")?;
++    if object.keys().any(|key|!matches!(key.as_str(),"account"|"operation"|"xuid"|"query")){return Err("people-input-field");}
++    let account=value["account"].as_str().filter(|s|!s.is_empty()&&s.len()<=512&&!s.chars().any(char::is_control)).ok_or("people-account")?;
++    let operation=value["operation"].as_str().filter(|s|matches!(*s,"search"|"recent"|"suggested"|"blocked"|"received-requests"|"sent-requests"|"profile"|"games"|"relationship"|"send-request"|"accept-request"|"cancel-request"|"decline-request"|"remove-friend"|"favorite"|"unfavorite"|"block"|"unblock")).ok_or("people-operation")?;
++    let targeted=matches!(operation,"profile"|"games"|"relationship"|"send-request"|"accept-request"|"cancel-request"|"decline-request"|"remove-friend"|"favorite"|"unfavorite"|"block"|"unblock");
++    let target=if targeted {Some(value["xuid"].as_str().filter(|s|people_xuid(s)||(matches!(operation,"profile"|"games")&&*s=="me")).ok_or("people-xuid")?.to_owned())}
++        else{if object.contains_key("xuid"){return Err("people-xuid");}None};
++    let query=if operation=="search"{Some(value["query"].as_str().filter(|s|!s.trim().is_empty()&&s.chars().count()<=64&&!s.chars().any(char::is_control)).ok_or("people-query")?.trim().to_owned())}
++        else{if object.contains_key("query"){return Err("people-query");}None};
++    Ok(PeopleInput{account:account.into(),operation:operation.into(),target,query})
++}
++fn people_url(path:&str)->String{format!("https://peoplehub.xboxlive.com/users/me/people/{path}/decoration/{}",if path=="search"{"detail,preferredColor"}else{PEOPLE_DECORATIONS})}
++fn people_builder(client:&reqwest::Client,input:&PeopleInput,own:&str)->Result<reqwest::RequestBuilder,&'static str>{
++    let operation=input.operation.as_str();
++    let builder=match operation{
++        "search"=>{
++            let mut url=reqwest::Url::parse(&people_url("search")).map_err(|_|"people-url")?;
++            url.query_pairs_mut().append_pair("q",input.query.as_deref().ok_or("people-query")?).append_pair("maxItems","100");
++            client.get(url)
++        },
++        "recent"=>client.get(people_url("recentplayers")),
++        "suggested"=>client.get(people_url("recommendations")),
++        "received-requests"=>client.get(people_url("friendrequests(received)")),
++        "sent-requests"=>client.get(people_url("friendrequests(sent)")),
++        "profile"|"relationship"=>client.get(people_url(&format!("xuids({})",input.target()?))),
++        "games"=>return Ok(client.get(format!("https://titlehub.xboxlive.com/users/xuid({})/titles/titleHistory/decoration/GamePass,TitleHistory,Achievement?maxItems=101&filterTo=IsGame",input.target()?)).header("x-xbl-contract-version","2")),
++        "blocked"=>return Ok(client.get(format!("https://privacy.xboxlive.com/users/xuid({own})/people/avoid")).header("x-xbl-contract-version","2")),
++        "block"|"unblock"=>return Ok(client.request(if operation=="block"{reqwest::Method::PUT}else{reqwest::Method::DELETE},"https://privacy.xboxlive.com/users/me/people/never")
++            .header("x-xbl-contract-version",if operation=="block"{"2"}else{"4"}).json(&json!({"xuid":input.target()?}))),
++        "favorite"|"unfavorite"=>return Ok(client.post(format!("https://social.xboxlive.com/users/xuid({own})/people/favorites/xuids?method={}",if operation=="favorite"{"add"}else{"remove"}))
++            .header("x-xbl-contract-version","3").json(&json!({"xuids":[input.target()?]}))),
++        "send-request"|"accept-request"=>return Ok(client.put(format!("https://social.xboxlive.com/users/xuid({own})/people/friends/v2/xuid({})",input.target()?)).header("x-xbl-contract-version","3")),
++        "cancel-request"|"decline-request"|"remove-friend"=>return Ok(client.delete(format!("https://social.xboxlive.com/users/xuid({own})/people/friends/v2/xuid({})?deleteRelationships=friends",input.target()?))
++            .header("x-xbl-contract-version","3")),
++        _=>return Err("people-operation"),
++    };
++    Ok(builder.header("x-xbl-contract-version","7"))
++}
++fn people_rows(value:&Value)->Result<&Vec<Value>,&'static str>{value["people"].as_array().filter(|rows|rows.len()<=2000).ok_or("people-shape")}
++fn selected_person<'a>(value:&'a Value,target:&str)->Result<&'a Value,&'static str>{
++    let rows=people_rows(value)?;
++    if rows.len()!=1||rows[0]["xuid"]!=target{return Err("people-profile-user");}
++    Ok(&rows[0])
++}
++fn people_relationship(row:&Value)->Result<Value,&'static str>{
++    let id=row["xuid"].as_str().filter(|s|people_xuid(s)).ok_or("people-profile-user")?;
++    let flag=|key:&str|row[key].as_bool().or_else(||row["detail"][key].as_bool()).ok_or("people-relationship-unavailable");
++    let friend=flag("isFriend")?;
++    let received=flag("isFriendRequestReceived");let sent=flag("isFriendRequestSent");
++    let state=match(received,sent){(Ok(true),Ok(false))=>"incoming",(Ok(false),Ok(true))=>"outgoing",(Ok(false),Ok(false))=>"none",_=>"unknown"};
++    Ok(json!({"xuid":id,"isFriend":friend,"isFollowing":flag("isFollowedByCaller")?,"isFollower":flag("isFollowingCaller")?,
++        "favorite":flag("isFavorite")?&&friend,"blocked":row["detail"]["blocked"].as_bool().ok_or("people-relationship-unavailable")?,"requestState":state}))
++}
++fn normalized_color(value:&Value)->Option<String>{
++    let raw=value.as_str()?;let hex=raw.strip_prefix('#').unwrap_or(raw);
++    (hex.len()==6&&hex.bytes().all(|b|b.is_ascii_hexdigit())).then(||format!("#{}",hex.to_ascii_uppercase()))
++}
++fn people_details(row:&Value,is_self:bool)->Result<Value,&'static str>{
++    let mut result=people_person(row)?;
++    let score=row["gamerScore"].as_str().filter(|s|!s.is_empty()&&s.len()<=20&&s.bytes().all(|b|b.is_ascii_digit()));
++    result["gamerscore"]=json!(score);result["isSelf"]=json!(is_self);
++    for(key,limit)in[("bio",1024),("location",128),("tenure",32)]{
++        if let Some(value)=text(&row["detail"][key],limit).filter(|s|!s.trim().is_empty()){result[key]=json!(value);}
++    }
++    let mut counts=json!({});
++    for(key,source)in[("friends","friendCount"),("followers","followerCount"),("following","followingCount")]{
++        if let Some(count)=row["detail"][source].as_u64().filter(|n|*n<=1_000_000_000){counts[key]=json!(count);}
++    }
++    if counts.as_object().is_some_and(|o|!o.is_empty()){result["counts"]=counts;}
++    let mut colors=json!({});
++    for(key,source)in[("primary","primaryColor"),("secondary","secondaryColor"),("tertiary","tertiaryColor")]{
++        if let Some(color)=normalized_color(&row["preferredColor"][source]){colors[key]=json!(color);}
++    }
++    if colors.as_object().is_some_and(|o|!o.is_empty()){result["colors"]=colors;}
++    if !is_self{if let Ok(relationship)=people_relationship(row){result["relationship"]=relationship;}}
++    Ok(result)
++}
++fn people_person(row:&Value)->Result<Value,&'static str>{
++    if !row["xuid"].as_str().is_some_and(people_xuid){return Err("people-profile-user");}
++    let mut result=friends(&json!({"people":[row]}))?.remove(0);
++    if let Some(reason)=text(&row["recentPlayer"]["text"],256).filter(|s|!s.is_empty())
++        .or_else(||row["recommendation"]["Reasons"].as_array().filter(|a|a.len()<=32).map(|reasons|reasons.iter().take(3).filter_map(|v|text(v,128)).collect::<Vec<_>>().join(" · ")).filter(|s|!s.is_empty())){result["reason"]=json!(reason);}
++    if let Some(last)=row["recentPlayer"]["titles"].as_array().filter(|a|a.len()<=100).and_then(|titles|titles.iter()
++        .filter_map(|v|v["lastPlayedWithDateTime"].as_str().filter(|s|s.len()<=64).and_then(|s|chrono::DateTime::parse_from_rfc3339(s).ok())).max()){
++        result["lastSeen"]=json!(last.to_rfc3339());
++    }
++    Ok(result)
++}
++fn people_page(value:&Value)->Result<Value,&'static str>{
++    let rows=people_rows(value)?;let mut seen=HashSet::new();
++    let mut items=Vec::new();
++    for row in rows.iter().take(100){let person=people_person(row)?;if !seen.insert(person["xuid"].as_str().unwrap().to_owned()){return Err("people-duplicate");}items.push(person);}
++    // shortcut: SDK list APIs expose no cursor; report a partial page instead of inventing one.
++    Ok(json!({"items":items,"continuation":null,"truncated":rows.len()>100}))
++}
++fn blocked_ids(value:&Value)->Result<Vec<String>,&'static str>{
++    let rows=value["users"].as_array().filter(|a|a.len()<=1000).ok_or("people-blocked-shape")?;
++    let mut seen=HashSet::new();let mut result=Vec::new();
++    for row in rows{let id=row["xuid"].as_str().filter(|s|people_xuid(s)).ok_or("people-blocked-xuid")?;
++        if !seen.insert(id){return Err("people-blocked-duplicate");}result.push(id.to_owned());}
++    Ok(result)
++}
++fn people_games(value:&Value)->Result<Value,&'static str>{
++    let rows=value["titles"].as_array().filter(|a|a.len()<=2000).ok_or("people-games-shape")?;
++    let mut items=Vec::new();let mut seen=HashSet::new();
++    for row in rows.iter().take(100){
++        if row["type"].as_str().is_some_and(|s|s!="Game"){continue;}
++        let raw=row["modernTitleId"].as_str().filter(|s|!s.is_empty()).or_else(||row["titleId"].as_str())
++            .filter(|s|!s.is_empty()&&s.len()<=10&&s.bytes().all(|b|b.is_ascii_digit())).ok_or("people-game-title")?;
++        let id=raw.parse::<u32>().ok().filter(|n|*n>0).ok_or("people-game-title")?.to_string();
++        if !seen.insert(id.clone()){return Err("people-game-duplicate");}
++        let name=text(&row["name"],256).filter(|s|!s.trim().is_empty()).ok_or("people-game-name")?;
++        let mut item=json!({"titleId":id,"name":name});
++        if let Some(url)=row["displayImage"].as_str().filter(|s|s.len()<=8192).and_then(|s|reqwest::Url::parse(s).ok()).filter(|u|u.scheme()=="https"&&u.username().is_empty()&&u.password().is_none()&&u.port().is_none()&&matches!(u.host_str(),Some("store-images.s-microsoft.com"|"images-eds-ssl.xboxlive.com"|"images-assets-ssl.xboxlive.com"))){item["imageUrl"]=json!(url.to_string());}
++        if let Some(date)=row["titleHistory"]["lastTimePlayed"].as_str().filter(|s|s.len()<=64).and_then(|s|chrono::DateTime::parse_from_rfc3339(s).ok()){item["lastPlayed"]=json!(date.to_rfc3339());}
++        for(key,source)in[("currentGamerscore","currentGamerscore"),("totalGamerscore","totalGamerscore"),("achievementsUnlocked","currentAchievements"),("achievementsTotal","totalAchievements")]{
++            if let Some(count)=row["achievement"][source].as_u64().filter(|n|*n<=1_000_000_000){item[key]=json!(count);}
++        }
++        items.push(item);
++    }
++    Ok(json!({"items":items,"continuation":null,"truncated":rows.len()>100}))
++}
++fn people_mutation_allowed(operation:&str,state:&Value)->bool{
++    match operation{
++        "send-request"=>state["isFriend"]==false&&state["requestState"]=="none"&&state["blocked"]==false,
++        "accept-request"|"decline-request"=>state["requestState"]=="incoming",
++        "cancel-request"=>state["requestState"]=="outgoing",
++        "remove-friend"=>state["isFriend"]==true,
++        "favorite"=>state["isFriend"]==true&&state["favorite"]==false,
++        "unfavorite"=>state["favorite"]==true,
++        "block"=>state["blocked"]==false,
++        "unblock"=>state["blocked"]==true,
++        _=>false,
++    }
++}
++fn people_account(tokens:&TokenManager,expected:&str)->Result<(),&'static str>{
++    if tokens.get_user().map_err(|_|"account-changed")?.username!=expected{return Err("account-changed");}Ok(())
++}
++async fn people_execute(tokens:&TokenManager,builder:reqwest::RequestBuilder,authorization:&str,mutation:bool)->Result<Vec<u8>,&'static str>{
++    let response=builder.header("Authorization",authorization).header("Accept","application/json").header("Accept-Language","en-CA")
++        .header("MS-CV",format!("{}.0",BASE64_STANDARD_NO_PAD.encode(uuid::Uuid::new_v4().as_bytes()))).send().await.map_err(|_|if mutation{"people-mutation-uncertain"}else{"people-request"})?;
++    let status=response.status().as_u16();
++    eprintln!("NEXUS_SOCIAL_HTTP_DIAGNOSTIC_V1 people-{} {status}",if mutation{"mutation"}else{"read"});
++    match status{
++        200..=299=>(),401=>{super::profile::invalidate_social_session(tokens);return Err("people-permission-denied");},
++        403=>return Err("people-permission-denied"),429=>return Err("people-rate-limited"),
++        400|404|409=>return Err(if mutation{"people-mutation-rejected"}else{"people-not-found"}),
++        _=>return Err(if mutation{"people-mutation-uncertain"}else{"people-http-status"}),
++    }
++    bounded(response,4*1024*1024).await.map_err(|_|if mutation{"people-mutation-uncertain"}else{"people-response-size"})
++}
++async fn people_request(tokens:&TokenManager,input:&str)->Result<Value,&'static str>{
++    let mut input=people_input(input)?;people_account(tokens,&input.account)?;
++    let(_,authorization,account,own)=xbox_session_identity(tokens).await?;
++    // Disable even reqwest's protocol-NACK retries for explicit relationship actions.
++    let client=reqwest::Client::builder().redirect(reqwest::redirect::Policy::none()).retry(reqwest::retry::never())
++        .timeout(super::session::REQUEST_TIMEOUT).user_agent("xodus-nexus-profile/1").build().map_err(|_|"http-client")?;
++    let own=own.filter(|s|people_xuid(s)).ok_or("xsts-user-id")?;
++    if account!=input.account{return Err("account-changed");}
++    if input.target.as_deref()==Some("me"){input.target=Some(own.clone());}
++    if input.mutation(){
++        if input.target()?==own{return Err("people-self-action");}
++        let state=if matches!(input.operation.as_str(),"block"|"unblock"){
++            // A deleted/private profile must not stop its owner from unblocking it.
++            let bytes=people_execute(tokens,client.get(format!("https://privacy.xboxlive.com/users/xuid({own})/people/avoid")).header("x-xbl-contract-version","2"),&authorization,false).await?;
++            let value:Value=serde_json::from_slice(&bytes).map_err(|_|"people-json")?;
++            json!({"blocked":blocked_ids(&value)?.iter().any(|id|Some(id)==input.target.as_ref())})
++        }else{
++            let builder=client.get(people_url(&format!("xuids({})",input.target()?))).header("x-xbl-contract-version","7");
++            let bytes=people_execute(tokens,builder,&authorization,false).await?;
++            let value:Value=serde_json::from_slice(&bytes).map_err(|_|"people-json")?;
++            people_relationship(selected_person(&value,input.target()?)?)?
++        };
++        if !people_mutation_allowed(&input.operation,&state){return Err("people-relationship-changed");}
++    }
++    people_account(tokens,&account)?;
++    let bytes=people_execute(tokens,people_builder(&client,&input,&own)?,&authorization,input.mutation()).await?;
++    people_account(tokens,&account)?;
++    let result=if input.mutation(){json!({"xuid":input.target()?,"success":true})}
++    else{
++        let value:Value=serde_json::from_slice(&bytes).map_err(|_|"people-json")?;
++        match input.operation.as_str(){
++            "profile"=>people_details(selected_person(&value,input.target()?)?,input.target()?==own)?,
++            "relationship"=>people_relationship(selected_person(&value,input.target()?)?)?,
++            "games"=>people_games(&value)?,
++            "blocked"=>{
++                let ids=blocked_ids(&value)?;let shown:Vec<_>=ids.iter().take(100).collect();
++                if shown.is_empty(){json!({"items":[],"continuation":null,"truncated":false})}
++                else{
++                    let bytes=people_execute(tokens,client.post(people_url("batch")).header("x-xbl-contract-version","7").json(&json!({"xuids":shown})),&authorization,false).await?;
++                    let profiles:Value=serde_json::from_slice(&bytes).map_err(|_|"people-json")?;
++                    let rows=people_rows(&profiles)?;let mut seen=HashSet::new();
++                    for row in rows{let id=row["xuid"].as_str().ok_or("people-profile-user")?;if !shown.iter().any(|s|s.as_str()==id)||!seen.insert(id){return Err("people-profile-user");}}
++                    let items=shown.iter().map(|id|{
++                        if let Some(row)=rows.iter().find(|r|r["xuid"]==id.as_str()){people_person(row)}
++                        else{Ok(json!({"xuid":id,"gamertag":"Xbox player","online":false,"presence":"Profile unavailable","favorite":false,"inParty":false}))}
++                    }).collect::<Result<Vec<_>,_>>()?;
++                    json!({"items":items,"continuation":null,"truncated":ids.len()>100})
++                }
++            },
++            _=>people_page(&value)?,
++        }
++    };
++    people_account(tokens,&account)?;
++    Ok(json!({"schema":1,"kind":"people","account":account,"operation":input.operation,"result":result}))
++}
++async fn request(tokens: &TokenManager, mut action: Action, input:Option<&str>) -> Result<Value, &'static str> {
++    if matches!(action,Action::Party){return super::native_social_party::request(tokens,input.ok_or("party-input")?).await;}
++    if matches!(action,Action::People){return people_request(tokens,input.ok_or("people-input")?).await;}
++    // Validate stdin before accessing credentials or the network.
++    let send = if matches!(action,Action::SendMessage) {
++        let body=input.ok_or("send-input")?;
++        if body.len()>16_384{return Err("send-input-size");}
++        let v:Value = serde_json::from_str(body).map_err(|_| "send-json")?;
++        send_request(&v)?; Some(v)
++    } else {None};
++    if let Action::Conversation { xuid:ref id } = action {if !xuid(id){return Err("conversation-xuid");}}
++    if let Action::Profile{xuid:ref id}=action{if id!="me"&&!xuid(id){return Err("profile-xuid");}}
++    if let Some(value) = send.as_ref() {
++        let (expected, recipient, body) = send_request(value)?;
++        return chat_session::send(tokens, expected, recipient, body).await;
++    }
++    let (client, authorization, account, self_xuid) = xbox_session_identity(tokens).await?;
++    let self_xuid=self_xuid.filter(|s| xuid(s)).ok_or("xsts-user-id")?;
++    if let Action::Profile{xuid:id}=&mut action{if id=="me"{*id=self_xuid.clone();}}
++    if matches!(action,Action::ChatAuth) {
++        let response=client.get(format!("https://chat.xboxlive.com/users/xuid({self_xuid})/chat/auth"))
++            .header("Authorization",&authorization).send().await.map_err(|_|"chat-auth-request")?;
++        if response.status().as_u16()==401{super::profile::invalidate_social_session(tokens);}
++        let bytes=bounded(response,64*1024).await?;
++        let value:Value=serde_json::from_slice(&bytes).map_err(|_|"chat-auth-json")?;
++        let key=value["AuthKey"].as_str().filter(|s|!s.is_empty()&&s.len()<=16*1024&&!s.chars().any(char::is_control)).ok_or("chat-auth-key")?;
++        if tokens.get_user().map_err(|_| "account-changed")?.username != account {return Err("account-changed");}
++        return Ok(json!({"schema":1,"kind":"chat-auth","account":account,"xuid":self_xuid,"authKey":key}));
++    }
++    let (kind, builder) = match &action {
++        Action::Friends => ("friends",client.get("https://peoplehub.xboxlive.com/users/me/people/friends/decoration/presenceDetail,multiplayerSummary").header("x-xbl-contract-version","7")),
++        Action::Inbox => ("inbox",client.get("https://xblmessaging.xboxlive.com/network/Xbox/users/me/inbox?maxItems=100").header("x-xbl-contract-version","1")),
++        Action::Invites => ("invites",client.get(format!("https://notificationinbox.xboxlive.com/users/{self_xuid}/inbox?subscriptionCategory=Microsoft.Xbox.Multiplayer&maxItems=100"))
++            .header("x-xbl-contract-version","1")),
++        Action::Conversation { xuid:id } => ("conversation",client.get(format!("https://xblmessaging.xboxlive.com/network/Xbox/users/me/conversations/users/xuid({id})?maxItems=100")).header("x-xbl-contract-version","1")),
++        Action::Profile{xuid:id}=>("profile",client.get(format!("https://profile.xboxlive.com/users/xuid({id})/profile/settings?settings=Gamertag,Gamerscore,PublicGamerpic")).header("x-xbl-contract-version","2")),
++        Action::SendMessage => unreachable!(),
++        Action::ChatAuth => unreachable!(),
++        Action::Party | Action::People | Action::Listen => unreachable!(),
++    };
++    let response = builder.header("Authorization",&authorization).header("Accept-Language","en-CA").send().await.map_err(|_| "social-request")?;
++    match response.status().as_u16() {
++        401 => {super::profile::invalidate_social_session(tokens);return Err("social-permission-denied");},
++        403 => return Err("social-permission-denied"),
++        429 => return Err("social-rate-limited"),
++        200..=299 => (),
++        _ => return Err("social-http-status"),
++    }
++    let bytes=bounded(response,4*1024*1024).await?;
++    let value:Value=serde_json::from_slice(&bytes).map_err(|_| "social-json")?;
++    if tokens.get_user().map_err(|_| "account-changed")?.username != account {return Err("account-changed");}
++    let mut items=match action {
++        Action::Friends => friends(&value)?,
++        Action::Inbox => inbox(&value,&self_xuid)?,
++        Action::Invites => invites(&value)?,
++        Action::Conversation { .. } => {
++            let rows=value["messages"].as_array().ok_or("messages-shape")?;
++            if rows.len()>100{return Err("messages-count");} rows.iter().map(|v| message(v,&self_xuid)).collect::<Result<Vec<_>,_>>()?
++        },
++        Action::Profile{xuid:id}=>vec![player_profile(&value,&id)?],
++        Action::SendMessage => unreachable!(),
++        Action::ChatAuth => unreachable!(),
++        Action::Party | Action::People | Action::Listen => unreachable!(),
++    };
++    if kind=="inbox" {
++        let ids:Vec<_>=items.iter().filter(|row|row["type"]=="OneToOne").filter_map(|row|row["participants"].as_array())
++            .flatten().filter_map(Value::as_str).map(str::to_owned).collect::<HashSet<_>>().into_iter().collect();
++        if !ids.is_empty() {
++            let profiles:Vec<_>=stream::iter(ids).map(|id|{
++                let request=client.get(format!("https://profile.xboxlive.com/users/xuid({id})/profile/settings?settings=Gamertag,PublicGamerpic"))
++                    .header("Authorization",&authorization).header("x-xbl-contract-version","2").timeout(Duration::from_secs(4));
++                async move {
++                    let response=request.send().await.ok()?;
++                    let bytes=bounded(response,128*1024).await.ok()?;
++                    let value:Value=serde_json::from_slice(&bytes).ok()?;
++                    let users=value["profileUsers"].as_array()?;
++                    let profile=users.iter().find(|p|p["id"]==id)?;
++                    let settings=profile["settings"].as_array()?;
++                    let name=text(&settings.iter().find(|s|s["id"]=="Gamertag")?["value"],128)?;
++                    let picture=settings.iter().find(|s|s["id"]=="PublicGamerpic").and_then(|s|s["value"].as_str()).and_then(super::profile::picture_url).map(|u|u.to_string());
++                    Some((id,name,picture))
++                }
++            }).buffer_unordered(4).collect().await;
++            for row in &mut items {
++                if let Some((_,name,picture))=profiles.iter().flatten().find(|(id,_,_)|row["participants"][0]==*id) {row["gamertag"]=json!(name);row["avatarUrl"]=json!(picture);}
++            }
++        }
++    }
++    if tokens.get_user().map_err(|_| "account-changed")?.username != account {return Err("account-changed");}
++    let mut result=json!({"schema":1,"account":account,"kind":kind,"items":items});
++    if kind=="invites" {result["recipient"]=json!(self_xuid);}
++    Ok(result)
++}
++fn wire(value:&Value)->Result<(u64,Action,Option<String>),&'static str>{
++    let id=value["id"].as_u64().filter(|n|*n>0&&*n<=9_007_199_254_740_991).ok_or("social-wire-id")?;
++    let args=value["args"].as_array().filter(|a|!a.is_empty()&&a.len()<=2).ok_or("social-wire-args")?;
++    let action=match (args[0].as_str(),args.len()){
++        (Some("friends"),1)=>Action::Friends,(Some("inbox"),1)=>Action::Inbox,(Some("invites"),1)=>Action::Invites,
++        (Some("chat-auth"),1)=>Action::ChatAuth,(Some("send-message"),1)=>Action::SendMessage,(Some("party"),1)=>Action::Party,(Some("people"),1)=>Action::People,
++        (Some("conversation"),2)=>Action::Conversation{xuid:args[1].as_str().filter(|s|xuid(s)).ok_or("conversation-xuid")?.into()},
++        (Some("profile"),2)=>Action::Profile{xuid:args[1].as_str().filter(|s|*s=="me"||xuid(s)).ok_or("profile-xuid")?.into()},
++        _=>return Err("social-wire-action"),
++    };
++    let body=match &value["input"]{Value::Null=>None,Value::String(s) if s.len()<=160*1024=>Some(s.clone()),_=>return Err("social-wire-input")};
++    if matches!(action,Action::Party|Action::People|Action::SendMessage)!=body.is_some(){return Err("social-wire-input");}
++    Ok((id,action,body))
++}
++async fn listen(tokens:&TokenManager)->ExitCode{
++    let stdin=io::stdin();let mut input=stdin.lock();
++    loop{
++        let mut bytes=Vec::new();
++        let count=match (&mut input).take(512*1024+1).read_until(b'\n',&mut bytes){Ok(n)=>n,Err(_)=>return ExitCode::FAILURE};
++        if count==0{return ExitCode::SUCCESS;}
++        if count>512*1024||!bytes.ends_with(b"\n"){return ExitCode::FAILURE;}
++        let parsed=serde_json::from_slice::<Value>(&bytes).map_err(|_|"social-wire-json").and_then(|v|wire(&v));
++        let(id,action,body)=match parsed{Ok(v)=>v,Err(_)=>return ExitCode::FAILURE};
++        let seconds=if matches!(action,Action::SendMessage){55}else{45};
++        let response=match tokio::time::timeout(Duration::from_secs(seconds),request(tokens,action,body.as_deref())).await{
++            Ok(Ok(value))=>json!({"id":id,"ok":true,"result":value}),
++            error=>{let stage=match error{Ok(Err(stage))=>stage,_=>"timeout"};eprintln!("Xbox social unavailable ({stage}).");json!({"id":id,"ok":false,"stage":stage})},
++        };
++        if writeln!(io::stdout(),"{response}").is_err()||io::stdout().flush().is_err(){return ExitCode::FAILURE;}
++    }
++}
++pub async fn run(tokens: &TokenManager, action: Action) -> ExitCode {
++    if matches!(action,Action::Listen){return listen(tokens).await;}
++    let input=if matches!(action,Action::Party|Action::People|Action::SendMessage){
++        let mut bytes=Vec::new();
++        if io::stdin().take(160*1024+1).read_to_end(&mut bytes).is_err()||bytes.len()>160*1024{return ExitCode::FAILURE;}
++        match String::from_utf8(bytes){Ok(body)=>Some(body),Err(_)=>return ExitCode::FAILURE}
++    }else{None};
++    let seconds=if matches!(action,Action::SendMessage){55}else{45};
++    match tokio::time::timeout(Duration::from_secs(seconds),request(tokens,action,input.as_deref())).await {
++        Ok(Ok(value)) => {println!("{value}");ExitCode::SUCCESS},
++        Ok(Err(stage)) => {eprintln!("Xbox social unavailable ({stage}).");ExitCode::FAILURE},
++        Err(_) => {eprintln!("Xbox social unavailable (timeout).");ExitCode::FAILURE},
++    }
++}
++
++#[cfg(test)] mod tests {
++    fn people_fixture()->Value{json!({"xuid":"2","gamertag":"Player","modernGamertag":"Player","uniqueModernGamertag":"Player#1234","gamerScore":"1250",
++        "isFriend":true,"isFavorite":true,"isFollowedByCaller":true,"isFollowingCaller":false,"isFriendRequestReceived":false,"isFriendRequestSent":false,
++        "detail":{"blocked":false,"bio":"Public biography","location":"Canada","tenure":"14","friendCount":12,"followingCount":23,"followerCount":34},
++        "preferredColor":{"primaryColor":"107c10","secondaryColor":"#123abc","tertiaryColor":"url(evil)"},"realName":"Private Name","token":"PRIVATE_TOKEN"})}
++    #[test]fn people_input_is_private_account_bound_and_allows_no_arbitrary_url_or_bulk_target(){
++        assert!(wire(&json!({"id":1,"args":["people"],"input":"{}"})).is_ok());
++        assert!(wire(&json!({"id":1,"args":["people"]})).is_err());
++        for value in [json!({"operation":"recent"}),json!({"account":"account","operation":"arbitrary"}),
++            json!({"account":"account","operation":"block","xuid":"01"}),json!({"account":"account","operation":"block","xuid":"me"}),
++            json!({"account":"account","operation":"block","xuid":"2","xuids":["3"]}),json!({"account":"account","operation":"recent","url":"https://example.test"}),
++            json!({"account":"account","operation":"search","query":"a\u{0000}"}),json!({"account":"account","operation":"recent","continuation":"guessed"}),
++            json!({"account":"account","operation":"recent","query":"unexpected"})]{assert!(people_input(&value.to_string()).is_err(),"{value}");}
++        assert!(people_input(&json!({"account":"account","operation":"search","query":"a".repeat(65)}).to_string()).is_err());
++        assert!(people_input(&json!({"account":"account","operation":"games","xuid":"me"}).to_string()).is_ok());
++    }
++    #[test]fn relationship_commands_match_single_target_sdk_methods_and_contracts(){
++        let client=reqwest::Client::new();
++        for(operation,method,host,path,version,query,body)in[
++            ("send-request","PUT","social.xboxlive.com","/users/xuid(1)/people/friends/v2/xuid(2)","3",None,Value::Null),
++            ("accept-request","PUT","social.xboxlive.com","/users/xuid(1)/people/friends/v2/xuid(2)","3",None,Value::Null),
++            ("cancel-request","DELETE","social.xboxlive.com","/users/xuid(1)/people/friends/v2/xuid(2)","3",Some("deleteRelationships=friends"),Value::Null),
++            ("decline-request","DELETE","social.xboxlive.com","/users/xuid(1)/people/friends/v2/xuid(2)","3",Some("deleteRelationships=friends"),Value::Null),
++            ("remove-friend","DELETE","social.xboxlive.com","/users/xuid(1)/people/friends/v2/xuid(2)","3",Some("deleteRelationships=friends"),Value::Null),
++            ("favorite","POST","social.xboxlive.com","/users/xuid(1)/people/favorites/xuids","3",Some("method=add"),json!({"xuids":["2"]})),
++            ("unfavorite","POST","social.xboxlive.com","/users/xuid(1)/people/favorites/xuids","3",Some("method=remove"),json!({"xuids":["2"]})),
++            ("block","PUT","privacy.xboxlive.com","/users/me/people/never","2",None,json!({"xuid":"2"})),
++            ("unblock","DELETE","privacy.xboxlive.com","/users/me/people/never","4",None,json!({"xuid":"2"})),
++        ]{
++            let input=people_input(&json!({"account":"account","operation":operation,"xuid":"2"}).to_string()).unwrap();
++            assert!(input.mutation());let request=people_builder(&client,&input,"1").unwrap().build().unwrap();
++            assert_eq!(request.method(),method);assert_eq!(request.url().host_str(),Some(host));assert_eq!(request.url().path(),path);assert_eq!(request.url().query(),query);
++            assert_eq!(request.headers()["x-xbl-contract-version"],version);
++            if body.is_null(){assert!(request.body().is_none());}else{
++                assert_eq!(request.headers().get_all("content-type").iter().count(),1);
++                assert_eq!(serde_json::from_slice::<Value>(request.body().unwrap().as_bytes().unwrap()).unwrap(),body);
++            }
++        }
++    }
++    #[test]fn people_search_encodes_user_text_once_and_reads_have_fixed_own_resource_paths(){
++        let client=reqwest::Client::new();let input=people_input(&json!({"account":"account","operation":"search","query":"Player #1&x=y"}).to_string()).unwrap();
++        let request=people_builder(&client,&input,"1").unwrap().build().unwrap();
++        assert_eq!(request.url().query_pairs().collect::<std::collections::HashMap<_,_>>().get("q").map(|v|v.as_ref()),Some("Player #1&x=y"));
++        assert!(!request.url().as_str().contains("%2523"));
++        for(operation,path,version)in[("recent","recentplayers","7"),("suggested","recommendations","7"),("received-requests","friendrequests(received)","7"),("sent-requests","friendrequests(sent)","7")]{
++            let input=people_input(&json!({"account":"account","operation":operation}).to_string()).unwrap();let request=people_builder(&client,&input,"1").unwrap().build().unwrap();
++            assert_eq!(request.method(),"GET");assert_eq!(request.url().as_str(),people_url(path));assert_eq!(request.headers()["x-xbl-contract-version"],version);
++        }
++        let input=people_input(&json!({"account":"account","operation":"blocked"}).to_string()).unwrap();
++        assert_eq!(people_builder(&client,&input,"1").unwrap().build().unwrap().url().as_str(),"https://privacy.xboxlive.com/users/xuid(1)/people/avoid");
++    }
++    #[test]fn relationship_projection_has_known_direction_and_unknown_requests_are_not_actionable(){
++        let mut row=people_fixture();let state=people_relationship(&row).unwrap();
++        assert_eq!(state["isFollowing"],true);assert_eq!(state["isFollower"],false);assert_eq!(state["requestState"],"none");
++        row["isFriend"]=json!(false);row["isFriendRequestReceived"]=json!(true);
++        let state=people_relationship(&row).unwrap();assert_eq!(state["favorite"],false);assert_eq!(state["requestState"],"incoming");
++        assert!(people_mutation_allowed("accept-request",&state));assert!(!people_mutation_allowed("send-request",&state));assert!(!people_mutation_allowed("cancel-request",&state));
++        row["isFriendRequestSent"]=json!(true);let state=people_relationship(&row).unwrap();assert_eq!(state["requestState"],"unknown");
++        assert!(!people_mutation_allowed("accept-request",&state));assert!(!people_mutation_allowed("decline-request",&state));
++        row["detail"]["blocked"]=Value::Null;assert!(people_relationship(&row).is_err());
++    }
++    #[test]fn expanded_profile_omits_private_and_unavailable_fields_and_only_projects_safe_css_colors(){
++        let mut row=people_fixture();let profile=people_details(&row,false).unwrap();
++        assert_eq!(profile["bio"],"Public biography");assert_eq!(profile["counts"],json!({"friends":12,"followers":34,"following":23}));
++        assert_eq!(profile["colors"],json!({"primary":"#107C10","secondary":"#123ABC"}));assert_eq!(profile["gamerscore"],"1250");
++        assert!(!profile.to_string().contains("Private Name"));assert!(!profile.to_string().contains("PRIVATE_TOKEN"));assert!(!profile.to_string().contains("url(evil)"));
++        row["detail"]=json!({"friendCount":-1});let profile=people_details(&row,true).unwrap();
++        assert!(profile.get("counts").is_none());assert!(profile.get("bio").is_none());assert!(profile.get("relationship").is_none());assert_eq!(profile["isSelf"],true);
++        assert!(selected_person(&json!({"people":[row]}),"3").is_err());
++    }
++    #[test]fn people_lists_are_bounded_without_fabricated_continuation_and_recents_keep_service_evidence(){
++        let mut row=people_fixture();row["recentPlayer"]=json!({"text":"Played E-Day together","titles":[{"lastPlayedWithDateTime":"2026-10-22T12:34:56Z"},{"lastPlayedWithDateTime":"2026-10-23T12:34:56Z"}]});
++        let page=people_page(&json!({"people":[row.clone()]})).unwrap();assert_eq!(page["items"][0]["reason"],"Played E-Day together");
++        assert_eq!(page["items"][0]["lastSeen"],"2026-10-23T12:34:56+00:00");assert_eq!(page["truncated"],false);assert!(page["continuation"].is_null());
++        let rows:Vec<_>=(1..=101).map(|n|{let mut r=row.clone();r["xuid"]=json!(n.to_string());r}).collect();
++        let page=people_page(&json!({"people":rows})).unwrap();assert_eq!(page["items"].as_array().unwrap().len(),100);assert_eq!(page["truncated"],true);assert!(page["continuation"].is_null());
++        assert!(people_page(&json!({"people":[row.clone(),row]})).is_err());assert!(people_page(&json!({})).is_err());
++        assert!(blocked_ids(&json!({"users":[{"xuid":"2"},{"xuid":"2"}]})).is_err());
++        assert_eq!(blocked_ids(&json!({"users":[]})).unwrap().len(),0);
++    }
++    #[test]fn recent_games_are_public_projection_with_numeric_titles_and_optional_achievement_data(){
++        let value=json!({"titles":[{"titleId":"00123","name":"Game","type":"Game","displayImage":"https://store-images.s-microsoft.com/image/apps/a",
++            "titleHistory":{"lastTimePlayed":"2026-10-23T12:34:56Z"},"achievement":{"currentAchievements":0,"totalAchievements":50,"currentGamerscore":10,"totalGamerscore":1000},"private":"DO_NOT_EXPOSE"}]});
++        let page=people_games(&value).unwrap();let row=&page["items"][0];assert_eq!(row["titleId"],"123");assert_eq!(row["achievementsUnlocked"],0);assert_eq!(row["achievementsTotal"],50);
++        assert!(row["imageUrl"].as_str().unwrap().starts_with("https://store-images.s-microsoft.com/"));assert!(!page.to_string().contains("DO_NOT_EXPOSE"));
++        let mut bad=value.clone();bad["titles"][0]["displayImage"]=json!("https://example.test/private");bad["titles"][0]["achievement"]=Value::Null;
++        let page=people_games(&bad).unwrap();assert!(page["items"][0].get("imageUrl").is_none());assert!(page["items"][0].get("currentGamerscore").is_none());
++        for id in ["4294967296","0","1/../../","123a"]{bad["titles"][0]["titleId"]=json!(id);assert!(people_games(&bad).is_err());}
++    }
++    #[test]fn gamer_pictures_are_bound_to_xbox_image_hosts_and_modern_tags_keep_their_suffix(){
++        let rows=friends(&json!({"people":[{"xuid":"2","modernGamertag":"Player","modernGamertagSuffix":"1234","displayPicRaw":"https://gamerpic.xboxlive.com/picture.png"}]})).unwrap();
++        assert_eq!(rows[0]["gamertag"],"Player#1234");assert_eq!(rows[0]["avatarUrl"],"https://gamerpic.xboxlive.com/picture.png");
++        let rows=friends(&json!({"people":[{"xuid":"2","gamertag":"Player","displayPicRaw":"https://example.test/private"}]})).unwrap();assert!(rows[0]["avatarUrl"].is_null());
++        assert!(wire(&json!({"id":1,"args":["profile","me"]})).is_ok());
++        assert!(wire(&json!({"id":1,"args":["profile","../me"]})).is_err());
++    }
++    #[test]fn profile_card_is_bound_to_the_selected_player_and_excludes_private_fields(){
++        let value=json!({"profileUsers":[{"id":"2","realName":"private","settings":[{"id":"Gamertag","value":"Player"},{"id":"Gamerscore","value":"12500"}]}]});
++        let result=player_profile(&value,"2").unwrap();assert_eq!(result["gamertag"],"Player");assert_eq!(result["gamerscore"],"12500");assert!(!result.to_string().contains("private"));
++        assert!(player_profile(&value,"1").is_err());assert!(player_profile(&json!({"profileUsers":[]}),"2").is_err());
++    }
++    use super::*;
++    #[test]fn private_wire_accepts_only_fixed_social_operations_and_requires_mutation_bodies(){
++        assert!(wire(&json!({"id":1,"args":["friends"],"input":null})).is_ok());
++        assert!(wire(&json!({"id":2,"args":["party"],"input":"{}"})).is_ok());
++        for args in [json!(["run","/arbitrary"]),json!(["listen"]),json!(["conversation","../me"]),json!([])]{
++            assert!(wire(&json!({"id":1,"args":args,"input":null})).is_err());
++        }
++        assert!(wire(&json!({"id":1,"args":["send-message"],"input":null})).is_err());
++        assert!(wire(&json!({"id":1,"args":["friends"],"input":"unexpected"})).is_err());
++    }
++    #[test]fn text_send_matches_the_shipped_contract_without_putting_content_in_the_url(){
++        let request=send_builder(&reqwest::Client::new(),"1","A private message").build().unwrap();
++        assert!(request.headers()["X-Xbl-ClientSeqNum"].to_str().unwrap().parse::<u64>().unwrap()>0);
++        assert!(!request.url().as_str().contains("private"));
++        assert_eq!(request.headers().get_all(reqwest::header::CONTENT_TYPE).iter().count(),1);
++        let body:Value=serde_json::from_slice(request.body().unwrap().as_bytes().unwrap()).unwrap();
++        assert_eq!(body,json!({"parts":[{"contentType":"text","version":0,"text":"A private message"}]}));
++    }
++    #[test]fn invitations_project_only_legitimate_multiplayer_actions_and_keep_chat_content_out(){
++        let value=json!({"items":[{"NotificationOptions":{"Location":{"Id":"6BE41AB5","Name":"E-Day"}},"Actions":[
++            {"SubscriptionCategory":"Microsoft.Xbox.Multiplayer","SubscriptionType":"PartyInvites","SubscriptionId":"notification-1","ActionTime":"2026-10-23T00:00:00Z",
++            "Actor":{"Id":"2","UniqueModernGamertag":"Friend","RealName":"private"},"LaunchInfo":{"mpsdHandleId":"invite-1","expirationTime":"2026-10-23T01:00:00Z"},"unused":"private"}]}]});
++        let rows=invites(&value).unwrap();assert_eq!(rows[0]["kind"],"party");assert_eq!(rows[0]["handle"],"invite-1");assert!(!rows[0].to_string().contains("private"));
++        assert!(invites(&json!({"items":[{"Actions":[{"SubscriptionCategory":"Other","SubscriptionType":"PartyInvites","private":"ignore"}]}]})).unwrap().is_empty());
++        assert!(invites(&json!({})).unwrap().is_empty());assert!(invites(&json!({"items":{}})).is_err());
++    }
++    #[test] fn accepts_only_bounded_recipient_ids_and_text() {
++        for bad in ["", "../me", "1)?url=https://evil", "18446744073709551616", "0"] {assert!(!xuid(bad));}
++        assert!(xuid("2533270000000001"));
++        assert!(send_request(&json!({"account":"account","xuid":"1","text":"Hi"})).is_ok());
++        for bad in [" ".to_string(),"x".repeat(257),"bad\u{0000}".to_string()] {
++            assert!(send_request(&json!({"account":"account","xuid":"1","text":bad})).is_err());
++        }
++    }
++    #[test] fn never_discloses_filtered_content_or_unused_profile_fields() {
++        let msg=message(&json!({"messageId":"id","sender":"1","timestamp":"now","contentPayload":{"content":{"parts":[
++            {"contentType":"text","text":"private filtered","unsuitableFor":["child"]}]}}}),"2").unwrap();
++        assert_eq!(msg["hidden"],true);assert!(!msg.to_string().contains("private filtered"));
++        let result=friends(&json!({"people":[{"xuid":"1","gamertag":"Player","realName":"Private Name","presenceState":"Online","presenceText":"Playing"}]})).unwrap();
++        assert_eq!(result[0]["online"],true);assert!(!result[0].to_string().contains("Private Name"));
++    }
++    #[test] fn malformed_service_payload_is_an_error_not_an_empty_social_graph() {
++        assert!(friends(&json!({})).is_err());assert!(inbox(&json!({}),"1").is_err());
++        assert!(friends(&json!({"people":[{"xuid":"../me","gamertag":"Player"}]})).is_err());
++        assert!(inbox(&json!({"primary":{"conversations":[{"conversationId":"x","participants":["bad"]}]}}),"1").is_err());
++    }
++    #[test] fn inbox_removes_self_and_recognizes_system_sender_zero() {
++        let rows=inbox(&json!({"primary":{"conversations":[
++            {"conversationId":"a","type":"OneToOne","participants":["1","2"]},
++            {"conversationId":"b","type":"OneToOne","participants":["0","1"]}]}}),"1").unwrap();
++        assert_eq!(rows[0]["participants"],json!(["2"]));assert_eq!(rows[1]["type"],"System");assert_eq!(rows[1]["gamertag"],"Xbox");
++    }
++}
+diff --git a/crates/xodus-cli/src/commands/native_social_party.rs b/crates/xodus-cli/src/commands/native_social_party.rs
+new file mode 100644
+index 0000000..8eecc2c
+--- /dev/null
++++ b/crates/xodus-cli/src/commands/native_social_party.rs
+@@ -0,0 +1,191 @@
++//! Bounded party-service operations for the local Nexus voice controller.
++use serde_json::{Value,json};
++use base64::{Engine,prelude::BASE64_STANDARD_NO_PAD};
++use xodus::tokens::TokenManager;
++use super::profile::{bounded,xbox_session_identity};
++
++fn json_headers(request:reqwest::RequestBuilder)->reqwest::RequestBuilder{
++    let mut headers=reqwest::header::HeaderMap::new();
++    headers.insert(reqwest::header::CONTENT_TYPE,reqwest::header::HeaderValue::from_static("application/json"));
++    // .json() already inserts Content-Type; .header() would append a duplicate.
++    request.headers(headers)
++}
++
++fn id(value:&Value)->Result<&str,&'static str>{
++    value.as_str().filter(|s| !s.is_empty()&&s.len()<=128&&s.bytes().all(|b|b.is_ascii_alphanumeric()||b==b'-'||b==b'_')).ok_or("party-id")
++}
++fn short(value:&Value,max:usize)->Result<&str,&'static str>{
++    value.as_str().filter(|s|!s.is_empty()&&s.len()<=max&&!s.chars().any(char::is_control)).ok_or("party-field")
++}
++fn user_id(value:&Value)->Option<String>{
++    value.as_str().filter(|s|super::native_social::xuid(s)).map(str::to_owned)
++        .or_else(||value.as_u64().filter(|n|*n>0).map(|n|n.to_string()))
++}
++fn validate(input:&Value)->Result<&str,&'static str>{
++    short(&input["account"],512)?;
++    let op=input["operation"].as_str().ok_or("party-operation")?;
++    match op {
++        "active"=>(),
++        "get"|"leave"=>{id(&input["partyId"])?;},
++        "create"|"join"|"accept-invite"=>{
++            short(&input["connectionId"],512)?;short(&input["serverNonce"],4096)?;
++            let offer=input["offer"].as_str().filter(|s|s.len()<=128*1024).ok_or("party-offer")?;
++            let offer:Value=serde_json::from_str(offer).map_err(|_|"party-offer-json")?;
++            if offer["messageType"]!="transportConnectionRequestMessage" || offer["sdp"].as_str().is_none_or(|s|!s.starts_with("v=0\r\n")||s.len()>100*1024)
++                || offer["configuration"]["control"]["minVersion"]!=1 || offer["configuration"]["control"]["maxVersion"]!=1 {return Err("party-offer-shape");}
++            short(&offer["cv"],128)?;
++            if op=="join"{id(&input["partyId"])?;}
++            if op=="accept-invite"{id(&input["inviteId"])?;}
++        },
++        "invite"=>{id(&input["partyId"])?;if !input["xuid"].as_str().is_some_and(super::native_social::xuid){return Err("party-invite-xuid");}},
++        "voice-policy"=>{if !input["xuid"].as_str().is_some_and(super::native_social::xuid){return Err("voice-policy-xuid");}},
++        _=>return Err("party-operation"),
++    }
++    Ok(op)
++}
++fn document(value:&Value,self_xuid:&str)->Result<Value,&'static str>{
++    let session=id(&value["id"])?;
++    let rows=value["members"].as_array().filter(|a|a.len()<=128).ok_or("party-members")?;
++    let members:Result<Vec<Value>,&'static str>=rows.iter().map(|row|{
++        let xuid=user_id(&row["userId"]).ok_or("party-member-id")?;
++        Ok(json!({"xuid":xuid,"role":row["role"].as_str().filter(|s|s.len()<=64)}))
++    }).collect();
++    let own=rows.iter().find(|r|user_id(&r["userId"]).as_deref()==Some(self_xuid));
++    let answer=own.and_then(|r|r["connectionState"]["webRTC"]["transportConnectionResponse"].as_str())
++        .filter(|s|s.len()<=128*1024);
++    Ok(json!({"id":session,"owner":user_id(&value["owner"]),"members":members?,
++        "changeNumber":value["metadata"]["changeNumber"].as_u64(),"transportResponse":answer,
++        "joinability":value["joinability"].as_str().filter(|s|s.len()<=64)}))
++}
++fn default_region(value:&Value)->Result<String,&'static str>{
++    let regions=value["offeringSettings"]["regions"].as_array().filter(|a|a.len()<=128).ok_or("party-region-shape")?;
++    let region=regions.iter().find(|r|r["isDefault"]==true).ok_or("party-region-default")?;
++    region["name"].as_str().filter(|s|!s.is_empty()&&s.len()<=64&&s.bytes().all(|b|b.is_ascii_alphanumeric()||b==b'-'))
++        .map(str::to_owned).ok_or("party-region-name")
++}
++async fn relay_region(tokens:&TokenManager,expected_account:&str)->Result<String,&'static str>{
++    // The shipped party client uses the authenticated streaming service's default region.
++    let(client,authorization,account,_)=super::profile::xbox_session_for(tokens,"http://gssv.xboxlive.com/").await?;
++    if account!=expected_account{return Err("account-changed");}
++    let response=client.post("https://xgpuweb.gssv-play-prod.xboxlive.com/v2/login/user")
++        .json(&json!({"token":authorization,"offeringId":"xgpuweb"})).send().await.map_err(|_|"party-region-request")?;
++    if response.status().as_u16()==401{super::profile::invalidate_social_session(tokens);}
++    if !response.status().is_success(){return Err("party-region-http");}
++    let bytes=bounded(response,1024*1024).await?;
++    default_region(&serde_json::from_slice(&bytes).map_err(|_|"party-region-json")?)
++}
++pub(super) async fn request(tokens:&TokenManager,body:&str)->Result<Value,&'static str>{
++    if body.len()>160*1024{return Err("party-input-size");}
++    let input:Value=serde_json::from_str(body).map_err(|_|"party-input-json")?;
++    let operation=validate(&input)?;
++    let(client,authorization,account,self_xuid)=xbox_session_identity(tokens).await?;
++    if input["account"]!=account{return Err("account-changed");}
++    let self_xuid=self_xuid.filter(|s|super::native_social::xuid(s)).ok_or("xsts-user-id")?;
++    let session=if matches!(operation,"active"|"create"|"voice-policy"|"accept-invite"){""}else{id(&input["partyId"])?};
++    let region=if matches!(operation,"create"|"join"|"accept-invite"){Some(relay_region(tokens,&account).await?)}else{None};
++    let connection=||json!({"isBroadcasting":false,"allowedInBroadcast":false,"textToSpeechEnabled":false,
++        "chat":{"connectionId":input["connectionId"],"serverNonce":input["serverNonce"]},
++        "webRTC":{"transportConnectionRequest":input["offer"],"preferredRegion":region,"skipAllocation":false},"accessory":{"capabilities":0}});
++    let root="https://party.xboxlive.com";
++    let request=match operation{
++        "active"=>client.get(format!("{root}/users/xuid({self_xuid})/parties")),
++        "get"=>client.get(format!("{root}/parties/{session}/details")),
++        "create"=>{
++            // Preserve any party already active on another device. The UI must resolve it explicitly.
++            let response=client.get(format!("{root}/users/xuid({self_xuid})/parties")).header("Authorization",&authorization).send().await.map_err(|_|"party-active-request")?;
++            let bytes=bounded(response,128*1024).await?;
++            let active:Value=serde_json::from_slice(&bytes).map_err(|_|"party-active-json")?;
++            if !active.as_array().ok_or("party-active-shape")?.is_empty(){return Err("party-already-active");}
++            client.post(format!("{root}/parties/create")).json(&json!({"partyDetails":{"joinability":"inviteOnly"},"ownerConnection":connection()}))
++        },
++        "join"=>client.put(format!("{root}/parties/{session}/connection")).json(&connection()),
++        "accept-invite"=>client.put(format!("{root}/invites/{}/party/connection",id(&input["inviteId"])?)).json(&connection()),
++        "leave"=>client.post(format!("{root}/parties/{session}/leave")),
++        "invite"=>client.post(format!("{root}/parties/{session}/invite")).json(&json!({"inviteeXuids":[input["xuid"]]})),
++        "voice-policy"=>client.get(format!("https://privacy.xboxlive.com/users/xuid({self_xuid})/permission/validate?setting=CommunicateUsingVoice&target=xuid({})",input["xuid"].as_str().ok_or("voice-policy-xuid")?)).header("x-xbl-contract-version","2"),
++        _=>return Err("party-operation"),
++    };
++    let correlation=if let Some(offer)=input["offer"].as_str(){
++        serde_json::from_str::<Value>(offer).ok().and_then(|o|o["cv"].as_str().map(str::to_owned))
++    }else{None}.unwrap_or_else(||format!("{}.0",BASE64_STANDARD_NO_PAD.encode(uuid::Uuid::new_v4().as_bytes())));
++    let response=json_headers(request).header("Authorization",&authorization).header("MS-CV",correlation)
++        .header("X-WebRTCRelay-Alias","PartyWebRTC").send().await.map_err(|_|"party-request")?;
++    let status=response.status().as_u16();
++    if status==401{super::profile::invalidate_social_session(tokens);}
++    if !(200..=299).contains(&status){
++        eprintln!("NEXUS_SOCIAL_HTTP_DIAGNOSTIC_V1 party {status}");
++        // Service validation text only; remove every supplied connection/account secret first.
++        if status==400 {
++            let content_type=response.headers().get(reqwest::header::CONTENT_TYPE).and_then(|v|v.to_str().ok()).unwrap_or("none").to_owned();
++            let mut response=response;let mut body=Vec::new();
++            while let Some(chunk)=response.chunk().await.map_err(|_|"party-error-read")?{
++                if body.len()+chunk.len()>64*1024{return Err("party-error-size");}body.extend_from_slice(&chunk);
++            }
++            if body.len()<=64*1024 {
++                {
++                    let value=serde_json::from_slice::<Value>(&body).ok();
++                    let message=value.as_ref().and_then(|v|v["message"].as_str().or_else(||v["Message"].as_str()).or_else(||v["error"]["message"].as_str()))
++                        .map(str::to_owned).unwrap_or_else(||if body.is_empty(){format!("Empty error response; content type {content_type}")}else{String::from_utf8_lossy(&body).into_owned()});
++                    {
++                        let mut clean=message;
++                        for secret in [Some(account.as_str()),Some(self_xuid.as_str()),Some(authorization.as_str()),authorization.split(';').last(),input["connectionId"].as_str(),input["serverNonce"].as_str(),input["offer"].as_str()] {
++                            if let Some(secret)=secret.filter(|s|!s.is_empty()){clean=clean.replace(secret,"[redacted]");}
++                        }
++                        let clean=clean.split_whitespace().map(|word|if word.len()>64{"[redacted]"}else{word}).collect::<Vec<_>>().join(" ");
++                        let clean:String=clean.chars().filter(|c|!c.is_control()).take(1024).collect();
++                        eprintln!("NEXUS_SOCIAL_SERVICE_DIAGNOSTIC_V1 {}",json!({"message":clean}));
++                    }
++                }
++            }
++            return Err("party-http-status");
++        }
++    }
++    match status{
++        200..=299=>(),401|403=>return Err("party-permission-denied"),429=>return Err("party-rate-limited"),_=>return Err("party-http-status"),
++    }
++    let result=if matches!(operation,"leave"|"invite"){json!({"success":true})}else{
++        let bytes=bounded(response,1024*1024).await?;
++        let value:Value=serde_json::from_slice(&bytes).map_err(|_|"party-json")?;
++        match operation{
++            "active"=>{
++                let rows=value.as_array().filter(|a|a.len()<=16).ok_or("party-active-shape")?;
++                let sessions:Result<Vec<_>,_>=rows.iter().map(|v|id(&v["id"]).map(str::to_owned)).collect();json!({"ids":sessions?})
++            },
++            "voice-policy"=>json!({"isAllowed":value["isAllowed"].as_bool().ok_or("voice-policy-shape")?}),
++            _=>document(&value,&self_xuid)?,
++        }
++    };
++    if tokens.get_user().map_err(|_|"account-changed")?.username!=account{return Err("account-changed");}
++    Ok(json!({"schema":1,"kind":"party","account":account,"operation":operation,"result":result}))
++}
++
++#[cfg(test)]mod tests{
++    use super::*;
++    #[test]fn only_fixed_operations_and_safe_party_ids_are_accepted(){
++        assert!(validate(&json!({"account":"account","operation":"active"})).is_ok());
++        for op in ["https://evil.test/","update-profile","../../me"]{assert!(validate(&json!({"account":"account","operation":op})).is_err());}
++        for session in ["../me","a/b","bad?query","https://evil.test"]{assert!(validate(&json!({"account":"account","operation":"get","partyId":session})).is_err());}
++    }
++    #[test]fn relay_region_comes_from_the_authenticated_default_not_the_first_or_an_arbitrary_url(){
++        let value=json!({"gsToken":"must-not-escape","offeringSettings":{"regions":[
++            {"name":"OtherRegion","isDefault":false},{"name":"SelectedRegion","isDefault":true,"baseUri":"https://unused.test"}]}});
++        assert_eq!(default_region(&value).unwrap(),"SelectedRegion");
++        assert!(default_region(&json!({"offeringSettings":{"regions":[{"name":"https://evil.test","isDefault":true}]}})).is_err());
++        assert!(default_region(&json!({"offeringSettings":{"regions":[]}})).is_err());
++    }
++    #[test]fn json_content_type_is_sent_exactly_once(){
++        let client=reqwest::Client::new();
++        let request=json_headers(client.post("https://party.xboxlive.com/parties/create").json(&json!({"example":true}))).build().unwrap();
++        assert_eq!(request.headers().get_all(reqwest::header::CONTENT_TYPE).iter().count(),1);
++        assert_eq!(request.headers()[reqwest::header::CONTENT_TYPE],"application/json");
++    }
++    #[test]fn invalid_offer_is_rejected_before_authentication_or_party_creation(){
++        assert!(validate(&json!({"account":"account","operation":"create","connectionId":"c","serverNonce":"n","offer":"{}"})).is_err());
++    }
++    #[test]fn only_self_transport_and_selected_membership_fields_leave_the_backend(){
++        let value=json!({"id":"party-1","owner":1,"metadata":{"changeNumber":3,"extra":"private"},"members":[
++            {"userId":1,"role":"owner","connectionState":{"webRTC":{"transportConnectionResponse":"own-answer"}}},
++            {"userId":2,"connectionState":{"webRTC":{"transportConnectionResponse":"peer-private-answer"}}}]});
++        let result=document(&value,"1").unwrap();assert_eq!(result["transportResponse"],"own-answer");assert_eq!(result["members"][1]["xuid"],"2");assert!(!result.to_string().contains("peer-private-answer"));
++    }
++}
+diff --git a/crates/xodus-cli/src/commands/native_social_session.rs b/crates/xodus-cli/src/commands/native_social_session.rs
+new file mode 100644
+index 0000000..4e74596
+--- /dev/null
++++ b/crates/xodus-cli/src/commands/native_social_session.rs
+@@ -0,0 +1,379 @@
++//! Outgoing chat uses the existing sign-in's real application/device context.
++//! Short-lived proof keys stay in memory. No interactive sign-in, registration,
++//! credential persistence, fabricated identity or automatic message retries.
++use chrono::{DateTime, Utc};
++use reqwest::{Client, RequestBuilder};
++use serde_json::{Value, json};
++use xodus::{models::{live::ExchangeUserTokenOutcome, secrets::Token, soap}, tokens::TokenManager,
++    xal::{RequestSigner, RequestSigning, RequestVerification, SignaturePolicyCache, oauth2::http}};
++
++const LIMIT: usize = 2 * 1024 * 1024;
++const MESSAGES: &str = "https://xblmessaging.xboxlive.com/network/Xbox/users/me/conversations/users/";
++const RP: &str = "http://xboxlive.com";
++const POLICY: &str = "https://title.mgt.xboxlive.com/titles/default/endpoints?type=1";
++const DEVICE: &str = "https://device.auth.xboxlive.com/device/authenticate";
++const SISU: &str = "https://sisu.xboxlive.com/authorize";
++const XSTS: &str = "https://xsts.auth.xboxlive.com/xsts/authorize";
++
++struct Session {
++    client: Client,
++    signer: RequestSigner,
++    authorization: String,
++    account: String,
++    principal: String,
++}
++
++fn account_unchanged(tokens: &TokenManager, account: &str, principal: &str) -> Result<(), &'static str> {
++    let Some((user, _)) = tokens.get_user_sts_session().map_err(|_| "account-changed")? else { return Err("account-changed"); };
++    if user.username != account || user.puid != principal { return Err("account-changed"); }
++    Ok(())
++}
++
++fn ticket(outcome: ExchangeUserTokenOutcome, now: DateTime<Utc>) -> Result<String, &'static str> {
++    if let Some(stage) = super::super::session::rejection(&outcome) { return Err(stage); }
++    let response = match outcome {
++        ExchangeUserTokenOutcome::Issued(soap::BodyContent::RequestSecurityTokenResponseCollection(mut values)) if values.security_tokens.len() == 1 => values.security_tokens.remove(0),
++        ExchangeUserTokenOutcome::Issued(soap::BodyContent::RequestSecurityTokenResponse(value)) => *value,
++        _ => return Err("chat-ticket-response"),
++    };
++    let created = DateTime::parse_from_rfc3339(&response.lifetime.created).map_err(|_| "chat-ticket-lifetime")?;
++    let expires = DateTime::parse_from_rfc3339(&response.lifetime.expires).map_err(|_| "chat-ticket-lifetime")?;
++    if expires <= now || expires <= created || created > now + chrono::Duration::minutes(5) { return Err("chat-ticket-lifetime"); }
++    let Token::Compact(value) = Token::try_from(response).map_err(|_| "chat-ticket-parse")? else { return Err("chat-ticket-type"); };
++    if value.is_empty() { return Err("chat-ticket-empty"); }
++    Ok(value)
++}
++
++fn fresh_token(value: &Value, now: DateTime<Utc>) -> Result<&str, &'static str> {
++    let expires = value["NotAfter"].as_str().and_then(|v| DateTime::parse_from_rfc3339(v).ok()).ok_or("chat-token-lifetime")?;
++    if expires <= now { return Err("chat-token-expired"); }
++    value["Token"].as_str().filter(|v| !v.is_empty()).ok_or("chat-token-empty")
++}
++
++fn authorization(value: Value, now: DateTime<Utc>) -> Result<String, &'static str> {
++    fresh_token(&value, now)?;
++    let claims = value["DisplayClaims"]["xui"].as_array().filter(|v| v.len() == 1).ok_or("chat-token-claims")?;
++    if !claims[0]["xid"].as_str().is_some_and(super::xuid) { return Err("chat-token-claims"); }
++    if !claims[0]["prv"].as_str().is_some_and(|v| v.split_ascii_whitespace().any(|v| v == "252")) {
++        return Err("privacy-or-access-denied");
++    }
++    let token = serde_json::from_value(value).map_err(|_| "chat-token-claims")?;
++    xodus::api::xbox::get_xsts_auth_header(token).map_err(|_| "chat-token-claims")
++}
++
++// XAL's pinned reqwest transport and the backend use different HTTP versions.
++// Its public reqwest overload preserves all headers, unlike its http::Request
++// overload. Type inference through verify selects that transport without adding
++// another dependency. Sign and verify the exact serialized bytes before sending.
++async fn signed(request: RequestBuilder, signer: &mut RequestSigner) -> Result<RequestBuilder, &'static str> {
++    let exact = request.try_clone().ok_or("chat-request-clone")?.build().map_err(|_| "chat-request-build")?;
++    let mut wire = http::Request::builder().method(exact.method().as_str()).uri(exact.url().as_str());
++    for (name, value) in exact.headers() { wire = wire.header(name.as_str(), value.as_bytes()); }
++    let body = exact.body().map(|v| v.as_bytes().ok_or("chat-request-body")).transpose()?.unwrap_or(&[]).to_vec();
++    let wire = wire.body(body).map_err(|_| "chat-request-build")?;
++    let legacy = wire.try_into().map_err(|_| "chat-request-build")?;
++    let signed = signer.sign_request(legacy, None).await.map_err(|_| "chat-request-signature")?;
++    let verified = signer.verify(signed).await.map_err(|_| "chat-request-signature")?;
++    let signature = verified.headers().get("Signature").and_then(|v| v.to_str().ok()).ok_or("chat-request-signature")?;
++    Ok(request.header("Signature", signature))
++}
++
++async fn response(response: reqwest::Response, stage: &'static str, created: bool) -> Result<Value, &'static str> {
++    let status = response.status().as_u16();
++    eprintln!("NEXUS_SOCIAL_DIAGNOSTIC_V1 {stage} {status}");
++    if status != 200 && !(created && status == 201) {
++        return Err(match status { 401 => "sign-in-required", 403 => "privacy-or-access-denied", 429 => "rate-limited", _ => "service-unavailable" });
++    }
++    serde_json::from_slice(&super::super::profile::bounded(response, LIMIT).await?).map_err(|_| "invalid-response")
++}
++
++async fn messaging_relying_party(cache: &mut SignaturePolicyCache) -> Result<Option<String>, &'static str> {
++    // The pinned XAL audience helper unconditionally prints endpoint details to
++    // stdout. Keep the same selection against the already fetched typed NSAL
++    // response, but reserve stdout for the one account-bound JSON result.
++    // Signing and verification still use the unmodified XAL policy cache.
++    let url = reqwest::Url::parse(MESSAGES).map_err(|_| "chat-policy-response")?;
++    let endpoints = cache.get_endpoints().ok_or("chat-policy-response")?;
++    Ok(endpoints.end_points.iter().filter(|endpoint| {
++        endpoint.protocol.eq_ignore_ascii_case(url.scheme())
++            && url.host_str().is_some_and(|host| match endpoint.host_type.as_str() {
++                "fqdn" => host.eq_ignore_ascii_case(&endpoint.host),
++                "wildcard" => host.ends_with(endpoint.host.trim_start_matches('*')),
++                _ => false,
++            })
++            && endpoint.path.as_ref().is_none_or(|path| url.path() == path)
++    }).max_by_key(|endpoint| endpoint.host.len()).and_then(|endpoint| endpoint.relying_party.clone()))
++}
++
++impl Session {
++    async fn new(tokens: &TokenManager, expected: &str) -> Result<Self, &'static str> {
++        let client = Client::builder().redirect(reqwest::redirect::Policy::none())
++            .timeout(super::super::session::REQUEST_TIMEOUT).user_agent("xodus-nexus-social/1").build().map_err(|_| "http-client")?;
++        let (account, device, user) = super::super::session::prepare(tokens, &client).await?;
++        // An outgoing write must use the actual account/ticket pair stored by
++        // sign-in, not independent legacy records that can belong to two sessions.
++        let Some((bound_user, Token::Legacy(bound_token))) = tokens.get_user_sts_session().map_err(|_| "sign-in-required")? else { return Err("sign-in-required"); };
++        if bound_user.username != account || bound_user.puid.is_empty() || bound_token.token != user.token { return Err("account-changed"); }
++        if account != expected { return Err("account-changed"); }
++        let principal = bound_user.puid;
++        let app = super::super::login::CLIENT_ID;
++        let scope = format!("scope=xboxlive.signin&api-version=2.0&clientid={app}");
++        let outcome = xodus::api::live::exchange_user_token(&client, user, account.clone(), device.clone(), None, Some("Silent".into()), app.into(),
++            &[(scope, Some(soap::PolicyReference::token_broker()))]).await.map_err(|_| "chat-ticket-request")?;
++        let user_ticket = ticket(outcome, Utc::now())?;
++        let device_response = xodus::api::live::exchange_device_token(&client, device,
++            "{28C08266-F973-4AE6-FFE4-409B249F138F}".into(),
++            "scope=service::user.auth.xboxlive.com::MBI_SSL&api-version=2.0".into(), Some(soap::PolicyReference::token_broker()))
++            .await.map_err(|_| "chat-device-ticket")?;
++        let device_ticket = ticket(ExchangeUserTokenOutcome::Issued(soap::BodyContent::RequestSecurityTokenResponse(Box::new(device_response))), Utc::now())?;
++        let endpoints = response(client.get(POLICY).header("x-xbl-contract-version", "1").send().await.map_err(|_| "chat-policy-request")?, "chat-policy-http", false).await?;
++        let endpoints = serde_json::from_value(endpoints).map_err(|_| "chat-policy-response")?;
++        let mut signer = RequestSigner::new();
++        signer.signature_policy_cache = SignaturePolicyCache::new(endpoints);
++        let rp = messaging_relying_party(&mut signer.signature_policy_cache).await?
++            .ok_or("chat-policy-missing")?;
++        if rp != RP { return Err("chat-policy-audience"); }
++        let request = client.post(DEVICE).header("x-xbl-contract-version", "1").json(&json!({
++            "RelyingParty":"http://auth.xboxlive.com","TokenType":"JWT","Properties":{
++                "AuthMethod":"RPS","RpsTicket":device_ticket,"SiteName":"user.auth.xboxlive.com",
++                "Version":xodus::xal::client_params::CLIENT_WINDOWS().client_version,"ProofKey":signer.get_proof_key()}}));
++        let device = response(signed(request, &mut signer).await?.send().await.map_err(|_| "chat-device-request")?, "chat-device-http", false).await?;
++        let device_token = fresh_token(&device, Utc::now())?;
++        let request = client.post(SISU).json(&json!({"AccessToken":user_ticket,"AppId":app,"DeviceToken":device_token,
++            "Sandbox":"RETAIL","SiteName":"user.auth.xboxlive.com","ProofKey":signer.get_proof_key()}));
++        let sisu = response(signed(request, &mut signer).await?.send().await.map_err(|_| "chat-context-request")?, "chat-context-http", false).await?;
++        let user_token = fresh_token(&sisu["UserToken"], Utc::now())?;
++        let title_token = fresh_token(&sisu["TitleToken"], Utc::now())?;
++        let request = client.post(XSTS).header("x-xbl-contract-version", "1").json(&json!({
++            "RelyingParty":RP,"TokenType":"JWT","Properties":{
++                "SandboxId":"RETAIL","DeviceToken":device_token,"TitleToken":title_token,"UserTokens":[user_token]}}));
++        let xsts = response(signed(request, &mut signer).await?.send().await.map_err(|_| "chat-xsts-request")?, "chat-xsts-http", false).await?;
++        let authorization = authorization(xsts, Utc::now())?;
++        account_unchanged(tokens, &account, &principal)?;
++        Ok(Self { client, signer, authorization, account, principal })
++    }
++
++    async fn allowed(&mut self, peer: &str) -> Result<(), &'static str> {
++        let mut url = reqwest::Url::parse("https://privacy.xboxlive.com/users/me/permission/validate").map_err(|_| "chat-privacy-url")?;
++        url.query_pairs_mut().append_pair("setting", "CommunicateUsingText").append_pair("target", &format!("xuid({peer})"));
++        let request = self.client.get(url).header("Authorization", &self.authorization)
++            .header("X-RequestedServiceVersion", "1").header("x-xbl-contract-version", "1");
++        let value = response(signed(request, &mut self.signer).await?.send().await.map_err(|_| "chat-privacy-request")?, "chat-privacy-http", false).await?;
++        if value["isAllowed"] != true { return Err("privacy-or-access-denied"); }
++        Ok(())
++    }
++
++    async fn post(&mut self, request: RequestBuilder) -> Result<Value, &'static str> {
++        let request = request.header("Authorization", &self.authorization).header("Accept-Language", "en-US");
++        response(signed(request, &mut self.signer).await?.send().await.map_err(|_| "request-unconfirmed")?, "send-http", true).await
++    }
++}
++
++fn receipt(value: &Value) -> Result<Value, &'static str> {
++    if !value["error"].is_null() || !value["errors"].is_null() { return Err("send-unconfirmed"); }
++    let id = value["messageId"].as_str().filter(|s| !s.trim().is_empty() && s.len() <= 256
++        && !s.chars().any(char::is_control)).ok_or("send-unconfirmed")?;
++    Ok(json!({"id":id}))
++}
++
++pub(super) async fn send(tokens: &TokenManager, expected: &str, peer: &str, message: &str) -> Result<Value, &'static str> {
++    let mut session = Session::new(tokens, expected).await?;
++    session.allowed(peer).await?;
++    account_unchanged(tokens, &session.account, &session.principal)?;
++    let request = super::send_builder(&session.client, peer, message);
++    let value = session.post(request).await?;
++    account_unchanged(tokens, &session.account, &session.principal)?;
++    Ok(json!({"schema":1,"kind":"sent","account":session.account,"items":[receipt(&value)?]}))
++}
++
++#[cfg(test)]
++mod tests {
++    #[test]
++    fn chat_session_receipt_requires_a_real_id_without_errors() {
++        assert_eq!(super::receipt(&serde_json::json!({"messageId":"server-id"})).unwrap(), serde_json::json!({"id":"server-id"}));
++        for value in [serde_json::json!({}),serde_json::json!({"messageId":" "}),serde_json::json!({"messageId":"x".repeat(257)}),
++            serde_json::json!({"messageId":"bad\u{0}id"}),serde_json::json!({"messageId":"id","error":"not-accepted"})] {
++            assert!(super::receipt(&value).is_err());
++        }
++    }
++    use super::*;
++    use std::{io::{Read, Write}, net::TcpListener, thread};
++    use xodus::models::secrets::{LegacyToken, User};
++
++    fn policy(host: &str, protocol: &str) -> RequestSigner {
++        let endpoints = serde_json::from_value(json!({"EndPoints":[{"Protocol":protocol,"Host":host,"HostType":"fqdn","SignaturePolicyIndex":0}],
++            "SignaturePolicies":[{"Version":1,"SupportedAlgorithms":["ES256"],"MaxBodyBytes":8192,"SupportedSignatureTypes":["XBL"]}],"Certs":[],"RootCerts":[]})).unwrap();
++        let mut signer = RequestSigner::new();
++        signer.signature_policy_cache = SignaturePolicyCache::new(endpoints);
++        signer
++    }
++    fn wire(request: &reqwest::Request) -> http::Request<Vec<u8>> {
++        let mut builder = http::Request::builder().method(request.method().as_str()).uri(request.url().as_str());
++        for (name, value) in request.headers() { builder = builder.header(name.as_str(), value.as_bytes()); }
++        builder.body(request.body().and_then(|v| v.as_bytes()).unwrap_or(&[]).to_vec()).unwrap()
++    }
++    #[test]
++    fn chat_session_policy_lookup_keeps_stdout_machine_readable() {
++        const CHILD: &str = "NEXUS_TEST_CHAT_POLICY_STDOUT";
++        if std::env::var_os(CHILD).is_some() {
++            let endpoints = serde_json::from_value(json!({"EndPoints":[{
++                "Protocol":"https","Host":"xblmessaging.xboxlive.com","HostType":"fqdn","RelyingParty":RP
++            }]})).unwrap();
++            let mut cache = SignaturePolicyCache::new(endpoints);
++            println!("NEXUS_TEST_FRAME_BEGIN");
++            let value = tokio::runtime::Runtime::new().unwrap().block_on(messaging_relying_party(&mut cache)).unwrap();
++            println!("{}", json!({"audience":value}));
++            println!("NEXUS_TEST_FRAME_END");
++            return;
++        }
++        let child = std::process::Command::new(std::env::current_exe().unwrap())
++            .args(["--exact","commands::native_social::chat_session::tests::chat_session_policy_lookup_keeps_stdout_machine_readable","--nocapture"])
++            .env(CHILD, "1").output().unwrap();
++        assert!(child.status.success());
++        let stdout = String::from_utf8(child.stdout).unwrap();
++        let frame = stdout.split_once("NEXUS_TEST_FRAME_BEGIN\n").unwrap().1
++            .split_once("\nNEXUS_TEST_FRAME_END").unwrap().0;
++        let value: Value = serde_json::from_str(frame).expect("policy lookup must not mix diagnostics with JSON stdout");
++        assert_eq!(value, json!({"audience":RP}));
++    }
++    #[tokio::test]
++    async fn chat_session_quiet_audience_matches_pinned_policy_selection_without_fallback() {
++        let endpoint = |host: &str, kind: &str, rp: &str| json!({
++            "Protocol":"https","Host":host,"HostType":kind,"RelyingParty":rp
++        });
++        let exact = endpoint("xblmessaging.xboxlive.com", "fqdn", RP);
++        let wildcard = endpoint("*.xboxlive.com", "wildcard", "synthetic-broad");
++        let mut wrong_path = exact.clone(); wrong_path["Path"] = json!("/other");
++        let mut matching_path = exact.clone(); matching_path["Path"] = json!("/network/Xbox/users/me/conversations/users/");
++        let mut wrong_protocol = exact.clone(); wrong_protocol["Protocol"] = json!("http");
++        for entries in [
++            vec![], vec![exact.clone()], vec![wildcard.clone(), exact.clone()], vec![exact, wildcard],
++            vec![endpoint("XBLMESSAGING.XBOXLIVE.COM", "fqdn", RP)], vec![matching_path], vec![wrong_path],
++            vec![wrong_protocol], vec![endpoint("xblmessaging.xboxlive.com.evil.test", "fqdn", RP)],
++            vec![endpoint("xblmessaging.xboxlive.com", "unknown", RP)],
++            vec![endpoint("xblmessaging.xboxlive.com", "fqdn", "synthetic-wrong-audience")],
++        ] {
++            let mut cache = SignaturePolicyCache::new(serde_json::from_value(json!({"EndPoints":entries})).unwrap());
++            assert_eq!(messaging_relying_party(&mut cache).await.unwrap(),
++                cache.find_relying_party_for_url(super::MESSAGES).await.unwrap());
++        }
++        assert_eq!(messaging_relying_party(&mut SignaturePolicyCache::default()).await.unwrap_err(), "chat-policy-response");
++    }
++    #[tokio::test]
++    async fn chat_session_signature_preserves_exact_bytes_and_rejects_tampering() {
++        let mut signer = policy("fixture.invalid", "https");
++        let client = Client::new();
++        for post in [false, true] {
++            let builder = if post { client.post("https://fixture.invalid/thread?maxItems=100").json(&json!({"parts":[{"contentType":"text","version":0,"text":"SYNTHETIC \" čeština 🐱"}]})) }
++                else { client.get("https://fixture.invalid/thread?maxItems=100") };
++            let builder = builder.header("Authorization", "SYNTHETIC_NOT_A_TOKEN");
++            let before = builder.try_clone().unwrap().build().unwrap();
++            let after = signed(builder, &mut signer).await.unwrap().build().unwrap();
++            assert_eq!(before.method(), after.method()); assert_eq!(before.url(), after.url());
++            assert_eq!(before.body().and_then(|v| v.as_bytes()), after.body().and_then(|v| v.as_bytes()));
++            for (name, value) in before.headers() { assert_eq!(after.headers().get(name), Some(value)); }
++            assert!(signer.verify(wire(&after).try_into().unwrap()).await.is_ok());
++            let mut tampered = wire(&after); *tampered.body_mut() = b"different body".to_vec();
++            if post { assert!(signer.verify(tampered.try_into().unwrap()).await.is_err()); }
++            let mut tampered = wire(&after); tampered.headers_mut().insert("Authorization", "DIFFERENT".parse().unwrap());
++            assert!(signer.verify(tampered.try_into().unwrap()).await.is_err());
++        }
++    }
++
++    fn user_ticket(kind: &str, created: &str, expires: &str) -> ExchangeUserTokenOutcome {
++        let response = serde_json::from_value(json!({"TokenType":kind,"AppliesTo":{"EndpointReference":{"Address":"synthetic.invalid"}},
++            "Lifetime":{"Created":created,"Expires":expires},"RequestedSecurityToken":{"BinarySecurityToken":{"@Id":"synthetic","$value":"SYNTHETIC"}}})).unwrap();
++        ExchangeUserTokenOutcome::Issued(soap::BodyContent::RequestSecurityTokenResponse(Box::new(response)))
++    }
++    #[test]
++    fn chat_session_issued_tickets_keep_the_server_type_and_require_fresh_lifetimes() {
++        let now = DateTime::parse_from_rfc3339("2026-10-26T12:00:00Z").unwrap().with_timezone(&Utc);
++        assert_eq!(ticket(user_ticket("urn:passport:compact", "2026-10-26T11:00:00Z", "2026-10-26T13:00:00Z"), now).unwrap(), "SYNTHETIC");
++        assert_eq!(ticket(user_ticket("urn:passport:delegationcompact", "2026-10-26T11:00:00Z", "2026-10-26T13:00:00Z"), now).unwrap(), "d=SYNTHETIC");
++        for (created, expires) in [("bad", "bad"), ("2026-10-26T11:00:00Z", "2026-10-26T12:00:00Z"),
++            ("2026-10-26T14:00:00Z", "2026-10-26T13:00:00Z"), ("2026-10-26T13:00:00Z", "2026-10-26T14:00:00Z")] {
++            assert!(ticket(user_ticket("urn:passport:delegationcompact", created, expires), now).is_err());
++        }
++        assert!(ticket(user_ticket("UNKNOWN", "2026-10-26T11:00:00Z", "2026-10-26T13:00:00Z"), now).is_err());
++        assert!(ticket(ExchangeUserTokenOutcome::Issued(soap::BodyContent::RequestSecurityTokenResponseCollection(
++            soap::RequestSecurityTokenResponseCollection { security_tokens: vec![] })), now).is_err());
++    }
++    #[test]
++    fn chat_session_xsts_requires_one_real_user_communications_and_unexpired_token() {
++        let now = DateTime::parse_from_rfc3339("2026-10-26T12:00:00Z").unwrap().with_timezone(&Utc);
++        let good = json!({"NotAfter":"2026-10-26T13:00:00Z","Token":"SYNTHETIC","DisplayClaims":{"xui":[{"xid":"42","uhs":"synthetic-hash","prv":"1 252 3"}]}});
++        assert_eq!(authorization(good.clone(), now).unwrap(), "XBL3.0 x=synthetic-hash;SYNTHETIC");
++        for (path, replacement) in [("/NotAfter", json!("2026-10-26T12:00:00Z")), ("/NotAfter", json!("bad")),
++            ("/Token", json!("")), ("/DisplayClaims/xui/0/uhs", json!("")), ("/DisplayClaims/xui", json!([])),
++            ("/DisplayClaims/xui/0/xid", json!("../invalid")), ("/DisplayClaims/xui/0/prv", json!("1252 52"))] {
++            let mut value = good.clone(); *value.pointer_mut(path).unwrap() = replacement;
++            assert!(authorization(value, now).is_err());
++        }
++        let mut value = good; value["DisplayClaims"]["xui"].as_array_mut().unwrap().push(json!({"xid":"43","uhs":"other","prv":"252"}));
++        assert!(authorization(value, now).is_err());
++    }
++    fn stored() -> Token {
++        Token::Legacy(LegacyToken { key_name:None, token:"SYNTHETIC".into(), binary_secret:None, tpm_key:None,
++            lifetime:soap::Timestamp { id:None, created:"2000-01-01T00:00:00Z".into(), expires:"2099-01-01T00:00:00Z".into() } })
++    }
++    #[test]
++    fn chat_session_writes_require_atomic_identity_and_reject_same_name_different_principal() {
++        let manager = TokenManager::with_memory();
++        manager.save_user(&User { username:"synthetic".into(), puid:"first".into() }).unwrap();
++        manager.save_user_token(xodus::tokens::PASSPORT_STS.into(), stored()).unwrap();
++        assert!(account_unchanged(&manager, "synthetic", "first").is_err());
++        manager.save_user_session(User { username:"synthetic".into(), puid:"first".into() },
++            std::collections::HashMap::from([(xodus::tokens::PASSPORT_STS.into(), stored())])).unwrap();
++        assert!(account_unchanged(&manager, "synthetic", "first").is_ok());
++        assert!(account_unchanged(&manager, "other", "first").is_err());
++        manager.save_user_session(User { username:"synthetic".into(), puid:"second".into() },
++            std::collections::HashMap::from([(xodus::tokens::PASSPORT_STS.into(), stored())])).unwrap();
++        assert!(account_unchanged(&manager, "synthetic", "first").is_err());
++        manager.remove_persistent().unwrap();
++        assert!(account_unchanged(&manager, "synthetic", "second").is_err());
++    }
++
++    #[tokio::test]
++    async fn chat_session_post_is_signed_once_without_retries_redirects_or_error_payloads() {
++        for status in [200, 201, 302, 401, 403, 429, 500, 0] {
++            let listener = TcpListener::bind("127.0.0.1:0").unwrap();
++            let address = listener.local_addr().unwrap();
++            let server = listener.try_clone().unwrap();
++            let task = thread::spawn(move || {
++                let (mut socket, _) = server.accept().unwrap(); socket.set_read_timeout(Some(std::time::Duration::from_secs(2))).unwrap();
++                let mut bytes = Vec::new(); let mut chunk = [0u8; 2048];
++                loop {
++                    let n = socket.read(&mut chunk).unwrap(); assert!(n > 0); bytes.extend_from_slice(&chunk[..n]);
++                    if let Some(end) = bytes.windows(4).position(|v| v == b"\r\n\r\n") {
++                        let headers = String::from_utf8_lossy(&bytes[..end]).to_ascii_lowercase();
++                        let len = headers.lines().find_map(|v| v.strip_prefix("content-length: ").and_then(|v| v.parse::<usize>().ok())).unwrap_or(0);
++                        if bytes.len() >= end + 4 + len { break; }
++                    }
++                    assert!(bytes.len() < 16384);
++                }
++                if status != 0 {
++                    let body = if status == 200 || status == 201 { r#"{"messageId":"synthetic-receipt","conversationId":"synthetic-thread"}"# } else { "PRIVATE_SERVER_ERROR" };
++                    write!(socket, "HTTP/1.1 {status} Test\r\nContent-Length: {}\r\nLocation: http://127.0.0.1:1/blocked\r\nConnection: close\r\n\r\n{body}", body.len()).unwrap();
++                }
++                bytes
++            });
++            let client = Client::builder().redirect(reqwest::redirect::Policy::none()).timeout(std::time::Duration::from_secs(2)).build().unwrap();
++            let mut session = Session { client, signer:policy("127.0.0.1", "http"), authorization:"SYNTHETIC_NOT_A_TOKEN".into(), account:"synthetic".into(), principal:"synthetic".into() };
++            let body = json!({"parts":[{"contentType":"text","version":0,"text":"synthetic-only"}]});
++            let request = session.client.post(format!("http://{address}/fixture")).header("x-xbl-contract-version", "1").json(&body);
++            let result = session.post(request).await;
++            let captured = String::from_utf8(task.join().unwrap()).unwrap();
++            assert!(captured.starts_with("POST /fixture HTTP/1.1\r\n"));
++            let headers = captured.split_once("\r\n\r\n").unwrap().0.to_ascii_lowercase();
++            assert!(headers.contains("\r\nsignature: ")); assert!(headers.contains("\r\nauthorization: synthetic_not_a_token"));
++            assert!(headers.contains("\r\nx-xbl-contract-version: 1"));
++            assert_eq!(serde_json::from_str::<Value>(captured.split_once("\r\n\r\n").unwrap().1).unwrap(), body);
++            match status { 200|201 => assert_eq!(result.unwrap()["messageId"], "synthetic-receipt"),
++                401 => assert_eq!(result.unwrap_err(), "sign-in-required"), 403 => assert_eq!(result.unwrap_err(), "privacy-or-access-denied"),
++                429 => assert_eq!(result.unwrap_err(), "rate-limited"), 0 => assert_eq!(result.unwrap_err(), "request-unconfirmed"),
++                _ => assert_eq!(result.unwrap_err(), "service-unavailable") }
++            listener.set_nonblocking(true).unwrap();
++            assert!(matches!(listener.accept(), Err(e) if e.kind() == std::io::ErrorKind::WouldBlock), "unexpected retry or redirect");
++        }
++    }
++}
+diff --git a/crates/xodus-cli/src/commands/profile.rs b/crates/xodus-cli/src/commands/profile.rs
+index 2f8a2a9..8816af7 100644
+--- a/crates/xodus-cli/src/commands/profile.rs
++++ b/crates/xodus-cli/src/commands/profile.rs
+@@ -19,6 +19,7 @@ pub(super) async fn bounded(mut response: reqwest::Response, limit: usize) -> Re
+ }
+ 
+ pub(super) fn picture_url(text: &str) -> Option<reqwest::Url> {
++    if text.len()>8192{return None;}
+     let url = reqwest::Url::parse(text).ok()?;
+     let host = url.host_str()?;
+     if url.scheme() != "https" || !url.username().is_empty() || url.password().is_some() || url.port().is_some()
+@@ -47,11 +48,45 @@ fn image_data(bytes: &[u8]) -> Option<String> {
+ }
+ 
+ pub(super) async fn xbox_session(tokens: &TokenManager) -> Result<(reqwest::Client, String, String), &'static str> {
++    let (client, authorization, account, _) = xbox_session_identity(tokens).await?;
++    Ok((client, authorization, account))
++}
++
++pub(super) async fn xbox_session_identity(tokens: &TokenManager) -> Result<(reqwest::Client, String, String, Option<String>), &'static str> {
++    xbox_session_for(tokens, "http://xboxlive.com").await
++}
++
++fn auth_failure(stage:&'static str,error:reqwest::Error)->&'static str{
++    if let Some(status)=error.status(){eprintln!("NEXUS_SOCIAL_AUTH_DIAGNOSTIC_V1 {stage} status {}",status.as_u16());}
++    else {let class=if error.is_timeout(){"timeout"}else if error.is_connect(){"connect"}else if error.is_decode(){"decode"}else{"request"};
++        eprintln!("NEXUS_SOCIAL_AUTH_DIAGNOSTIC_V1 {stage} {class}");}
++    stage
++}
++
++fn social_cache_key(account:&str,user:&xodus::models::secrets::LegacyToken,audience:&str)->Result<String,&'static str>{
++    use std::hash::{Hash,Hasher};
++    let mut hash=std::collections::hash_map::DefaultHasher::new();
++    account.hash(&mut hash);audience.hash(&mut hash);serde_json::to_vec(user).map_err(|_|"session-cache-key")?.hash(&mut hash);
++    Ok(format!("nexus-social-bearer:{:016x}",hash.finish()))
++}
++pub(super) fn invalidate_social_session(tokens:&TokenManager){
++    let Ok(account)=tokens.get_user()else{return};
++    let Ok(Token::Legacy(user))=tokens.get_user_sts_token()else{return};
++    for audience in ["http://xboxlive.com","http://gssv.xboxlive.com/"]{
++        if let Ok(key)=social_cache_key(&account.username,&user,audience){tokens.remove_cached_xsts(&key);}
++    }
++}
++
++pub(super) async fn xbox_session_for(tokens: &TokenManager, audience: &str) -> Result<(reqwest::Client, String, String, Option<String>), &'static str> {
+     let client = reqwest::Client::builder().redirect(reqwest::redirect::Policy::none())
+         .timeout(super::session::REQUEST_TIMEOUT).user_agent("xodus-nexus-profile/1").build().map_err(|_| "http-client")?;
+     let (account, device, user) = super::session::prepare(tokens, &client).await.map_err(|stage| {
+         super::session::diagnostic(stage); stage
+     })?;
++    let cache_key=social_cache_key(&account,&user,audience)?;
++    let cached=tokens.get_cached_xsts(&cache_key).filter(|t|t.not_after>chrono::Utc::now()+chrono::Duration::seconds(60));
++    if std::env::var_os("NEXUS_SOCIAL_TRACE_CACHE").is_some(){eprintln!("NEXUS_SOCIAL_CACHE_DIAGNOSTIC_V1 {}",if cached.is_some(){"hit"}else{"miss"});}
++    let xsts=if let Some(token)=cached{token}else{
+     // Reuse the upstream RPS -> Xbox user -> XSTS exchange. This is a bearer
+     // user token (no ProofKey); it must not use the runtime's PoP-bound token.
+     let outcome = super::session::exchange(|| async { xodus::api::live::exchange_user_token(&client, user.clone(), account.clone(), device.clone(),
+@@ -65,17 +100,21 @@ pub(super) async fn xbox_session(tokens: &TokenManager) -> Result<(reqwest::Clie
+         _ => return Err("msa-response"),
+     };
+     let Token::Compact(ticket) = token else { return Err("msa-ticket"); };
+-    let user = xodus::api::xbox::authenticate_xbox_user(&client, ticket).await.map_err(|_| "xbox-user")?;
+-    let xsts = xodus::api::xbox::request_xsts_token(&client, user.token, "http://xboxlive.com").await.map_err(|_| "xsts")?;
++    let user = xodus::api::xbox::authenticate_xbox_user(&client, ticket).await.map_err(|e|auth_failure("xbox-user",e))?;
++    let xsts = xodus::api::xbox::request_xsts_token(&client, user.token, audience).await.map_err(|e|auth_failure("xsts",e))?;
++    if xsts.user_hash().is_none_or(str::is_empty){return Err("xsts-claim");}
++    tokens.cache_xsts(&cache_key,&xsts);xsts};
+     let uhs = xsts.user_hash().ok_or("xsts-claim")?;
++    let identity = xsts.user_id().map(str::to_owned);
+     let authorization = format!("XBL3.0 x={uhs};{}", xsts.token);
+-    Ok((client, authorization, account))
++    Ok((client, authorization, account, identity))
+ }
+ 
+ async fn profile(tokens: &TokenManager) -> Result<Value, &'static str> {
+     let (client, authorization, account) = xbox_session(tokens).await?;
+     let response = client.get(PROFILE).header("Authorization", authorization)
+         .header("x-xbl-contract-version", "2").send().await.map_err(|_| "profile-request")?;
++    if response.status().as_u16()==401{invalidate_social_session(tokens);}
+     let body = bounded(response, 128 * 1024).await?;
+     let (gamertag, picture) = fields(&serde_json::from_slice(&body).map_err(|_| "profile-json")?)?;
+     // Fresh request, no Authorization/Signature or redirects to the image CDN.
+@@ -114,6 +153,19 @@ pub async fn run(tokens: &TokenManager, json_output: bool) -> ExitCode {
+ #[cfg(test)]
+ mod tests {
+     use super::*;
++    #[test]fn social_memory_cache_is_separate_for_accounts_sessions_and_audiences_and_can_be_invalidated(){
++        let mut user=xodus::models::secrets::LegacyToken{key_name:None,token:"synthetic-credential".into(),binary_secret:None,tpm_key:None,
++            lifetime:soap::Timestamp{id:None,created:"2026-01-01T00:00:00Z".into(),expires:"2099-01-01T00:00:00Z".into()}};
++        let first=social_cache_key("first-account",&user,"http://xboxlive.com").unwrap();
++        assert_ne!(first,social_cache_key("second-account",&user,"http://xboxlive.com").unwrap());
++        assert_ne!(first,social_cache_key("first-account",&user,"http://gssv.xboxlive.com/").unwrap());
++        user.token="new-synthetic-session".into();assert_ne!(first,social_cache_key("first-account",&user,"http://xboxlive.com").unwrap());
++        assert!(!first.contains("credential"));
++        let tokens=TokenManager::with_memory();
++        let value:xodus::models::xbox::XstsResponse=serde_json::from_value(json!({"NotAfter":"2099-01-01T00:00:00Z","Token":"synthetic-token","DisplayClaims":{"xui":[{"uhs":"hash","xid":"1"}]}})).unwrap();
++        tokens.cache_xsts(&first,&value);assert!(tokens.get_cached_xsts(&first).is_some());
++        tokens.remove_cached_xsts(&first);assert!(tokens.get_cached_xsts(&first).is_none());
++    }
+     #[test]
+     fn profile_settings_are_validated_without_exposing_other_fields() {
+         let value = json!({"profileUsers":[{"id":"private-id", "settings":[
+diff --git a/crates/xodus-cli/src/main.rs b/crates/xodus-cli/src/main.rs
+index ea6f6d9..47f4201 100644
+--- a/crates/xodus-cli/src/main.rs
++++ b/crates/xodus-cli/src/main.rs
+@@ -93,6 +93,11 @@ enum SubCommand {
+         #[arg(long, default_value_t = false)]
+         json: bool,
+     },
++    #[command(about = "Extended native Nexus social services") ]
++    NativeSocial {
++        #[command(subcommand)]
++        action: commands::native_social::Action,
++    },
+     #[command(about = "Explicit Xbox friends and text chat, JSON request on standard input")]
+     Social {
+         #[arg(long, required = true)]
+@@ -293,6 +298,7 @@ async fn main() -> ExitCode {
+         SubCommand::Account { .. }
+             | SubCommand::Profile { .. }
+             | SubCommand::Social { .. }
++            | SubCommand::NativeSocial { .. }
+             | SubCommand::GameActivity { .. }
+             | SubCommand::Achievements { .. }
+             | SubCommand::Library { .. }
+@@ -364,6 +370,7 @@ async fn main() -> ExitCode {
+             }
+         },
+         SubCommand::Profile { json } => commands::profile::run(&tokens, json).await,
++        SubCommand::NativeSocial { action } => commands::native_social::run(&tokens,action).await,
+         SubCommand::Social { .. } => commands::social::run(&tokens).await,
+         SubCommand::GameActivity { title_id, json } => commands::game_activity::run(&tokens, title_id, json).await,
+         SubCommand::Achievements { title_id, json } => commands::achievements::run(&tokens, title_id, json).await,
+diff --git a/crates/xodus/src/models/xbox.rs b/crates/xodus/src/models/xbox.rs
+index b7cd989..2fdf7be 100644
+--- a/crates/xodus/src/models/xbox.rs
++++ b/crates/xodus/src/models/xbox.rs
+@@ -49,6 +49,9 @@ struct XtiClaim {
+ }
+ 
+ impl XstsResponse {
++    pub fn user_id(&self) -> Option<&str> {
++        self.display_claims.xui.first().and_then(|claim| claim.xid.as_deref())
++    }
+     pub fn user_hash(&self) -> Option<&str> {
+         self.display_claims
+             .xui
+diff --git a/crates/xodus/src/tokens/manager.rs b/crates/xodus/src/tokens/manager.rs
+index c542e30..6f14da1 100644
+--- a/crates/xodus/src/tokens/manager.rs
++++ b/crates/xodus/src/tokens/manager.rs
+@@ -234,6 +234,8 @@ impl TokenManager {
+         self.cache_xsts_response(relying_party, token);
+     }
+ 
++    pub fn remove_cached_xsts(&self,key:&str){let _=self.ephemeral.remove(key);}
++
+     fn cache_xsts_response(&self, key: &str, token: &XstsResponse) {
+         let Ok(bytes) = serde_json::to_vec(token) else {
+             return;

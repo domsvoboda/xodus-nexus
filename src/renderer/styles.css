@@ -428,6 +428,11 @@ button.primary svg, button.secondary svg { width: 17px; height: 17px; }
 .settings-page { max-width: 1240px; }
 .settings-card { margin-bottom: 14px; padding: 24px; background: #222529; border: 1px solid var(--line); }
 .settings-card.compact { margin-bottom: 0; }
+.offline-permissions-card .offline-permissions-toggle { display: flex; align-items: center; gap: 10px; margin: 14px 0 8px; font-size: 12px; font-weight: 650; }
+.offline-permissions-card .offline-permissions-toggle input[type="checkbox"] { width: 16px; height: 16px; margin: 0; accent-color: #388e35; }
+.offline-permissions-card .offline-permissions-note { display: flex; align-items: center; gap: 8px; margin: 6px 0; color: #c2c5c9; font-size: 10px; line-height: 1.5; }
+.offline-permissions-card .offline-permissions-limit { margin: 4px 0 12px; color: #e3bd69; font-size: 10px; }
+.offline-permissions-card .offline-permissions-limit.exhausted { color: #ed9090; }
 .settings-storage { margin-bottom: 14px; }
 .settings-storage > .settings-card + .settings-card { margin-top: 14px; }
 .settings-storage .form-grid { grid-template-columns: repeat(3, minmax(0, 1fr)); }

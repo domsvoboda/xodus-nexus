@@ -12,14 +12,15 @@ it('only the three main sidebar pages select automatically, not recents/settings
   for (const name of ['Settings', 'Most recent', 'queue-summary', 'account-summary']) expect(auto.some(button => button.includes(name))).toBe(false);
 });
 
-it.each(['queued','preparing','unsupported'] as const)('keeps the %s product card navigable without enabling its action', kind => {
+it.each(['queued','preparing','unsupported'] as const)('keeps the %s product details navigable without enabling installation', kind => {
   const html=renderToStaticMarkup(<LibraryProductCard product={queuedProduct} present={false} downloading={kind==='queued'} installing={kind==='preparing'?'another-title':undefined} canInstall={kind!=='unsupported'} install={()=>{}} />);
-  expect(html).toContain('tabindex="0"'); expect(html).toContain('Action unavailable');
+  const details=html.match(/<button[^>]*class="catalog-card-main"[^>]*>/)?.[0];
+  expect(details).toContain('data-gamepad-detail-target=');expect(details).not.toContain('disabled=');
   expect(html).toMatch(/<button[^>]*disabled=""/); expect(html).not.toContain('data-gamepad-auto-select');
 });
 it('keeps an available product action explicitly selectable, without an extra card tab stop', () => {
   const html=renderToStaticMarkup(<LibraryProductCard product={queuedProduct} present={false} downloading={false} canInstall={true} install={()=>{}} />);
-  expect(html).toContain('tabindex="-1"'); expect(html).not.toContain('tabindex="0"'); expect(html).not.toContain('disabled=');
+  expect(html).not.toMatch(/<article[^>]*tabindex/); expect(html).not.toContain('disabled=');expect(html).toContain('data-gamepad-detail-target=');
 });
 
 it('only installed card selectors auto-select in the library, never Play/update/content/folder/menu actions', () => {
@@ -42,10 +43,11 @@ it('includes explicit library header actions without automatic activation', () =
   expect(header).not.toContain('data-gamepad-auto-select');
 });
 
-it.each([false, true])('Store card selection is focus-only and A uses the guarded action (disabled=%s)', disabled => {
+it.each([false, true])('Store card focus only selects, activation opens details and installation stays guarded (disabled=%s)', disabled => {
   const html = renderToStaticMarkup(<StoreProductCard product={queuedProduct} selected disabled={disabled} label={disabled ? 'In Install Queue' : 'Install'} select={() => {}} install={() => {}} />);
   expect(html).toContain('class="catalog-card selected" data-gamepad-card');
-  expect(html).toMatch(/<button[^>]*data-gamepad-auto-select="focus"[^>]*data-gamepad-card-activate/);
+  expect(html).toMatch(/<button[^>]*data-gamepad-auto-select="focus"[^>]*data-gamepad-detail-target/);
+  expect(html).not.toContain('data-gamepad-card-activate');
   const action = html.match(/<button[^>]*data-gamepad-card-action[^>]*>/)?.[0];
   expect(action).toContain('data-gamepad-skip');
   expect(action?.includes('disabled=""')).toBe(disabled);
