@@ -28,7 +28,8 @@ describe('prepareProtonRunner', () => {
     await writeFile(wine, '#!/bin/sh\nprintf "%s|%s" "$PATH" "$WINEDLLOVERRIDES"\n', { mode: 0o700 });
     await writeFile(path.join(runtime, 'files/bin-arm64/wineserver'), '#!/bin/sh\nexit 0\n', { mode: 0o700 });
     await writeFile(path.join(runtime, 'proton'), '#!/bin/sh\nexit 0\n', { mode: 0o700 });
-    for (const name of ['libvkd3d-utils-1.dll', 'dxgi.dll', 'd3d12.dll']) await writeFile(path.join(system32, name), 'ready');
+    // An arm64 prefix has no Wine vkd3d DLLs; Proton builds them only for x86.
+    for (const name of ['dxgi.dll', 'd3d12.dll']) await writeFile(path.join(system32, name), 'ready');
     await writeFile(path.join(source, 'libnghttp2.dll'), 'arm64x nghttp2');
     const sha = (text: string) => createHash('sha256').update(text).digest('hex');
     const metadata = { features: ['wine-winhttp-http2-v1'], components: { 'libnghttp2.dll': sha('arm64x nghttp2') }, componentsByArch: { 'aarch64-windows': { 'libnghttp2.dll': sha('arm64x nghttp2') } } };
