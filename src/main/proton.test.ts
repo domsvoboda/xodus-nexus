@@ -20,13 +20,13 @@ afterEach(async () => {
 describe('fexEnvironment', () => {
   // Runs the runner's FEX block as an arm64 (or x86_64) host would and reports
   // the exported FEX variables and the per-game config it wrote.
-  async function evaluate(machine: string, env: Record<string, string>) {
+  async function evaluate(machine: string, env: Record<string, string>, args: string[] = [], i386XGameRuntime?: string) {
     const root = await mkdtemp(path.join(tmpdir(), 'nexus-fex-')); created.push(root);
     const bin = path.join(root, 'bin'), config = path.join(root, 'compat', 'proton-fex-config.json');
     await mkdir(bin); await mkdir(path.dirname(config));
     await writeFile(path.join(bin, 'uname'), `#!/bin/sh\necho ${machine}\n`, { mode: 0o755 });
-    const script = [...fexEnvironment(config, '/runtime/files/share/fex-emu/'), 'echo "APP=${FEX_APP_CONFIG:-}"', 'echo "LOCATION=${FEX_APP_CONFIG_LOCATION:-}"', 'echo "CACHE=${FEX_DISKCACHE:-}"'].join('\n');
-    const { stdout } = await execFile('/bin/sh', ['-c', script], { env: { PATH: `${bin}:/usr/bin:/bin`, ...env } });
+    const script = [...fexEnvironment(config, '/runtime/files/share/fex-emu/', i386XGameRuntime), 'echo "APP=${FEX_APP_CONFIG:-}"', 'echo "LOCATION=${FEX_APP_CONFIG_LOCATION:-}"', 'echo "CACHE=${FEX_DISKCACHE:-}"'].join('\n');
+    const { stdout } = await execFile('/bin/sh', ['-c', script, 'runner', ...args], { env: { PATH: `${bin}:/usr/bin:/bin`, ...env } });
     const written = await readFile(config, 'utf8').then(text => JSON.parse(text), () => undefined);
     return { stdout, config, written };
   }
@@ -43,6 +43,19 @@ describe('fexEnvironment', () => {
     expect((await evaluate('aarch64', { STEAM_FEX_TSOENABLED: '1', STEAM_COMPAT_FEX_CONFIG: 'Multiblock:1' })).written.Config).toEqual({ TSOEnabled: '0', Multiblock: '1' });
     // Only FEX's boolean values reach the JSON file.
     expect((await evaluate('aarch64', { STEAM_FEX_TSOENABLED: '1", "Evil": "x' })).written.Config).toEqual({});
+  });
+
+  it.skipIf(process.platform === 'win32')('gives a 32-bit exe vector TSO unless the runtime has FEX-safe atomics', async () => {
+    const root = await mkdtemp(path.join(tmpdir(), 'nexus-fex-pe-')); created.push(root);
+    const pe = (machine: number) => { const b = Buffer.alloc(0x86); b.write('MZ'); b.writeUInt32LE(0x80, 0x3c); b.write('PE\0\0', 0x80, 'latin1'); b.writeUInt16LE(machine, 0x84); return b; };
+    const x86 = path.join(root, 'Game.exe'), x64 = path.join(root, 'game64.exe'), unfixed = path.join(root, 'unfixed.dll'), fixed = path.join(root, 'fixed.dll');
+    await writeFile(x86, pe(0x14c)); await writeFile(x64, pe(0x8664));
+    await writeFile(unfixed, pe(0x14c)); await writeFile(fixed, Buffer.concat([pe(0x14c), Buffer.from('nexus-fex-safe-i386-atomics-v1')]));
+    expect((await evaluate('aarch64', {}, [x86], unfixed)).written.Config).toEqual({ VectorTSOEnabled: '1' });
+    expect((await evaluate('aarch64', { STEAM_FEX_TSOENABLED: '1' }, ['--flag', 'C:\\missing.exe', x86, x64], path.join(root, 'absent.dll'))).written.Config).toEqual({ TSOEnabled: '1', VectorTSOEnabled: '1' });
+    expect((await evaluate('aarch64', {}, [x86], fixed)).written.Config).toEqual({});
+    expect((await evaluate('aarch64', {}, [x64, x86], unfixed)).written.Config).toEqual({});
+    expect((await evaluate('aarch64', {}, [x86])).written.Config).toEqual({});
   });
 
   it.skipIf(process.platform === 'win32')('keeps explicit FEX settings and does nothing on x86_64 hosts', async () => {

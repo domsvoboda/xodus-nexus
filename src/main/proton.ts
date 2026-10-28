@@ -339,8 +339,10 @@ export async function syncUnrealCultureGameIni(
  * Proton's per-game FEX setup for arm64 hosts, evaluated at each launch: the
  * Steam variables of that launch become the prefix's FEX app config. An
  * explicit FEX_APP_CONFIG (or FEX_DISKCACHE / FEX_APP_CONFIG_LOCATION) wins.
+ * Like the Nexus runtime's Proton, a 32-bit exe also gets vector TSO unless
+ * the runtime's i386 xgameruntime.dll carries the FEX-safe atomics marker.
  */
-export function fexEnvironment(configFile: string, profiles: string | undefined): string[] {
+export function fexEnvironment(configFile: string, profiles: string | undefined, i386XGameRuntime?: string): string[] {
   return [
     'if [ "$(uname -m)" = aarch64 ]; then',
     '  if [ "${FEX_DISKCACHE+x}" != x ]; then export FEX_DISKCACHE=1; fi',
@@ -357,6 +359,19 @@ export function fexEnvironment(configFile: string, profiles: string | undefined)
     '    fex_config=',
     '    if [ -n "$fex_tso" ]; then fex_config="\\"TSOEnabled\\": \\"$fex_tso\\""; fi',
     '    if [ -n "$fex_multiblock" ]; then fex_config="${fex_config:+$fex_config, }\\"Multiblock\\": \\"$fex_multiblock\\""; fi',
+    // 32-bit x86 does 64-bit atomics with SSE, which FEX orders like x86
+    // only with vector TSO. The first existing .exe argument is the game.
+    ...(i386XGameRuntime ? [
+      '    for fex_exe in "$@"; do',
+      '      case "$fex_exe" in *.exe|*.EXE) ;; *) continue;; esac',
+      '      [ -f "$fex_exe" ] || continue',
+      '      fex_pe=$(od -An -tu4 -j60 -N4 "$fex_exe" 2>/dev/null | tr -d " ")',
+      `      if [ -n "$fex_pe" ] && [ "$(od -An -tx2 -j"$((fex_pe + 4))" -N2 "$fex_exe" 2>/dev/null | tr -d " ")" = 014c ] && ! grep -aqF nexus-fex-safe-i386-atomics-v1 ${shellQuote(i386XGameRuntime)} 2>/dev/null; then`,
+      '        fex_config="${fex_config:+$fex_config, }\\"VectorTSOEnabled\\": \\"1\\""',
+      '      fi',
+      '      break',
+      '    done',
+    ] : []),
     `    printf '{\\n  "Config": {%s},\\n  "ThunksDB": {}\\n}\\n' "$fex_config" > ${shellQuote(configFile + '.tmp')} && mv -f ${shellQuote(configFile + '.tmp')} ${shellQuote(configFile)}`,
     `    export FEX_APP_CONFIG=${shellQuote(configFile)}`,
     '  fi',
@@ -520,7 +535,7 @@ export async function prepareProtonRunner(
     'if [ "${1:-}" = "--nexus-stop-prefix" ]; then',
     `  exec ${shellQuote(path.join(files, 'bin', 'wineserver'))} -k`,
     'fi',
-    ...fexEnvironment(path.join(compatibilityDataPath, 'proton-fex-config.json'), fexProfiles),
+    ...fexEnvironment(path.join(compatibilityDataPath, 'proton-fex-config.json'), fexProfiles, path.join(files, 'lib', 'wine', 'i386-windows', 'xgameruntime.dll')),
     // Launchers (including EAC) may finish before the game they spawned.
     // Keep Xodus and its temporary launch view/account service alive until
     // the isolated game prefix has no remaining Wine processes.
