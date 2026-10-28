@@ -47,7 +47,8 @@ it.each(['supported', 'unsupported', 'unknown'] as const)('uses the Store %s bad
   expect(html.includes('disabled=""')).toBe(installability !== 'supported');
   expect(html).toContain('title="Package &lt;reason&gt;"');
   if (installability === 'unsupported') expect(html).toContain('>Unsupported</span>');
-  if (installability !== 'supported') { expect(html).toContain('tabindex="0"'); expect(html).toContain('Action unavailable'); }
+  const details=html.match(/<button[^>]*class="catalog-card-main"[^>]*>/)?.[0];
+  expect(details).toContain('View details for Owned &amp; game');expect(details).not.toContain('disabled=');
 });
 
 it('keeps one My Library and Store navigation, no separate Game Pass page',()=>{

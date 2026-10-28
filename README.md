@@ -43,7 +43,7 @@ language? Request it in a [GitHub issue](https://github.com/domsvoboda/xodus-nex
 
 ## Install
 
-Download the latest x86_64 Linux AppImage from [Releases](https://github.com/domsvoboda/xodus-nexus/releases), make it executable and open it.
+Download the latest Linux AppImage from [Releases](https://github.com/domsvoboda/xodus-nexus/releases), make it executable and open it. Stable releases currently ship for x86_64. Experimental ARM64 support requires matching native launcher, backend and runtime builds, compatible graphics drivers and FEX for x86 Windows games.
 
 For an application-menu installation on supported distributions:
 
@@ -80,6 +80,16 @@ Flatpak version available through Discover. Other browsers are not supported.
 - **Settings → Downloads** sets a combined game download speed limit in MiB/s (0 means unlimited). A supporting Nexus backend is required; saving the limit also applies it to active downloads.
 - **Settings → Shader cache** sets the per-game Mesa/NVIDIA driver cache limit, 4 GiB by default. Changes apply on the next game launch; explicit environment overrides take precedence.
 - For account, library or installation errors, use **Settings → Xodus backend → Open backend diagnostic log**. The local log contains safe error codes and operation results, not credentials. Review it before sharing.
+
+## Offline play
+
+Use **Settings → Offline permissions** while online to designate this PC for
+offline play. Microsoft allows only one offline PC per account; changing it
+removes the designation from the previous device and is subject to the limit
+shown before confirmation. Launch each game online once afterwards. Supported
+games can then start without a connection while their Microsoft-issued lease
+remains valid. A compatible backend and runtime are required; online-only games
+still need their servers. See [Xbox offline-play guidance](https://support.xbox.com/en-GB/help/games-apps/game-setup-and-play/play-games-offline-on-windows-10-using-offline-mode).
 
 ## Wallet setup and unlocking
 
@@ -128,6 +138,7 @@ but have not been verified and may encounter compatibility issues.
 
 | Game | Playable | Status |
 | --- | --- | --- |
+| Age of Empires IV | Startup verified | Unreleased runtime: starts successfully; online play unverified. |
 | Gears of War: E-Day | Yes | Playable online; Xbox playing status works. |
 | Deep Rock Galactic | Yes | Playable online. |
 | Minecraft Dungeons | Yes | Playable online with launcher 0.3.5; [ownership failures](https://github.com/domsvoboda/xodus-nexus/issues/80) also reported on other setups. |

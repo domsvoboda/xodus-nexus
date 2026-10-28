@@ -163,11 +163,24 @@ test('opt-in review snapshot exports only public UI pairs and binds approval to 
   assert.deepEqual(report.reviewSnapshot, [{ language: 'fr', key: 'common.cancel_game', source: 'Cancel {{game}}?', translation: 'Annuler {{game}} ?' }]);
   assert.match(report.reviewDigest, /^[a-f0-9]{64}$/);
   assert.doesNotMatch(JSON.stringify(report.reviewSnapshot), /author|languageId|keyId|suggestionId/);
+  assert.deepEqual(report.suggestionSnapshot, [{ language: 'fr', key: 'common.cancel_game', source: 'Cancel {game}?',
+    current: null, state: 'UNTRANSLATED', reason: 'eligible', suggestions: [{ text: 'Annuler {game} ?', plural: false }] }]);
+  assert.doesNotMatch(JSON.stringify(report.suggestionSnapshot), /author|languageId|keyId|suggestionId/);
   const actual = fixture();
   assert.equal((await acceptSuggestions({ api: actual.api, english, apply: true, reviewed: true, reviewDigest: report.reviewDigest })).reviewed, 1);
   const changed = fixture({ beforeView: value => { value.translations.fr.suggestions[0].translation = 'Ignorer {game} ?'; } });
   await assert.rejects(acceptSuggestions({ api: changed.api, english, apply: true, reviewDigest: report.reviewDigest }), /changed since/);
   assert.ok(changed.calls.every(call => call.method === 'GET'));
+});
+
+test('explicit text audit includes blocked candidates without accepting them or exporting identities', async () => {
+  const preview = fixture({ beforeView: value => { value.translations.fr.suggestions[0].translation = 'Annuler ?'; } });
+  const report = await acceptSuggestions({ api: preview.api, english, texts: true });
+  assert.deepEqual(report.reviewSnapshot, []);
+  assert.equal(report.suggestionSnapshot[0].reason, 'invalid-text-or-parameters');
+  assert.equal(report.suggestionSnapshot[0].suggestions[0].text, 'Annuler ?');
+  assert.ok(preview.calls.every(call => call.method === 'GET'));
+  assert.doesNotMatch(JSON.stringify(report.suggestionSnapshot), /author|languageId|keyId|suggestionId/);
 });
 
 test('language-review exclusions are validated and never accepted or reviewed', async () => {

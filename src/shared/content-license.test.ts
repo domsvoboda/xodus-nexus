@@ -35,3 +35,18 @@ it('clears earlier failure metadata on a parsed response and bounds old log insp
   expect(contentLicenseFailure([line('content-http', 503), ...Array(256).fill('other')])).toBeUndefined();
   expect(contentLicenseFailure([line('content-parsed'), line('content-license-blob', 0)])).toContain('unsupported');
 });
+it('treats a used offline license as resolved and explains missing, expired or purged offline licenses', () => {
+  expect(contentLicenseFailure([line('content-request', 0), line('content-cache-used', 0), 'later wine failure'])).toBeUndefined();
+  expect(contentLicenseFailure([line('content-request', 0), line('content-cache-missing', 0)])).toContain('no offline license is stored');
+  expect(contentLicenseFailure([line('content-timeout', 0), line('content-cache-expired', 0)])).toContain('has expired');
+  expect(contentLicenseFailure([line('content-http', 503), line('content-cache-invalid', 0)])).toContain('not valid on this device');
+  expect(contentLicenseFailure([line('content-request', 0), line('content-cache-account', 0)])).toContain('belonged to another account');
+  expect(contentLicenseFailure([line('content-request', 0), line('content-cache-clock', 0)])).toContain('system clock');
+  expect(contentLicenseFailure([line('content-not-entitled'), line('content-cache-purged', 0)])).toContain('offline license was removed');
+  // Bookkeeping after a successful online license never turns a later unrelated failure into a licensing error.
+  for (const stage of ['content-cache-stored', 'content-cache-skipped', 'content-cache-write-failed', 'content-cache-revoked']) {
+    expect(contentLicenseFailure([line('content-parsed'), line(stage, 0), 'wine: crashed'])).toBeUndefined();
+  }
+  // An online refusal is still reported as a refusal when nothing was cached.
+  expect(contentLicenseFailure([line('content-not-entitled')])).toContain('did not grant');
+});

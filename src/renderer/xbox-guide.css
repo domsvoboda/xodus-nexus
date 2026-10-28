@@ -1,0 +1,19 @@
+html,body,#root { width:100%;height:100%;margin:0;overflow:hidden;background:transparent; }
+body { color:#fff;font-family:system-ui,sans-serif; }
+.game-guide-shell { display:flex;width:100%;height:100%;background:transparent; }
+.game-guide-panel { position:relative;display:flex;flex-direction:column;width:440px;max-width:100%;height:100%;background:#1a1b1e;box-shadow:8px 0 40px rgba(0,0,0,.5);transform:translateX(var(--guide-slide,-100%));will-change:transform; }
+.game-guide-shell.is-right { flex-direction:row-reverse;--guide-slide:100%; }
+.game-guide-shell.is-right .game-guide-panel { box-shadow:-8px 0 40px rgba(0,0,0,.5); }
+.nexus-guide-shown .game-guide-shell { background:rgba(0,0,0,.28); }
+.nexus-guide-shown .game-guide-panel { transform:translateX(0);animation:guide-shelf-in 180ms cubic-bezier(.16,1,.3,1) both; }
+.game-guide-panel .xbox-social.xbox-guide.social-overlay { flex:1;height:auto;min-height:0; }
+.game-guide-panel footer { display:flex;justify-content:space-between;gap:16px;padding:12px 16px;color:#c2c4c7;font-size:12px;background:#1a1b1e; }
+.game-guide-dismiss { flex:1;border:0;background:transparent;cursor:default; }
+.game-guide-error { margin:0;padding:12px 16px;font-size:13px;background:#522b2b; }
+.spin { animation:guide-spin 1s linear infinite; }
+@keyframes guide-spin { to { transform:rotate(360deg); } }
+/* WebKit's SHM path also needs the retention hint in the initial keyframe. */
+@keyframes guide-shelf-in { from { transform:translateX(var(--guide-slide,-100%));will-change:transform; } to { transform:translateX(0); } }
+@media (prefers-reduced-motion:reduce) {
+  .nexus-guide-shown .game-guide-shell,.nexus-guide-shown .game-guide-panel { animation:none; }
+}

@@ -72,11 +72,21 @@ export class BackendManager {
         capabilities.streamingProgressJson = streaming.code === 0 && /(?:^|\s)--progress-json(?:\s|$)/m.test(streaming.output);
         capabilities.streamingControls = Boolean(capabilities.streamingProgressJson && /(?:^|\s)--control-stdin(?:\s|$)/m.test(streaming.output));
         capabilities.streamingBandwidthLimit = Boolean(capabilities.streamingControls && /(?:^|\s)--download-limit-kib(?:\s|$)/m.test(streaming.output));
+        capabilities.streamingUpdateRecovery = streaming.code === 0 && /^Nexus capabilities: update-recovery-v1\s*$/m.test(streaming.output);
         capabilities.packageSelection = streaming.code === 0 && capabilities.commands.includes('resolve-package') && /(?:^|\s)--selected-content-id(?:\s|$)/m.test(streaming.output);
         if (capabilities.packageSelection) {
           const help = await run(binaryPath, ['resolve-package', '--help'], { maxOutput: 100_000 });
           capabilities.contentPackageSelection = help.code === 0 && /(?:^|\s)--include-dlc(?:\s|$)/m.test(help.output);
         }
+      }
+      if (capabilities.run) {
+        const launch = await run(binaryPath, ['run', '--help'], { maxOutput: 100_000 });
+        const designation = capabilities.offlinePc ? await run(binaryPath, ['offline-pc', '--help'], { maxOutput: 100_000 }) : undefined;
+        // Only a backend that also revokes stored licenses when Microsoft reports
+        // the device as undesignated may keep them.
+        capabilities.licenseCache = launch.code === 0 && /(?:^|\s)--license-cache(?:\s|$)/m.test(launch.output)
+          && designation?.code === 0 && /(?:^|\s)--license-cache(?:\s|$)/m.test(designation.output);
+        capabilities.offlineLaunch = Boolean(capabilities.licenseCache && /(?:^|\s)--offline(?:\s|$)/m.test(launch.output));
       }
       return capabilities.login && capabilities.streaming ? capabilities : null;
     } catch (error) { if (error instanceof BackendPrerequisiteError) throw error; return null; }

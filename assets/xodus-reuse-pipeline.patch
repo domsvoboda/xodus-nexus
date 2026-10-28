@@ -1,0 +1,568 @@
+diff --git a/crates/xodus-cli/src/commands/streaming.rs b/crates/xodus-cli/src/commands/streaming.rs
+index f2615cc..87a1a59 100644
+--- a/crates/xodus-cli/src/commands/streaming.rs
++++ b/crates/xodus-cli/src/commands/streaming.rs
+@@ -625,7 +625,7 @@ where
+             if stage.is_some() && !url.starts_with("file://") {
+                 update::transfer(remote_xvd_ref,&client,url,&resume::target(out,&job.name)?,old,
+                     full_content,&mut fout,*full_key,offset,pause.clone(),parallel.unwrap_or(4),&tx,id,
+-                    |position|journal.lock().unwrap().checkpoint(&job.name,position)).await?;
++                    |synced|journal.lock().unwrap().checkpoint_synced(&job.name,synced)).await?;
+             } else if let Some(fpath) = url.strip_prefix("file://") {
+                 let mut i = File::open(&fpath).await?;
+                 remote_xvd_ref
+diff --git a/crates/xodus-cli/src/commands/streaming_resume.rs b/crates/xodus-cli/src/commands/streaming_resume.rs
+index 86f9cba..416bff2 100644
+--- a/crates/xodus-cli/src/commands/streaming_resume.rs
++++ b/crates/xodus-cli/src/commands/streaming_resume.rs
+@@ -16,6 +16,31 @@ pub(super) struct Journal {
+ 
+ pub(super) struct Identity(String);
+ 
++/// A data sync completed on this exact output inode before its journal entry.
++/// Fields are private so callers cannot claim that unsynced bytes are durable.
++pub(super) struct SyncedCheckpoint {
++    offset: u64,
++    device: u64,
++    inode: u64,
++}
++
++impl SyncedCheckpoint {
++    #[cfg(test)]
++    pub(super) fn position(&self) -> u64 { self.offset }
++}
++
++pub(super) async fn sync_output(file: &mut tokio::fs::File, offset: u64) -> io::Result<SyncedCheckpoint> {
++    use std::os::unix::fs::MetadataExt;
++    use tokio::io::AsyncWriteExt;
++    file.flush().await?;
++    file.sync_data().await?;
++    let meta = file.metadata().await?;
++    if !meta.is_file() || meta.len() < offset {
++        return Err(io::Error::other("checkpoint output is incomplete"));
++    }
++    Ok(SyncedCheckpoint { offset, device:meta.dev(), inode:meta.ino() })
++}
++
+ /// Preserve completed ciphertext pages, trim only uncommitted data. Return the
+ /// logical offset to resume from, which can rewind an old truncated final page.
+ pub(super) async fn prepare_output(
+@@ -290,6 +315,20 @@ impl Journal {
+         let file = target(&self.root, name)?;
+         // File data reaches storage before the journal claims it can be resumed.
+         File::open(&file)?.sync_data()?;
++        self.append_checkpoint(name, &file, offset)
++    }
++
++    pub(super) fn checkpoint_synced(&mut self, name: &str, synced: SyncedCheckpoint) -> io::Result<()> {
++        use std::os::unix::fs::MetadataExt;
++        let file = target(&self.root, name)?;
++        let meta = fs::metadata(&file)?;
++        if !meta.is_file() || meta.dev() != synced.device || meta.ino() != synced.inode || meta.len() < synced.offset {
++            return Err(io::Error::other("checkpoint output changed after data sync"));
++        }
++        self.append_checkpoint(name, &file, synced.offset)
++    }
++
++    fn append_checkpoint(&mut self, name: &str, file: &Path, offset: u64) -> io::Result<()> {
+         let digest = tail(&file, offset)?;
+         let entry = serde_json::json!({"offset": offset, "tailSha256": digest});
+         let path = target(&self.root, ".nexus-streaming-v1.jsonl")?;
+@@ -346,6 +385,30 @@ fn tail(path: &Path, offset: u64) -> io::Result<String> {
+ #[cfg(test)]
+ mod tests {
+     use super::*;
++
++    #[tokio::test]
++    async fn streaming_resume_synced_proof_binds_exact_output_and_preserves_legacy_journal() {
++        use tokio::io::AsyncWriteExt;
++        let root=tempfile::tempdir().unwrap();
++        let files=HashMap::from([("a".to_owned(),SegmentFile {offset:0,length:8192,keep_encrypted:false,data_hashs:vec![]})]);
++        let mut journal=Journal::open(root.path(),"proof",&files).unwrap();
++        fs::write(root.path().join("b"),vec![19;8192]).unwrap();
++        let mut out=tokio::fs::File::create(root.path().join("a")).await.unwrap();
++        out.write_all(&vec![19;8192]).await.unwrap();
++        let wrong=sync_output(&mut out,4096).await.unwrap();
++        assert!(journal.checkpoint_synced("b",wrong).is_err());
++        assert_eq!(journal.offset("b",8192),0);
++        let proof=sync_output(&mut out,4096).await.unwrap();
++        journal.checkpoint_synced("a",proof).unwrap();drop(journal);
++        let mut journal=Journal::open(root.path(),"proof",&files).unwrap();
++        assert_eq!(journal.offset("a",8192),4096);
++        let replaced=sync_output(&mut out,8192).await.unwrap();
++        fs::rename(root.path().join("a"),root.path().join("old-a")).unwrap();
++        fs::write(root.path().join("a"),vec![19;8192]).unwrap();
++        assert!(journal.checkpoint_synced("a",replaced).is_err(),"same bytes on another inode are not a data-sync proof");
++        out.set_len(1024).await.unwrap();
++        assert!(sync_output(&mut out,4096).await.is_err());
++    }
+     fn legacy_identity(content: &str, files: &HashMap<String, SegmentFile>) -> String {
+         let mut layout: Vec<_> = files.iter()
+             .map(|(name, f)| (name, f.offset, f.length, f.keep_encrypted, &f.data_hashs)).collect();
+diff --git a/crates/xodus-cli/src/commands/streaming_update.rs b/crates/xodus-cli/src/commands/streaming_update.rs
+index 43c2530..3347d67 100644
+--- a/crates/xodus-cli/src/commands/streaming_update.rs
++++ b/crates/xodus-cli/src/commands/streaming_update.rs
+@@ -2,16 +2,18 @@
+ use super::{ProgressEvent, failure, resume};
+ use msixvc::{
+     layout::PAGE_SIZE,
+-    xvd::{SegmentFile, XvdFile},
++    xvd::{SegmentFile, StoredPageVerifier, XvdFile},
+ };
+ use std::{
+     collections::HashMap,
+     fs,
+-    io::{self, Read, Seek, SeekFrom},
++    io::{self, SeekFrom},
+     path::{Path, PathBuf},
+ };
++#[cfg(test)]
++use std::io::Read;
+ use tokio::{
+-    io::AsyncWriteExt,
++    io::{AsyncRead, AsyncReadExt, AsyncSeek, AsyncSeekExt, AsyncWriteExt},
+     sync::{mpsc::Sender, watch},
+ };
+ 
+@@ -155,7 +157,7 @@ fn local_candidates(old: &SegmentFile, file: &SegmentFile, index: &HashMap<[u8;2
+     }).collect()
+ }
+ 
+-fn read_local_pages(input: &mut (impl Read + Seek), data: &mut [u8], candidates: &[Option<u64>]) -> Vec<bool> {
++async fn read_local_pages(input: &mut (impl AsyncRead + AsyncSeek + Unpin), data: &mut [u8], candidates: &[Option<u64>]) -> Vec<bool> {
+     let mut read = vec![false; candidates.len()];
+     let mut n = 0;
+     while n < candidates.len() {
+@@ -163,14 +165,76 @@ fn read_local_pages(input: &mut (impl Read + Seek), data: &mut [u8], candidates:
+         n += 1;
+         let Some(page) = candidates[begin] else { continue };
+         while n < candidates.len() && candidates[n] == Some(page + (n - begin) as u64) { n += 1; }
+-        if input.seek(SeekFrom::Start(page * PAGE_SIZE as u64))
+-            .and_then(|_| input.read_exact(&mut data[begin * PAGE_SIZE..n * PAGE_SIZE])).is_ok() {
++        if input.seek(SeekFrom::Start(page * PAGE_SIZE as u64)).await.is_ok()
++            && input.read_exact(&mut data[begin * PAGE_SIZE..n * PAGE_SIZE]).await.is_ok() {
+             read[begin..n].fill(true);
+         }
+     }
+     read
+ }
+ 
++fn lazy_candidates(old: &SegmentFile, file: &SegmentFile, index: &mut Option<HashMap<[u8;20], u64>>, start: usize, pages: usize) -> Vec<Option<u64>> {
++    let relocated = (start..start + pages).any(|n| file.data_hashs.get(n)
++        .is_some_and(|hash| old.data_hashs.get(n) != Some(hash)));
++    if relocated && index.is_none() {
++        let mut entries = HashMap::new();
++        for (page,hash) in old.data_hashs.iter().enumerate() { entries.entry(*hash).or_insert(page as u64); }
++        *index = Some(entries);
++    }
++    local_candidates(old, file, index.as_ref().unwrap_or(&HashMap::new()), start, pages)
++}
++
++const REUSE_WINDOW: usize = 8 * 1024 * 1024;
++
++struct LocalWindow {
++    start: u64,
++    logical: u64,
++    data: Vec<u8>,
++    reused: Vec<bool>,
++}
++
++// A prefetched window is only memory, not completed progress or durable data.
++// One producer is borrowed by this future, never a detached thread/task.
++async fn prepare_local_window(
++    source: &mut Option<tokio::fs::File>,
++    old: Option<&SegmentFile>,
++    file: &SegmentFile,
++    verifier: &StoredPageVerifier<'_>,
++    index: &mut Option<HashMap<[u8;20], u64>>,
++    start: u64,
++) -> Result<Option<LocalWindow>, failure::Error> {
++    if start >= file.length { return Ok(None); }
++    let bytes = (file.stored_length()? - start).min(REUSE_WINDOW as u64) as usize;
++    let pages = bytes.div_ceil(PAGE_SIZE);
++    let mut data = vec![0u8; pages * PAGE_SIZE];
++    let mut reused = vec![false; pages];
++    if let (Some(input), Some(old)) = (source.as_mut(), old) {
++        let first = (start / PAGE_SIZE as u64) as usize;
++        let candidates = tokio::task::block_in_place(|| lazy_candidates(old,file,index,first,pages));
++        reused = read_local_pages(input, &mut data, &candidates).await;
++        tokio::task::block_in_place(|| {
++            for (n,page) in data.chunks_exact(PAGE_SIZE).enumerate() {
++                if reused[n] { reused[n] = verifier.matches(first + n, page.try_into().unwrap()); }
++            }
++        });
++    }
++    Ok(Some(LocalWindow { start, logical: (bytes as u64).min(file.length-start), data, reused }))
++}
++
++// A failed lookahead must still settle the current write. A failed write must
++// cancel lookahead immediately, without counting or checkpointing those bytes.
++async fn prefetch_while_writing<T>(
++    writing: impl std::future::Future<Output = Result<(),failure::Error>>,
++    preparing: impl std::future::Future<Output = Result<T,failure::Error>>,
++) -> Result<T,failure::Error> {
++    tokio::pin!(writing,preparing);
++    tokio::select! {
++        biased;
++        done = &mut writing => { done?; preparing.await }
++        next = &mut preparing => { writing.await?; next }
++    }
++}
++
+ // Coalesce tiny reused islands as before, then bound each concurrent request's
+ // memory. Never read ahead beyond the current8MiB reconstruction window.
+ fn missing_ranges(reused: &[bool]) -> Vec<std::ops::Range<usize>> {
+@@ -207,46 +271,32 @@ pub(super) async fn transfer(
+     parallel: usize,
+     tx: &Sender<ProgressEvent>,
+     id: usize,
+-    mut checkpoint: impl FnMut(u64) -> io::Result<()>,
++    mut checkpoint: impl FnMut(resume::SyncedCheckpoint) -> io::Result<()>,
+ ) -> Result<(), failure::Error> {
++    if offset >= file.length { return Ok(()); }
+     let mut source = None;
+-    let mut index = HashMap::new();
+-    if let Some(old) = old.filter(|old| old.keep_encrypted == file.keep_encrypted) {
+-        if let Ok(input) = fs::File::open(installed) {
+-            if input.metadata()?.is_file() {
+-                for (page, hash) in old.data_hashs.iter().enumerate() {
+-                    index.entry(*hash).or_insert(page as u64);
+-                }
++    let mut index = None;
++    if old.is_some_and(|old| old.keep_encrypted == file.keep_encrypted) {
++        if let Ok(input) = tokio::fs::File::open(installed).await {
++            if input.metadata().await?.is_file() {
+                 source = Some(input);
+             }
+         }
+     }
+     let verifier = xvd.stored_page_verifier(file, key);
+     let mut last_checkpoint = offset;
+-    const WINDOW: usize = 8 * 1024 * 1024;
+-    while offset < file.length {
++    pause.wait_for(|paused| !*paused).await.ok();
++    let mut next = prepare_local_window(&mut source,old,file,&verifier,&mut index,offset).await?;
++    while let Some(current) = next {
+         if *pause.borrow() {
+-            out.flush().await?;
+-            checkpoint(offset)?;
++            checkpoint(resume::sync_output(out,offset).await?)?;
+             last_checkpoint = offset;
+         }
+         pause.wait_for(|paused| !*paused).await.ok();
+-        let start = offset;
+-        let bytes = (file.stored_length()? - start).min(WINDOW as u64) as usize;
+-        let pages = bytes.div_ceil(PAGE_SIZE);
+-        let mut data = vec![0u8; pages * PAGE_SIZE];
+-        let mut reused = vec![false; pages];
+-        tokio::task::block_in_place(|| {
+-            if let (Some(input), Some(old)) = (source.as_mut(), old) {
+-                let candidates = local_candidates(old, file, &index, (start / PAGE_SIZE as u64) as usize, pages);
+-                reused = read_local_pages(input, &mut data, &candidates);
+-                for (n, page) in data.chunks_exact(PAGE_SIZE).enumerate() {
+-                    if !reused[n] { continue; }
+-                    let position = (start / PAGE_SIZE as u64) as usize + n;
+-                    reused[n] = verifier.matches(position, page.try_into().unwrap());
+-                }
+-            }
+-        });
++        let following = current.start + current.logical;
++        let preparing = prepare_local_window(&mut source,old,file,&verifier,&mut index,following);
++        let writing = async {
++        let LocalWindow {start,logical,mut data,reused} = current;
+         use futures_util::{StreamExt, TryStreamExt};
+         let fetched: Result<Vec<_>, failure::Error> = futures_util::stream::iter(missing_ranges(&reused))
+             .map(|range| {
+@@ -282,10 +332,9 @@ pub(super) async fn transfer(
+             .buffer_unordered(parallel.clamp(1, 8))
+             .try_collect().await;
+         let fetched = match fetched {
+-            Ok(value) => value,
++            Ok(fetched) => fetched,
+             Err(error) => {
+-                out.flush().await?;
+-                checkpoint(offset)?;
++                checkpoint(resume::sync_output(out,offset).await?)?;
+                 return Err(error);
+             }
+         };
+@@ -295,18 +344,23 @@ pub(super) async fn transfer(
+             network += logical;
+         }
+         pause.wait_for(|paused| !*paused).await.ok();
+-        let logical = (pages * PAGE_SIZE) as u64;
+-        let logical = logical.min(file.length - start);
+-        let physical = if file.keep_encrypted { pages * PAGE_SIZE } else { logical as usize };
++        let physical = if file.keep_encrypted { data.len() } else { logical as usize };
+         out.write_all(&data[..physical]).await?;
+         tx.send(ProgressEvent::Traffic { network, reused: logical - network }).await.ok();
+         tx.send(ProgressEvent::Advanced { id, delta: logical }).await.ok();
+         offset = start + logical;
+         if offset - last_checkpoint >= 32 * 1024 * 1024 {
+-            out.flush().await?;
+-            checkpoint(offset)?;
++            // Data sync can overlap the one-window lookahead. Its opaque proof
++            // binds the journal append to this inode and exact written prefix.
++            checkpoint(resume::sync_output(out,offset).await?)?;
+             last_checkpoint = offset;
+         }
++        Ok(())
++        };
++        next = match prefetch_while_writing(writing,preparing).await {
++            Ok(next) => next,
++            Err(error) => { out.flush().await?; return Err(error); }
++        };
+     }
+     Ok(())
+ }
+diff --git a/crates/xodus-cli/src/commands/streaming_update_throughput_tests.rs b/crates/xodus-cli/src/commands/streaming_update_throughput_tests.rs
+index 6cac70e..c1b0db2 100644
+--- a/crates/xodus-cli/src/commands/streaming_update_throughput_tests.rs
++++ b/crates/xodus-cli/src/commands/streaming_update_throughput_tests.rs
+@@ -6,6 +6,149 @@ use std::sync::{
+ };
+ use tokio::io::AsyncReadExt;
+ 
++#[test]
++fn streaming_update_pipeline_builds_relocation_index_only_when_needed() {
++    let mut old=segment(4*PAGE_SIZE,true);
++    old.data_hashs=vec![[1;20],[2;20],[1;20],[4;20]];
++    let mut index=None;
++    assert_eq!(lazy_candidates(&old,&old,&mut index,0,4),vec![Some(0),Some(1),Some(2),Some(3)]);
++    assert!(index.is_none(),"same-position data must not index the whole archive");
++    let mut changed=segment(4*PAGE_SIZE,true);
++    changed.data_hashs=vec![[1;20],[1;20],[1;20],[9;20]];
++    assert_eq!(lazy_candidates(&old,&changed,&mut index,0,4),vec![Some(0),Some(0),Some(2),None]);
++    assert_eq!(index.as_ref().unwrap().len(),3);
++    assert_eq!(lazy_candidates(&old,&old,&mut index,0,4),vec![Some(0),Some(1),Some(2),Some(3)]);
++}
++
++#[tokio::test]
++async fn streaming_update_pipeline_overlaps_but_settles_current_write_before_lookahead_failure() {
++    let (started,start)=tokio::sync::oneshot::channel();
++    let (prepared,ready)=tokio::sync::oneshot::channel();
++    let wrote=std::cell::Cell::new(false);
++    let writing=async { started.send(()).unwrap();ready.await.unwrap();wrote.set(true);Ok(()) };
++    let preparing=async { start.await.unwrap();prepared.send(()).unwrap();
++        Err::<(),failure::Error>(io::Error::other("synthetic lookahead failure").into()) };
++    let result=tokio::time::timeout(std::time::Duration::from_secs(1),prefetch_while_writing(writing,preparing)).await.unwrap();
++    assert!(result.is_err());assert!(wrote.get(),"lookahead failure must not drop the preceding write");
++}
++
++#[tokio::test]
++async fn streaming_update_pipeline_write_failure_cancels_lookahead_without_detached_work() {
++    struct DropFlag(Arc<std::sync::atomic::AtomicBool>);
++    impl Drop for DropFlag {fn drop(&mut self){self.0.store(true,Ordering::SeqCst);}}
++    let dropped=Arc::new(std::sync::atomic::AtomicBool::new(false));
++    let guard=DropFlag(dropped.clone());
++    let preparing=async move {let _guard=guard;std::future::pending::<Result<(),failure::Error>>().await};
++    let result=prefetch_while_writing(async {Err(io::Error::other("synthetic output failure").into())},preparing).await;
++    assert!(result.is_err());assert!(dropped.load(Ordering::SeqCst));
++}
++
++#[tokio::test(flavor="multi_thread",worker_threads=2)]
++async fn streaming_update_pipeline_checkpoint_failure_is_not_retried() {
++    let root=tempfile::tempdir().unwrap();let length=33*1024*1024;
++    let source=root.path().join("installed");let body=vec![37;length];fs::write(&source,&body).unwrap();
++    let digest=msixvc::streaming::resume_digest(&body[..PAGE_SIZE]);
++    let hash=std::array::from_fn(|n|u8::from_str_radix(&digest[n*2..n*2+2],16).unwrap());
++    let file=SegmentFile {offset:0,length:length as u64,keep_encrypted:true,data_hashs:vec![hash;length/PAGE_SIZE]};
++    let target=root.path().join("staged");let mut out=tokio::fs::File::create(&target).await.unwrap();
++    let (_control,pause)=watch::channel(false);let (tx,mut rx)=tokio::sync::mpsc::channel(64);
++    let mut calls=0;
++    let result=transfer(&xvd().await,&reqwest::Client::new(),"http://127.0.0.1:1/not-requested",
++        &source,Some(&file),&file,&mut out,[0;32],0,pause,8,&tx,0,|proof|{
++            assert_eq!(proof.position(),32*1024*1024);calls+=1;Err(io::Error::other("synthetic journal failure"))
++        }).await;
++    assert!(result.is_err());assert_eq!(calls,1,"journal failures must not trigger an implicit retry");
++    out.flush().await.unwrap();assert_eq!(fs::metadata(target).unwrap().len(),32*1024*1024);
++    let mut reused=0;while let Ok(event)=rx.try_recv(){if let ProgressEvent::Traffic {network,reused:r}=event {assert_eq!(network,0);reused+=r;}}
++    assert_eq!(reused,32*1024*1024);
++}
++
++#[tokio::test(flavor="multi_thread",worker_threads=2)]
++async fn streaming_update_pipeline_pause_keeps_lookahead_out_of_progress_and_resume_checkpoint() {
++    let root=tempfile::tempdir().unwrap();
++    let length=33*1024*1024;
++    let source=root.path().join("installed");
++    let body=vec![37;length];fs::write(&source,&body).unwrap();
++    let digest=msixvc::streaming::resume_digest(&body[..PAGE_SIZE]);
++    let hash=std::array::from_fn(|n|u8::from_str_radix(&digest[n*2..n*2+2],16).unwrap());
++    let file=SegmentFile {offset:0,length:length as u64,keep_encrypted:true,data_hashs:vec![hash;length/PAGE_SIZE]};
++    let files=HashMap::from([("staged".to_owned(),segment(length,true))]);
++    let mut journal=resume::Journal::open(root.path(),"pipeline-pause",&files).unwrap();
++    let target=root.path().join("staged");
++    let mut out=tokio::fs::File::create(&target).await.unwrap();
++    let (control,pause)=watch::channel(false);let (stop,stopped)=watch::channel(false);
++    let (done,wait)=tokio::sync::oneshot::channel();let mut done=Some(done);
++    let (tx,mut rx)=tokio::sync::mpsc::channel(64);
++    let client=reqwest::Client::new();let xvd=xvd().await;
++    let operation=failure::run_or_cancel(stopped,transfer(&xvd,&client,"http://127.0.0.1:1/not-requested",
++        &source,Some(&file),&file,&mut out,[0;32],0,pause.clone(),8,&tx,0,|proof|{
++            let position=proof.position();journal.checkpoint_synced("staged",proof)?;
++            if position==32*1024*1024 {control.send(true).unwrap();if let Some(done)=done.take(){done.send(()).unwrap();}}
++            Ok(())
++        }));
++    let driver=async {wait.await.unwrap();tokio::time::sleep(std::time::Duration::from_millis(30)).await;
++        assert_eq!(fs::metadata(&target).unwrap().len(),32*1024*1024);
++        stop.send(true).unwrap();};
++    let (result,())=tokio::time::timeout(std::time::Duration::from_secs(5),async{tokio::join!(operation,driver)}).await.unwrap();
++    assert!(result.is_err());out.flush().await.unwrap();
++    assert_eq!(journal.offset("staged",file.length),32*1024*1024);
++    let mut reused=0;while let Ok(event)=rx.try_recv(){if let ProgressEvent::Traffic {network,reused:r}=event {assert_eq!(network,0);reused+=r;}}
++    assert_eq!(reused,32*1024*1024,"prefetched final MiB is not progress");
++    control.send(false).unwrap();let offset=journal.offset("staged",file.length);
++    assert_eq!(resume::prepare_output(&mut out,offset,&file).await.unwrap(),offset);
++    transfer(&xvd,&client,"http://127.0.0.1:1/not-requested",&source,Some(&file),&file,
++        &mut out,[0;32],offset,pause,8,&tx,0,|proof|journal.checkpoint_synced("staged",proof)).await.unwrap();
++    out.flush().await.unwrap();journal.checkpoint("staged",file.length).unwrap();
++    assert_eq!(fs::read(target).unwrap(),body);
++    assert_eq!(journal.offset("staged",file.length),file.length);
++}
++
++#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
++#[ignore = "synthetic reused-data disk benchmark, no game or account"]
++async fn streaming_update_reused_disk_benchmark() {
++    use std::io::Write;
++    let parent=std::env::var_os("NEXUS_BENCH_ROOT").expect("explicit fresh fixture parent required");
++    let root=tempfile::Builder::new().prefix("reuse-").tempdir_in(parent).unwrap();
++    let length=512*1024*1024;
++    let source=root.path().join("installed.bin");
++    let mut disk=std::io::BufWriter::with_capacity(1024*1024,fs::File::create(&source).unwrap());
++    let mut hashes=Vec::with_capacity(length/PAGE_SIZE);
++    for n in 0..length/PAGE_SIZE {
++        let mut page=[0u8;PAGE_SIZE];let mut seed=n as u64+1;
++        for word in page.chunks_exact_mut(8) {
++            seed^=seed<<13;seed^=seed>>7;seed^=seed<<17;word.copy_from_slice(&seed.to_le_bytes());
++        }
++        disk.write_all(&page).unwrap();
++        let digest=msixvc::streaming::resume_digest(&page);
++        hashes.push(std::array::from_fn(|n|u8::from_str_radix(&digest[n*2..n*2+2],16).unwrap()));
++    }
++    disk.flush().unwrap();disk.get_ref().sync_all().unwrap();drop(disk);
++    let file=SegmentFile {offset:0,length:length as u64,keep_encrypted:true,data_hashs:hashes};
++    let files=HashMap::from([("staged".to_owned(),SegmentFile {offset:0,length:file.length,
++        keep_encrypted:true,data_hashs:file.data_hashs.clone()})]);
++    let mut journal=resume::Journal::open(root.path(),"synthetic-reuse",&files).unwrap();
++    let target=root.path().join("staged");
++    let mut out=tokio::fs::File::create(&target).await.unwrap();
++    let xvd=xvd().await;
++    let client=reqwest::Client::new();
++    let (_control,pause)=watch::channel(false);
++    let (tx,mut rx)=tokio::sync::mpsc::channel(256);
++    let started=std::time::Instant::now();
++    let mut checkpoints=0;
++    transfer(&xvd,&client,"http://127.0.0.1:1/not-requested",&source,Some(&file),&file,&mut out,
++        [0;32],0,pause,8,&tx,0,|p|{checkpoints+=1;journal.checkpoint_synced("staged",p)}).await.unwrap();
++    out.flush().await.unwrap();journal.checkpoint("staged",file.length).unwrap();
++    let elapsed=started.elapsed().as_secs_f64();
++    drop(tx);let mut network=0;let mut reused=0;
++    while let Some(event)=rx.recv().await {if let ProgressEvent::Traffic {network:n,reused:r}=event {network+=n;reused+=r;}}
++    assert_eq!((network,reused),(0,file.length));assert_eq!(checkpoints,16);
++    assert_eq!(journal.offset("staged",file.length),file.length);
++    let mut a=fs::File::open(source).unwrap();let mut b=fs::File::open(target).unwrap();
++    let mut aa=vec![0;1024*1024];let mut bb=vec![0;1024*1024];
++    for _ in 0..512 {a.read_exact(&mut aa).unwrap();b.read_exact(&mut bb).unwrap();assert_eq!(aa,bb);}
++    eprintln!("REUSED_DISK_BENCH bytes={length} seconds={elapsed:.6} MiBps={:.2} checkpoints={checkpoints}",512.0/elapsed);
++}
++
+ fn segment(length: usize, encrypted: bool) -> SegmentFile {
+     SegmentFile {
+         offset: 0,
+@@ -24,24 +167,28 @@ async fn xvd() -> XvdFile {
+         .unwrap()
+ }
+ 
+-#[test]
+-fn streaming_update_throughput_prefers_same_position_and_reads_contiguous_pages_once() {
++#[tokio::test]
++async fn streaming_update_throughput_prefers_same_position_and_reads_contiguous_pages_once() {
+     struct Count {
+         data: std::io::Cursor<Vec<u8>>,
+         bytes: usize,
+         reads: usize,
+     }
+-    impl Read for Count {
+-        fn read(&mut self, data: &mut [u8]) -> io::Result<usize> {
++    impl tokio::io::AsyncRead for Count {
++        fn poll_read(mut self: std::pin::Pin<&mut Self>, cx: &mut std::task::Context<'_>, data: &mut tokio::io::ReadBuf<'_>) -> std::task::Poll<io::Result<()>> {
+             self.reads += 1;
+-            let n = std::io::Read::read(&mut self.data, data)?;
+-            self.bytes += n;
+-            Ok(n)
++            let before=data.filled().len();
++            let result=std::pin::Pin::new(&mut self.data).poll_read(cx,data);
++            self.bytes += data.filled().len()-before;
++            result
+         }
+     }
+-    impl Seek for Count {
+-        fn seek(&mut self, position: SeekFrom) -> io::Result<u64> {
+-            self.data.seek(position)
++    impl tokio::io::AsyncSeek for Count {
++        fn start_seek(mut self:std::pin::Pin<&mut Self>, position: SeekFrom) -> io::Result<()> {
++            std::pin::Pin::new(&mut self.data).start_seek(position)
++        }
++        fn poll_complete(mut self:std::pin::Pin<&mut Self>, cx: &mut std::task::Context<'_>) -> std::task::Poll<io::Result<u64>> {
++            std::pin::Pin::new(&mut self.data).poll_complete(cx)
+         }
+     }
+     // Every page shares a hash, the old first-match index would select page0
+@@ -60,6 +207,7 @@ fn streaming_update_throughput_prefers_same_position_and_reads_contiguous_pages_
+     let mut output = vec![0; data.len()];
+     assert!(
+         read_local_pages(&mut reader, &mut output, &candidates)
++            .await
+             .into_iter()
+             .all(|read| read)
+     );
+@@ -69,9 +217,9 @@ fn streaming_update_throughput_prefers_same_position_and_reads_contiguous_pages_
+         &mut reader,
+         &mut [0; PAGE_SIZE * 4],
+         &[Some(2), None, Some(0), Some(1)],
+-    );
++    ).await;
+     assert_eq!(partial, [true, false, true, true]);
+-    assert!(!read_local_pages(&mut reader, &mut [0; PAGE_SIZE], &[Some(9999)])[0]);
++    assert!(!read_local_pages(&mut reader, &mut [0; PAGE_SIZE], &[Some(9999)]).await[0]);
+ }
+ 
+ #[test]
+@@ -184,7 +332,7 @@ async fn streaming_update_throughput_parallel_ranges_preserve_plain_and_cipherte
+                     &tx,
+                     0,
+                     |p| {
+-                        checkpoints.push(p);
++                        checkpoints.push(p.position());
+                         Ok(())
+                     },
+                 ),
+@@ -248,7 +396,7 @@ async fn streaming_update_throughput_failed_window_resumes_only_durable_contiguo
+             4,
+             &tx,
+             0,
+-            |p| journal.checkpoint("staged", p),
++            |p| journal.checkpoint_synced("staged", p),
+         ),
+     )
+     .await
+@@ -278,7 +426,7 @@ async fn streaming_update_throughput_failed_window_resumes_only_durable_contiguo
+             4,
+             &tx,
+             0,
+-            |p| journal.checkpoint("staged", p),
++            |p| journal.checkpoint_synced("staged", p),
+         ),
+     )
+     .await
+@@ -346,7 +494,7 @@ async fn streaming_update_throughput_pause_and_cancellation_never_claim_prefetch
+             &tx,
+             0,
+             |p| {
+-                checkpoints.push(p);
++                checkpoints.push(p.position());
+                 Ok(())
+             },
+         ),
+

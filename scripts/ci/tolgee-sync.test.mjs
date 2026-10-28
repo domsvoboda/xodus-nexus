@@ -69,6 +69,20 @@ test('staging accepts partial reviewed languages without altering English or shi
   assert.deepEqual(english, { welcome: 'Hello {{name}}' });
 });
 
+test('reviewed export is manual main-only and cannot write Git or publish builds', async () => {
+  const workflow = yaml.load(await fs.readFile('.github/workflows/translation-export.yml', 'utf8'));
+  assert.deepEqual(Object.keys(workflow.on), ['workflow_dispatch']);
+  assert.deepEqual(workflow.permissions, { contents: 'read' });
+  assert.equal(workflow.jobs.export.if, "github.ref == 'refs/heads/main'");
+  assert.deepEqual(workflow.jobs.export.steps[0].with, { ref: 'main', 'persist-credentials': false });
+  const secrets = workflow.jobs.export.steps.filter(step => JSON.stringify(step).includes('secrets.'));
+  assert.equal(secrets.length, 1);
+  assert.equal(secrets[0].env.TOLGEE_API_KEY, '${{ secrets.TOLGEE_REVIEW_API_KEY }}');
+  assert.equal(secrets[0].run, 'npm run i18n:pull');
+  assert.deepEqual(workflow.concurrency, yaml.load(await fs.readFile('.github/workflows/translations.yml', 'utf8')).concurrency);
+  assert.doesNotMatch(JSON.stringify(workflow), /git push|gh release|npm run build|pull_request|schedule|SOURCE_API_KEY/);
+});
+
 test('staging rejects symlinks, nested exports, noncanonical tags and unsafe translations', async () => {
   for (const [filename, value] of [
     ['cs.json', '{"save":"One","save":"Two"}'],

@@ -1,6 +1,7 @@
 import { spawn } from 'node:child_process';
 import { externalLauncherEnvironment } from './launcher-environment.js';
-import { randomBytes, timingSafeEqual } from 'node:crypto';
+import { createHash, randomBytes, timingSafeEqual } from 'node:crypto';
+import {releasedInviteDllHashes,releasedInviteModules,releasedInviteSource} from './game-invite-runtime.js';
 import { constants, promises as fs } from 'node:fs';
 import { createConnection, createServer, type Server, type Socket } from 'node:net';
 import path from 'node:path';
@@ -89,7 +90,21 @@ export async function cloudSaveRuntime(winePath: string): Promise<boolean> {
   const features = await runtimeFeatures(winePath);
   return features.includes('cloud-saves-pr28') && features.includes('xodus-tcp-bridge-v1');
 }
-export async function gameInviteRuntime(winePath:string):Promise<boolean>{return (await runtimeFeatures(winePath)).includes('xgame-invitations-v1');}
+export async function offlineIdentityRuntime(winePath: string): Promise<boolean> {
+  return (await runtimeFeatures(winePath)).includes('xuser-offline-identity-v2');
+}
+export async function gameInviteRuntime(winePath:string):Promise<boolean>{
+ if((await runtimeFeatures(winePath)).includes('xgame-invitations-v1'))return true;
+ const root=path.resolve(path.dirname(winePath),'..','..');
+ try{
+  const metadata:unknown=JSON.parse(await fs.readFile(path.join(root,'XODUS_NEXUS_PATCH.json'),'utf8'));
+  if(!releasedInviteSource(metadata))return false;
+  const hashes=Object.fromEntries(await Promise.all(Object.keys(releasedInviteDllHashes).map(async arch=>[
+   arch,createHash('sha256').update(await fs.readFile(path.join(root,'files/lib/wine',arch+'-windows/xgameruntime.dll'))).digest('hex'),
+  ])));
+  return releasedInviteModules(hashes);
+ }catch{return false;}
+}
 
 export async function storeContentRuntime(winePath: string): Promise<boolean> {
   const features = await runtimeFeatures(winePath);

@@ -1,0 +1,9 @@
+.game-guide-shell .game-guide-panel.is-expanded { width:min(1080px,100%); }
+.game-guide-full-toolbar { display:flex;justify-content:space-between;align-items:center;gap:16px;padding:8px 16px;border-bottom:1px solid #ffffff20;background:#1a1b1e; }
+.game-guide-full-toolbar button { display:flex;align-items:center;gap:8px;border:0;border-radius:4px;background:#484e58;color:white;padding:6px 10px;font:inherit;cursor:pointer; }
+.game-guide-full-toolbar svg { width:16px;height:16px; }
+.game-guide-shell .xbox-social.xbox-guide.game-guide-chat-window { position:absolute;width:420px;height:620px;max-width:calc(100vw - 16px);max-height:calc(100vh - 16px);min-width:340px;min-height:360px;margin:0;resize:both;overflow:hidden;border:1px solid #6b707a;border-radius:6px;box-shadow:0 12px 50px #0009;background:#24262a; }
+.game-guide-chat-titlebar { display:flex;align-items:center;justify-content:space-between;gap:16px;min-height:40px;padding:4px 8px 4px 16px;background:#1a1b1e;border-bottom:1px solid #ffffff20;cursor:move;touch-action:none;user-select:none; }
+.game-guide-chat-titlebar>span { font-size:13px;color:#c2c4c7; }
+.game-guide-chat-window .social-chat-header { background:#1a1b1e; }
+.game-guide-shell .xbox-social.xbox-guide.game-guide-chat-window { min-width:min(340px,calc(100vw - 16px));min-height:min(360px,calc(100vh - 16px)); }

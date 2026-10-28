@@ -4,7 +4,19 @@ import { createConnection, createServer } from 'node:net';
 import os from 'node:os';
 import path from 'node:path';
 import { once } from 'node:events';
-import { gameInviteRuntime, selectedWinePath, startXodusBridge, startXodusService, storeContentRuntime, storeDiscoveryRuntime } from './xodus-service.js';
+import { gameInviteRuntime, offlineIdentityRuntime, selectedWinePath, startXodusBridge, startXodusService, storeContentRuntime, storeDiscoveryRuntime } from './xodus-service.js';
+
+it.each(['bin', 'bin-arm64'])('requires the offline identity v2 contract, not merely cloud support (%s)', async bin => {
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), 'nexus-offline-runtime-'));
+  const wine = path.join(root, 'files', bin, 'wine');
+  try {
+    expect(await offlineIdentityRuntime(wine)).toBe(false);
+    await fs.writeFile(path.join(root, 'XODUS_NEXUS_PATCH.json'), JSON.stringify({ features: ['cloud-saves-pr28', 'xuser-offline-identity-v1'] }));
+    expect(await offlineIdentityRuntime(wine)).toBe(false);
+    await fs.writeFile(path.join(root, 'XODUS_NEXUS_PATCH.json'), JSON.stringify({ features: ['xuser-offline-identity-v2'] }));
+    expect(await offlineIdentityRuntime(wine)).toBe(true);
+  } finally { await fs.rm(root, { recursive: true, force: true }); }
+});
 
 it('does not enable invitations for an older or unmarked runtime',async()=>{
   const root=await fs.mkdtemp(path.join(os.tmpdir(),'nexus-invite-runtime-')),wine=path.join(root,'files/bin/wine');

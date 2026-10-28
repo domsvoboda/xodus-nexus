@@ -6,7 +6,146 @@ import { execFileSync } from 'node:child_process';
 import { createRequire } from 'node:module';
 import path from 'node:path';
 import os from 'node:os';
-import { backendSourceArchiveArgs } from '../backend-source-archive.mjs';
+test('reused-data pipeline retains bounded lookahead and inode-bound data-before-journal checkpoints', async () => {
+  const lock = JSON.parse(await fs.readFile('assets/backend-source.lock.json', 'utf8'));
+  const entry = lock.patches.find(p => p.file === 'xodus-reuse-pipeline.patch'); assert.ok(entry);
+  const patch = await fs.readFile('assets/' + entry.file, 'utf8');
+  assert.equal(createHash('sha256').update(patch).digest('hex'), entry.sha256);
+  assert.ok(lock.patches.indexOf(entry) > lock.patches.findIndex(p => p.file === 'xodus-metadata-throughput.patch'));
+  assert.deepEqual([...patch.matchAll(/^diff --git a\/(\S+) b\/\S+$/gm)].map(m => m[1]), [
+    'crates/xodus-cli/src/commands/streaming.rs', 'crates/xodus-cli/src/commands/streaming_resume.rs',
+    'crates/xodus-cli/src/commands/streaming_update.rs', 'crates/xodus-cli/src/commands/streaming_update_throughput_tests.rs',
+  ]);
+  for (const name of ['streaming_update_pipeline_builds_relocation_index_only_when_needed',
+    'streaming_update_pipeline_overlaps_but_settles_current_write_before_lookahead_failure',
+    'streaming_update_pipeline_write_failure_cancels_lookahead_without_detached_work',
+    'streaming_update_pipeline_checkpoint_failure_is_not_retried',
+    'streaming_update_pipeline_pause_keeps_lookahead_out_of_progress_and_resume_checkpoint',
+    'streaming_resume_synced_proof_binds_exact_output_and_preserves_legacy_journal']) assert.ok(patch.includes(name));
+  const added = patch.split('\n').filter(l => l.startsWith('+') && !l.startsWith('+++')).join('\n');
+  assert.match(added, /const REUSE_WINDOW: usize = 8 \* 1024 \* 1024/);
+  assert.match(added, /file\.flush\(\)\.await\?;[\s\S]*file\.sync_data\(\)\.await\?/);
+  assert.match(added, /meta\.dev\(\) != synced\.device \|\| meta\.ino\(\) != synced\.inode/);
+  assert.match(added, /checkpoint_synced\(&job\.name,synced\)/);
+  assert.doesNotMatch(added, /FICLONE|ioctl|tokio::spawn\(|spawn_blocking\(|get_license|\.post\(|\.delete\(/);
+});
+test('metadata preparation batches bounded hash reads and shares a legacy-compatible checkpoint identity', async () => {
+  const lock = JSON.parse(await fs.readFile('assets/backend-source.lock.json', 'utf8'));
+  const entry = lock.patches.find(p => p.file === 'xodus-metadata-throughput.patch'); assert.ok(entry);
+  assert.equal(entry.file, 'xodus-metadata-throughput.patch');
+  const patch = await fs.readFile('assets/' + entry.file, 'utf8');
+  assert.equal(createHash('sha256').update(patch).digest('hex'), entry.sha256);
+  assert.deepEqual([...patch.matchAll(/^diff --git a\/(\S+) b\/\S+$/gm)].map(m => m[1]), [
+    'crates/msixvc/src/streaming.rs', 'crates/msixvc/src/streaming_hash_cache.rs',
+    'crates/msixvc/src/xvd.rs', 'crates/xodus-cli/src/commands/streaming.rs',
+    'crates/xodus-cli/src/commands/streaming_resume.rs',
+  ]);
+  for (const name of ['streaming_hash_cache_full_xvd_parser_preserves_every_hash_and_encryption_unit',
+    'streaming_hash_cache_batches_strided_reads_and_preserves_backward_and_boundary_bytes',
+    'streaming_hash_cache_never_reads_beyond_declared_section_or_accepts_truncated_data',
+    'streaming_hash_cache_cancelled_fill_is_never_reused',
+    'streaming_resume_streamed_identity_is_byte_compatible_and_binds_every_layout_field',
+    'streaming_resume_shared_identity_reopens_legacy_checkpoints_in_both_roots']) assert.ok(patch.includes(name));
+  const added = patch.split('\n').filter(line => line.startsWith('+') && !line.startsWith('+++')).join('\n');
+  assert.match(added, /const WINDOW: usize = 1024 \* 1024/);
+  assert.match(added, /BufWriter::with_capacity\(64 \* 1024, &mut digest\)/);
+  assert.match(added, /open_with_identity\(stage, &identity\)/);
+  assert.match(added, /reader.read_exact\(&mut data\).await\?;[\s\S]*self.data = data/);
+  assert.doesNotMatch(added, /ioctl|FICLONE|NEXUS_MEASURE_PHASES|NEXUS_PHASE_V1|\.post\(|\.delete\(|get_license|\.sync_all\(\).*ok\(\)/);
+  assert.ok(!lock.patches.some(p => p.file === 'xodus-update-reflink.patch'));
+});
+test('download and update throughput optimizations preserve bounded writes and durable recovery', async () => {
+  const lock = JSON.parse(await fs.readFile('assets/backend-source.lock.json', 'utf8'));
+  const paths = [
+    ['xodus-download-throughput.patch', ['crates/msixvc/src/download_throughput_tests.rs', 'crates/msixvc/src/encrypted_image_tests.rs', 'crates/msixvc/src/xvd.rs']],
+    ['xodus-update-throughput.patch', ['crates/xodus-cli/src/commands/streaming.rs', 'crates/xodus-cli/src/commands/streaming_update.rs', 'crates/xodus-cli/src/commands/streaming_update_throughput_tests.rs']],
+  ];
+  for (const [file, expected] of paths) {
+    const entry = lock.patches.find(p => p.file === file); assert.ok(entry);
+    const patch = await fs.readFile('assets/' + file, 'utf8');
+    assert.equal(createHash('sha256').update(patch).digest('hex'), entry.sha256);
+    assert.deepEqual([...patch.matchAll(/^diff --git a\/(\S+) b\/\S+$/gm)].map(m => m[1]), expected);
+    const added = patch.split('\n').filter(line => line.startsWith('+') && !line.startsWith('+++')).join('\n');
+    assert.doesNotMatch(added, /\.sync_all\(\).*ok\(\)|set_limit_kib\(0\)|remove_file\(.*INCOMPLETE|get_license|\.post\(|\.delete\(/);
+    assert.ok(lock.patches.findIndex(p => p.file === file) > lock.patches.findIndex(p => p.file === 'xodus-incremental-update-safety.patch'));
+  }
+  const batch = await fs.readFile('assets/xodus-download-throughput.patch', 'utf8');
+  assert.match(batch, /const WRITE_BATCH: usize = 256 \* 1024/);
+  assert.ok(batch.includes('streaming_throughput_batches_page_writes_without_changing_plain_bytes_or_short_writes'));
+  assert.ok(batch.includes('streaming_throughput_decrypts_large_batches_with_exact_unpadded_plaintext'));
+  const update = await fs.readFile('assets/xodus-update-throughput.patch', 'utf8');
+  for (const name of ['streaming_update_throughput_prefers_same_position_and_reads_contiguous_pages_once',
+    'streaming_update_throughput_ranges_cover_all_gaps_once_with_bounded_memory',
+    'streaming_update_throughput_parallel_ranges_preserve_plain_and_ciphertext_tails',
+    'streaming_update_throughput_failed_window_resumes_only_durable_contiguous_output',
+    'streaming_update_throughput_pause_and_cancellation_never_claim_prefetched_bytes']) assert.ok(update.includes(name));
+  assert.match(update, /buffer_unordered\(parallel.clamp\(1, 8\)\)/);
+  assert.ok(update.includes('Memory is not a durable file checkpoint.'));
+  assert.ok(update.includes('checkpoint(offset)?'));
+});
+test('native inbox is nonblocking and conversation validation retains account and safety gates (#408)',async()=>{
+ const lock=JSON.parse(await fs.readFile('assets/backend-source.lock.json','utf8'));
+ const entry=lock.patches.find(p=>p.file==='xodus-native-social-safety.patch');assert.ok(entry);
+ const patch=await fs.readFile('assets/'+entry.file,'utf8');assert.equal(createHash('sha256').update(patch).digest('hex'),entry.sha256);
+ assert.deepEqual([...patch.matchAll(/^diff --git a\/(\S+) b\/\S+$/gm)].map(value=>value[1]),['crates/xodus-cli/src/commands/native_social.rs']);
+ for(const name of ['native_conversation_binds_both_users_network_and_unique_ordered_messages','native_message_filtering_fails_closed_and_does_not_truncate_identifiers','native_inbox_keeps_explicit_unread_state_and_rejects_cross_account_or_duplicate_rows'])assert.ok(patch.includes(name));
+ const added=patch.split('\n').filter(line=>line.startsWith('+')&&!line.startsWith('+++')).join('\n');
+ assert.match(added,/value\["networkId"\] != "Xbox"/);assert.match(added,/row\["isRead"\]\.as_bool\(\)/);
+ assert.doesNotMatch(added,/\.post\(|\.delete\(|cache_xsts|set_user|horizon|AuthKey/);
+ assert.ok(patch.includes('-            }).buffer_unordered(4).collect().await;'));
+});
+import { backendOfflineCargoConfig, backendSourceArchiveArgs } from '../backend-source-archive.mjs';
+
+test('vendored offline source retains the exact x86 and ARM AES compiler flags', async () => {
+  const flags = '[target.\'cfg(target_arch = "x86_64")\']\nrustflags = ["-Ctarget-feature=+aes,+ssse3"]\n\n[target.\'cfg(target_arch = "aarch64")\']\nrustflags = ["-Ctarget-feature=+aes"]\n';
+  const vendor = '[source.crates-io]\nreplace-with = "vendored-sources"\n[source.vendored-sources]\ndirectory = "vendor"\n';
+  assert.equal(backendOfflineCargoConfig(flags, vendor), flags.trimEnd() + '\n\n' + vendor);
+  const script = await fs.readFile('scripts/build-backend.mjs', 'utf8');
+  assert.match(script, /backendOfflineCargoConfig\(originalCargoConfig, config\)/);
+});
+
+test('incremental updates retain verified reuse and a durable launch barrier until metadata commit (#405)', async () => {
+  const lock = JSON.parse(await fs.readFile('assets/backend-source.lock.json', 'utf8'));
+  const names = ['xodus-incremental-update.patch', 'xodus-incremental-update-safety.patch'];
+  const patches = [];
+  for (const name of names) {
+    const entry = lock.patches.find(patch => patch.file === name); assert.ok(entry);
+    const patch = await fs.readFile(`assets/${name}`, 'utf8'); patches.push(patch);
+    assert.equal(createHash('sha256').update(patch).digest('hex'), entry.sha256);
+  }
+  assert.ok(lock.patches.findIndex(patch => patch.file === names[1]) > lock.patches.findIndex(patch => patch.file === names[0]));
+  const [reuse, safety] = patches;
+  for (const token of ['stored_page_verifier', 'verifier.matches', 'streaming_update_reuses_relocated_pages_and_downloads_modified_or_corrupt_pages_only',
+    'streaming_update_verifier_checks_licensed_plaintext_ciphertext_wrong_keys_and_modified_pages']) assert.ok(reuse.includes(token), token);
+  assert.deepEqual([...safety.matchAll(/^diff --git a\/(\S+) b\/\S+$/gm)].map(match => match[1]), [
+    'crates/xodus-cli/src/main.rs', 'crates/xodus-cli/src/commands/run.rs',
+    'crates/xodus-cli/src/commands/streaming.rs', 'crates/xodus-cli/src/commands/streaming_update.rs',
+    'crates/xodus-cli/src/commands/streaming_failure.rs',
+    'crates/xodus-cli/src/installation_state.rs',
+  ]);
+  for (const token of ['streaming_update_barrier_survives_failure_and_clears_only_after_metadata_commit',
+    'streaming_update_interrupted_multifile_commit_remains_blocked_until_recovery_finishes',
+    'streaming_update_recovery_rechecks_old_metadata_and_preserves_optional_placeholders',
+    'streaming_update_actual_run_refuses_incomplete_installation_before_game_or_account_access',
+    'streaming_update_completed_never_skips_zero_length_or_oversized_replacements',
+    'streaming_update_reuses_complete_ciphertext_tail_on_initial_and_resumed_updates',
+    'streaming_update_launch_preserves_read_only_and_unsupported_lock_installations']) assert.ok(safety.includes(token), token);
+  const added = safety.split('\n').filter(line => line.startsWith('+') && !line.startsWith('+++')).join('\n');
+  assert.match(safety, /installation_state::begin\(root\)\?;[\s\S]*fs::rename\(&from, &to\)/);
+  assert.match(added, /fs::rename\(cache, final_path\)\?;[\s\S]*sync_all\(\)\?;[\s\S]*fs::remove_file\(root.join\(INCOMPLETE\)\)/);
+  assert.match(added, /installation_state::launch_guard\(out\)/);
+  assert.match(added, /update::begin\(out, &rfiles, &pending\)/);
+  assert.match(added, /placeholders.contains\(name\)/);
+  assert.match(added, /Nexus capabilities: update-recovery-v1/);
+  const state = await fs.readFile('src/main/installation-state.ts', 'utf8');
+  assert.ok(state.includes("'.nexus-update-incomplete-v1'"));
+  assert.ok(added.includes('".nexus-update-incomplete-v1"'));
+  const launcher = await fs.readFile('src/main/index.ts', 'utf8');
+  assert.match(launcher, /updateGame && !backend.current.capabilities.streamingUpdateRecovery/);
+  assert.match(launcher, /if \(await refreshIncompleteUpdate\(game\)\)/);
+  const build = await fs.readFile('scripts/build-backend.mjs', 'utf8');
+  assert.match(build, /streamingHelp.includes\('Nexus capabilities: update-recovery-v1'\)/);
+});
 
 test('manifest-selected plain package executables keep licensing and encrypted-library handling (#239)',async()=>{
   const lock=JSON.parse(await fs.readFile('assets/backend-source.lock.json','utf8'));
@@ -26,6 +165,48 @@ test('manifest-selected plain package executables keep licensing and encrypted-l
   assert.match(added,/inherit_launch_image\(file, &actual_name\)/);
   assert.match(added,/ambiguous package launch images/);
   assert.doesNotMatch(added,/get_license|tokens\.|full_key|Command::|set_permissions|mount_mem_fd|\.unpack\(/);
+});
+
+test('launch views left by killed sessions are swept only when no process holds their lock',async()=>{
+  const lock=JSON.parse(await fs.readFile('assets/backend-source.lock.json','utf8'));
+  const entry=lock.patches.find(value=>value.file==='xodus-launch-view-sweep.patch');assert.ok(entry);
+  assert.ok(lock.patches.findIndex(value=>value.file===entry.file)>lock.patches.findIndex(value=>value.file==='xodus-launch-filesystem.patch'));
+  const patch=await fs.readFile('assets/'+entry.file,'utf8');
+  assert.equal(createHash('sha256').update(patch).digest('hex'),entry.sha256);
+  assert.deepEqual([...patch.matchAll(/^diff --git a\/(\S+) b\/\S+$/gm)].map(value=>value[1]),['crates/xodus-cli/src/commands/run.rs']);
+  for(const name of ['launch_view_sweep_removes_views_whose_session_is_gone','launch_view_lock_is_inherited_by_the_game',
+    'launch_view_sweep_skips_locks_that_are_not_files','launch_view_sweep_keeps_views_a_running_session_holds',
+    'launch_view_sweep_removes_unlocked_views_only_once_old',
+    'launch_view_sweep_cleans_the_temp_dir_fallback','launch_view_sweep_keeps_orphan_locks_still_held'])assert.ok(patch.includes(name),name);
+  const added=patch.split('\n').filter(line=>line.startsWith('+')&&!line.startsWith('+++')).join('\n');
+  assert.match(added,/try_lock_exclusive/);
+  assert.match(added,/OFlags::NOFOLLOW \| rustix::fs::OFlags::NONBLOCK/);
+  assert.doesNotMatch(added,/get_license|tokens\.|full_key|set_permissions|mount\(|chmod/);
+});
+
+test('launch-view cleanup preserves lockless sessions and publishes only fully prepared locks (#399)', async () => {
+  const lock = JSON.parse(await fs.readFile('assets/backend-source.lock.json', 'utf8'));
+  const filename = 'xodus-launch-view-safety.patch';
+  const entry = lock.patches.find(value => value.file === filename);
+  assert.ok(entry);
+  assert.ok(lock.patches.findIndex(value => value.file === filename)
+    > lock.patches.findIndex(value => value.file === 'xodus-launch-view-sweep.patch'));
+  const patch = await fs.readFile(`assets/${filename}`, 'utf8');
+  assert.equal(createHash('sha256').update(patch).digest('hex'), entry.sha256);
+  assert.deepEqual([...patch.matchAll(/^diff --git a\/(\S+) b\/\S+$/gm)].map(value => value[1]),
+    ['crates/xodus-cli/src/commands/run.rs']);
+  for (const name of ['launch_view_sweep_preserves_lockless_views_regardless_of_age',
+    'launch_view_lock_failure_keeps_launching_and_never_sweeps_the_live_view',
+    'launch_view_failed_lock_preparation_never_publishes_an_unheld_lock',
+    'launch_view_lock_publication_never_replaces_an_existing_lock',
+    'launch_view_sweep_keeps_old_views_with_invalid_locks',
+    'launch_view_sweep_keeps_concurrent_live_sessions',
+    'launch_view_child_holds_lock_after_owner_is_killed']) assert.ok(patch.includes(name), name);
+  const added = patch.split('\n').filter(line => line.startsWith('+') && !line.startsWith('+++')).join('\n');
+  assert.match(added, /prepare\(staging\.as_file\(\)\)\?;[\s\S]*staging\.persist_noclobber\(path\)/);
+  assert.match(added, /file\.metadata\(\)\?\.is_file\(\)/);
+  assert.match(patch, /Err\(_\) => false/);
+  assert.doesNotMatch(added, /UNLOCKED_LAUNCH_VIEW_MAX_AGE|modified\.elapsed\(\)|get_license|tokens\.|full_key/);
 });
 
 test('plain-region metadata supplements launch images without replacing encrypted declarations (#417)', async () => {
@@ -623,4 +804,139 @@ test('chat JSON output remains strict and uses quiet equivalent policy selection
   const added=production.split('\n').filter(line=>line.startsWith('+')&&!line.startsWith('+++')).join('\n');
   assert.doesNotMatch(added,/println!|\.post\(|\.send\(|\.save_|ensure_device_credentials|\.header\(|\.json\(/);
   assert.ok((await fs.readFile('src/main/xbox-social.ts','utf8')).includes('JSON.parse(output)'));
+});
+
+test('device registration skips the SMBIOS elevation prompt when the device has no firmware table', async () => {
+  const lock=JSON.parse(await fs.readFile('assets/backend-source.lock.json','utf8'));
+  const entry=lock.patches.find(value=>value.file==='xodus-smbios-optional.patch');assert.ok(entry);
+  const patch=await fs.readFile('assets/'+entry.file,'utf8');
+  assert.equal(createHash('sha256').update(patch).digest('hex'),entry.sha256);
+  assert.deepEqual([...patch.matchAll(/^diff --git a\/(\S+) b\/\S+$/gm)].map(value=>value[1]),['crates/xodus/src/hardware.rs']);
+  for(const name of ['fn load_raw_smbios_from(','if !table.exists() {','io::ErrorKind::NotFound','smbios_missing_table_does_not_start_pkexec'])assert.ok(patch.includes(name),name);
+  // The elevated read itself is unchanged: the same pkexec cat of the same table.
+  assert.ok(patch.includes('const SMBIOS_SYSTEM_TABLE: &str = "/sys/firmware/dmi/entries/1-0/raw";'));
+  const added=patch.split('\n').filter(line=>line.startsWith('+')&&!line.startsWith('+++')).join('\n');
+  assert.doesNotMatch(added,/sudo|setuid|\/dev\/mem|std::fs::read\(/);
+  assert.ok((await fs.readFile('scripts/build-backend.mjs','utf8')).includes("'-p', 'xodus', 'smbios_']"));
+
+});
+
+const offlinePatch = async (file, after) => {
+  const lock = JSON.parse(await fs.readFile('assets/backend-source.lock.json', 'utf8'));
+  const entry = lock.patches.find(p => p.file === file);
+  assert.ok(entry, file);
+  const patch = await fs.readFile(`assets/${entry.file}`, 'utf8');
+  assert.equal(createHash('sha256').update(patch).digest('hex'), entry.sha256);
+  assert.ok(lock.patches.findIndex(p => p.file === file) > lock.patches.findIndex(p => p.file === after), `${file} after ${after}`);
+  const files = [...patch.matchAll(/^diff --git a\/(\S+) b\/\S+$/gm)].map(match => match[1]).sort();
+  const added = patch.split('\n').filter(line => line.startsWith('+') && !line.startsWith('+++')).join('\n');
+  return { patch, files, added };
+};
+
+test('offline current-stack repair preserves launch barriers and authenticates private cached policy', async () => {
+  const {patch, files, added} = await offlinePatch('xodus-offline-current-stack.patch', 'xodus-offline-license-revocation.patch');
+  assert.deepEqual(files, ['crates/xodus-cli/src/installation_state.rs','crates/xodus-cli/src/license.rs','crates/xodus-cli/src/license_cache.rs','crates/xodus-cli/src/license_cache_tests.rs','crates/xodus/src/licensing.rs','crates/xodus/src/licensing/offline_integrity.rs']);
+  for (const text of ['Hmac::<Sha256>', 'mac.verify_slice(&tag)', 'nexus-offline-license-cache-v4', 'device.password.as_bytes()',
+    'if !self.authentic(&mut value)', 'value["lastUsedAt"]', 'self.seal(&mut value)', 'tempfile::NamedTempFile::new_in',
+    'nix::libc::O_NOFOLLOW', 'nix::libc::O_NONBLOCK', 'file.take(limit + 1)', '.revoked',
+    'offline_cache_authenticates_every_policy_field_and_requires_the_same_private_registration',
+    'offline_revocation_remains_closed_when_any_previous_entry_cannot_be_removed',
+    'offline_cache_never_reads_or_writes_through_a_root_or_entry_symlink',
+    'offline_lease_cannot_extend_a_trial_or_start_before_either_server_validity_window',
+    'keyValidity', 'LeaseCheck::Invalid("begin-date")', 'LeaseCheck::Invalid("not-yet-valid")']) assert.ok(patch.includes(text), text);
+  assert.doesNotMatch(added, /\.post\(|\.send\(|"deviceKey"|"contentKey"|"password"\s*:/);
+  assert.match(added, /None, None, false\)\.await/);
+});
+
+test('offline licenses are device-bound, fail closed and never bypass an online refusal', async () => {
+  const { patch, files, added } = await offlinePatch('xodus-offline-license.patch', 'xodus-content-device-limit.patch');
+  assert.deepEqual(files, [
+    'crates/xodus-cli/src/commands.rs', 'crates/xodus-cli/src/commands/license.rs', 'crates/xodus-cli/src/commands/offline_pc.rs',
+    'crates/xodus-cli/src/commands/run.rs', 'crates/xodus-cli/src/commands/streaming.rs',
+    'crates/xodus-cli/src/license.rs', 'crates/xodus-cli/src/license_cache.rs', 'crates/xodus-cli/src/license_cache_tests.rs',
+    'crates/xodus-cli/src/main.rs',
+    'crates/xodus/src/licensing/content.rs', 'crates/xodus/src/licensing/content_response.rs', 'crates/xodus/src/models/devicecredential.rs',
+  ].sort());
+  // Downloads and the CIK dump keep online-only licensing: those call sites only gain a `None` cache argument.
+  for (const file of ['commands/streaming.rs', 'commands/license.rs']) {
+    const section = patch.split(/^diff --git /m).find(part => part.startsWith(`a/crates/xodus-cli/src/${file} `));
+    assert.ok(section, file);
+    const addedLines = section.split('\n').filter(line => line.startsWith('+') && !line.startsWith('+++')).map(line => line.slice(1).trim());
+    assert.deepEqual(addedLines.filter(line => !line.startsWith('//')),
+      file === 'commands/streaming.rs' ? ['None,'] : ['let license = get_license(client, tokens, content_id, market, None).await;']);
+  }
+  for (const expected of ['"isOffline"', 'pub fn parse_lease', 'pub fn lease_policy',
+    'Refusing to change the offline PC designation without --confirm', 'pcgafd/config/offlinepc', '--license-cache']) assert.ok(patch.includes(expected), expected);
+  // The cache stores Microsoft's encrypted SPLicense block only; the device key stays in the keyring.
+  assert.doesNotMatch(patch, /diff --git a\/.*(?:tokens\/|login\.rs|package_plan\.rs|Cargo|content_response_tests)/);
+  assert.doesNotMatch(added, /"deviceKey"|"contentKey"|unpack\(/);
+  assert.match(added, /OnlineFailure::Refused\(_\) => \{[\s\S]*?purge\(content_id\)/);
+  assert.match(added, /OnlineFailure::Other\(_\) => Err\(message\)/);
+  const build = await fs.readFile('scripts/build-backend.mjs', 'utf8');
+  assert.match(build, /command\('cargo', \['test', '--locked', \.\.\.offline, \.\.\.features, '-p', 'xodus-cli'\]\)/);
+});
+
+test('offline launches detect an unreachable Microsoft quickly and skip online-only steps', async () => {
+  const { patch, files } = await offlinePatch('xodus-offline-fast-path.patch', 'xodus-offline-license.patch');
+  assert.deepEqual(files, ['crates/xodus-cli/src/commands/run.rs', 'crates/xodus-cli/src/license.rs', 'crates/xodus-cli/src/main.rs', 'crates/xodus-service/src/simple_context.rs']);
+  // Only the connect phase is bounded; a request timeout would break game streaming.
+  assert.equal((patch.match(/^\+.*connect_timeout\(std::time::Duration::from_secs\(10\)\)/gm) ?? []).length, 2);
+  assert.doesNotMatch(patch, /^\+.*\.timeout\(/m);
+  // The PlayFab step is skipped only when the stored offline license is in use.
+  assert.match(patch, /OFFLINE_LICENSE_USED\.store\(true/);
+  assert.match(patch, /if crate::license::OFFLINE_LICENSE_USED\.load/);
+});
+
+test('launcher-requested offline launches skip Microsoft and survive an expired device token', async () => {
+  const { patch, files } = await offlinePatch('xodus-offline-launch.patch', 'xodus-offline-fast-path.patch');
+  assert.deepEqual(files, ['crates/xodus-cli/src/commands/license.rs', 'crates/xodus-cli/src/commands/run.rs', 'crates/xodus-cli/src/commands/streaming.rs', 'crates/xodus-cli/src/license.rs', 'crates/xodus-cli/src/main.rs']);
+  // The flag exists only together with a license cache and is the launcher's verdict, not a guess made here.
+  assert.match(patch, /^\+\s*requires = "license_cache",/m);
+  assert.match(patch, /matches!\(args\.command, SubCommand::Run \{ offline: true, \.\. \}\)/);
+  assert.match(patch, /OnlineFailure::Unreachable\("Microsoft is unreachable \(offline launch requested\)\."/);
+  assert.match(patch, /command\.env\("XODUS_FORCE_OFFLINE", "1"\)/);
+  // A failed device renewal is tolerated only for launches with a license cache and a stored device license.
+  assert.match(patch, /launch_with_license_cache && tokens\.get_device_license\(\)\.is_ok\(\)/);
+  assert.match(patch, /needs_device_credentials && !offline_launch/);
+  assert.match(patch, /get_license\(client, tokens, content_id, market, None, false\)/);
+  assert.doesNotMatch(patch, /^\+.*\.timeout\(/m);
+});
+
+test('stored offline licenses are re-validated against their lease and revoked on every known designation, account or refusal change', async () => {
+  const { patch, files, added } = await offlinePatch('xodus-offline-license-revocation.patch', 'xodus-offline-launch.patch');
+  assert.deepEqual(files, ['crates/xodus-cli/src/commands/offline_pc.rs', 'crates/xodus-cli/src/commands/run.rs', 'crates/xodus-cli/src/license.rs',
+    'crates/xodus-cli/src/license_cache.rs', 'crates/xodus-cli/src/license_cache_tests.rs', 'crates/xodus-cli/src/main.rs']);
+  // Loading parses the stored lease document again; Nexus-written expiry fields grant nothing.
+  assert.match(added, /pub fn check_lease\(document: &str, key: &License, issued_at: u64, now: u64\) -> LeaseCheck/);
+  assert.match(added, /let expires_at = match check_lease\(&lease, &key, issued_at, now\)/);
+  assert.doesNotMatch(added, /"expiresAt": (?:expires_at|offline_expiry)/);
+  for (const rule of ['LicenseType::Lease', 'policy.is_offline', 'binding_type.eq_ignore_ascii_case("Machine")', 'lease_device != key_device',
+    'expiration_date', 'issued_at.saturating_add(MAX_OFFLINE_SECONDS)', 'CLOCK_SKEW_SECONDS']) assert.ok(added.includes(rule), rule);
+  // Revocations: not designated (User-bound key or offline-pc false), a designation change, another holder, refusals.
+  assert.match(added, /if !license\.key\.binding\.binding_type\.eq_ignore_ascii_case\("Machine"\) \{\s*\+\s*match cache\.revoke_all\(\)/);
+  assert.match(added, /fn designation_revokes\(set: Option<bool>, summary: &Value\) -> bool/);
+  assert.match(added, /LicenseContentError::DeviceLimit => OnlineFailure::DeviceRefused\(message\)/);
+  assert.match(added, /OnlineFailure::DeviceRefused\(_\) => \{[\s\S]*?revoke_all\(\)/);
+  assert.match(added, /text\("deviceId"\)\.as_deref\(\) != Some\(holder\.device_id\.as_str\(\)\)/);
+  // The runtime's offline identity follows the license decision.
+  assert.match(added, /command\.env_remove\("XODUS_OFFLINE_IDENTITY"\)/);
+  for (const name of ['lease_restrictions_come_from_the_lease_microsoft_issued',
+    'expired_leases_are_refused_and_removed_whatever_the_local_file_claims', 'a_swapped_lease_document_is_validated_again',
+    'a_clock_set_back_cannot_stretch_offline_use', 'another_account_or_device_registration_removes_every_stored_license',
+    'switching_the_designation_from_a_to_b_ends_offline_play_on_a_when_it_reconnects', 'expired_leases_fail_closed_and_disappear',
+    'an_account_change_removes_every_stored_license', 'explicit_licensing_refusals_remove_stored_licenses',
+    'stored_offline_licenses_end_when_this_device_is_not_or_no_longer_designated',
+    'the_runtime_offline_identity_follows_the_license_decision',
+    'the_device_registration_is_identified_even_without_a_license_device_id',
+    'lease_dates_are_read_in_the_formats_microsoft_uses']) assert.ok(patch.includes(`fn ${name}(`), name);
+  // Still no key material, credentials or new network requests.
+  assert.doesNotMatch(added, /"deviceKey"|"contentKey"|unpack\(|\.post\(|\.send\(|save_device_license\(&device\)|remove_device_license/);
+  const stages = await fs.readFile('src/shared/content-license.ts', 'utf8');
+  for (const stage of ['content-cache-stored', 'content-cache-skipped', 'content-cache-write-failed', 'content-cache-used', 'content-cache-missing',
+    'content-cache-expired', 'content-cache-invalid', 'content-cache-purged', 'content-cache-revoked', 'content-cache-account', 'content-cache-clock']) {
+    assert.ok(stages.includes(`'${stage}'`), stage);
+  }
+  for (const stage of ['content-cache-revoked', 'content-cache-account', 'content-cache-clock']) {
+    assert.ok(added.includes(`"${stage}"`), stage);
+  }
 });

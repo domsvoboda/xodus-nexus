@@ -3,6 +3,7 @@ import { createHash, randomUUID } from 'node:crypto';
 import path from 'node:path';
 import type { LauncherUpdate } from '../shared/types.js';
 import { isNewerVersion } from '../shared/utils.js';
+import { APPIMAGE_ARCH_SUFFIX, currentArch, isLinuxElf64, type NexusArch } from './arch.js';
 
 const REPO = 'domsvoboda/xodus-nexus';
 const API = `https://api.github.com/repos/${REPO}/releases?per_page=100`;
@@ -13,12 +14,12 @@ export interface LauncherCandidate { version: string; image: Asset; checksum: As
 function assetUrl(url: string, tag: string, name: string): boolean {
   return url === `https://github.com/${REPO}/releases/download/${tag}/${name}`;
 }
-export function launcherCandidate(releases: Release[], current: string): LauncherCandidate | undefined {
+export function launcherCandidate(releases: Release[], current: string, arch: NexusArch = currentArch()): LauncherCandidate | undefined {
   const stable = releases.filter(r => !r.draft && !r.prerelease && /^v\d+\.\d+\.\d+$/.test(r.tag_name));
   stable.sort((a, b) => isNewerVersion(a.tag_name, b.tag_name) ? -1 : isNewerVersion(b.tag_name, a.tag_name) ? 1 : 0);
   for (const r of stable) {
     if (!isNewerVersion(r.tag_name, current)) continue;
-    const name = `Xodus-Nexus-${r.tag_name.slice(1)}-x86_64.AppImage`;
+    const name = `Xodus-Nexus-${r.tag_name.slice(1)}-${APPIMAGE_ARCH_SUFFIX[arch]}.AppImage`;
     const image = r.assets?.find(a => a.name === name);
     const checksum = r.assets?.find(a => a.name === `${name}.sha512sum`);
     if (!image || !checksum || !assetUrl(image.browser_download_url, r.tag_name, image.name) ||
@@ -40,7 +41,7 @@ export class LauncherUpdater {
   private controller?: AbortController;
   cancel(): void { this.controller?.abort(); }
   constructor(private version: string, private image: string | undefined, private userData: string,
-    private changed: () => void, private fetcher: typeof fetch = fetch) {
+    private changed: () => void, private fetcher: typeof fetch = fetch, private arch: NexusArch = currentArch()) {
     this.state = { currentVersion: version, checking: false, canInstall: false };
   }
   private async writableImage(): Promise<string> {
@@ -76,7 +77,7 @@ export class LauncherUpdater {
       if (!response.ok) throw new Error(`GitHub update check returned HTTP ${response.status}.`);
       const releases = await response.json() as Release[];
       if (!Array.isArray(releases)) throw new Error('Invalid GitHub release list.');
-      this.candidate = launcherCandidate(releases, this.version);
+      this.candidate = launcherCandidate(releases, this.version, this.arch);
       this.state.latestVersion = this.candidate?.version;
       this.state.releaseUrl = this.candidate?.releaseUrl;
     } catch (error) { this.state.error = (error as Error).message; }
@@ -129,7 +130,7 @@ export class LauncherUpdater {
         await handle.sync();
       } finally { await handle.close(); }
       if (bytes !== candidate.image.size || hash.digest('hex') !== match[1].toLowerCase()) throw new Error('Launcher SHA-512 verification failed. Your current launcher was kept.');
-      if (header.length < 64 || header.subarray(0, 4).toString('hex') !== '7f454c46' || header[4] !== 2 || header[5] !== 1 || header.readUInt16LE(18) !== 62 || header.subarray(8, 11).toString('hex') !== '414902') throw new Error('The update is not an x86_64 AppImage.');
+      if (!isLinuxElf64(header, this.arch) || header.subarray(8, 11).toString('hex') !== '414902') throw new Error(`The update is not a ${APPIMAGE_ARCH_SUFFIX[this.arch]} AppImage.`);
       const now = await fs.stat(target);
       this.controller.signal.throwIfAborted();
       if (now.ino !== before.ino || now.size !== before.size || now.mtimeMs !== before.mtimeMs || await this.writableImage() !== target) throw new Error('The installed launcher changed during download. Retry the update.');

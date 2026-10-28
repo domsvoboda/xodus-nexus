@@ -48,3 +48,49 @@ test('backend candidate requires binaries, source and exact metadata, detects ta
     await assert.rejects(verifyManifest(root), /checksum mismatch/);
   } finally { await fs.rm(root, { recursive: true, force: true }); }
 });
+test('a candidate may carry x86_64 and aarch64 builds, each bound with its own source and metadata', async () => {
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), 'backend-multiarch-test-'));
+  try {
+    for (const arch of ['x86_64', 'aarch64']) {
+      const name = `xodus-nexus-backend-0.2.12-linux-${arch}`;
+      await fs.writeFile(path.join(root, `${name}.tar.xz`), `synthetic backend ${arch}`);
+      await fs.writeFile(path.join(root, `${name}.manifest.json`), `{"arch":"${arch}"}`);
+    }
+    await assert.rejects(writeManifest('backend', root, context), /complete/);
+    await fs.writeFile(path.join(root, 'xodus-nexus-backend-0.2.12-linux-x86_64-source.tar.xz'), 'source x86_64');
+    await assert.rejects(writeManifest('backend', root, context), /complete/);
+    await fs.writeFile(path.join(root, 'xodus-nexus-backend-0.2.12-linux-aarch64-source.tar.xz'), 'source aarch64');
+    const manifest = await writeManifest('backend', root, context);
+    assert.equal(manifest.files.length, 10);
+    assert.equal((await verifyManifest(root, { kind: 'backend' })).files.length, 10);
+    await fs.rm(path.join(root, 'xodus-nexus-backend-0.2.12-linux-aarch64.manifest.json'));
+    await assert.rejects(verifyManifest(root), /Unsafe candidate file|incomplete/);
+  } finally { await fs.rm(root, { recursive: true, force: true }); }
+});
+test('launcher candidates bind every AppImage architecture', async () => {
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), 'launcher-multiarch-test-'));
+  try {
+    await fs.writeFile(path.join(root, 'Xodus-Nexus-0.3.12-x86_64.AppImage'), 'x86_64 image');
+    await fs.writeFile(path.join(root, 'Xodus-Nexus-0.3.12-arm64.AppImage'), 'arm64 image');
+    await writeManifest('launcher', root, context);
+    const manifest = await verifyManifest(root, { kind: 'launcher' });
+    assert.equal(manifest.files.length, 4);
+    assert.ok(manifest.files.some(file => file.name === 'Xodus-Nexus-0.3.12-arm64.AppImage.sha512sum'));
+    await fs.writeFile(path.join(root, 'Xodus-Nexus-0.3.12-arm64.AppImage'), 'tampered');
+    await assert.rejects(verifyManifest(root), /checksum mismatch/);
+  } finally { await fs.rm(root, { recursive: true, force: true }); }
+});
+
+test('a candidate cannot mix component versions or invent an AppImage architecture', async () => {
+  for (const names of [
+    ['Xodus-Nexus-0.4.0-x86_64.AppImage','Xodus-Nexus-0.4.1-arm64.AppImage'],
+    ['Xodus-Nexus-0.4.0-riscv64.AppImage'],
+    ['Xodus-Nexus.AppImage','Xodus-Nexus-0.4.0-arm64.AppImage'],
+  ]) {
+    const root=await fs.mkdtemp(path.join(os.tmpdir(),'candidate-arch-'));
+    try {
+      for(const name of names)await fs.writeFile(path.join(root,name),'synthetic');
+      await assert.rejects(writeManifest('launcher',root,context),/architectures/);
+    } finally {await fs.rm(root,{recursive:true,force:true});}
+  }
+});

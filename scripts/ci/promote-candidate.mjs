@@ -39,17 +39,24 @@ try {
       'scripts/build-shared-runtime.mjs', 'scripts/assemble-shared-runtime.mjs', 'scripts/build-runtime-media.mjs',
       'scripts/runtime-tests', '.github/workflows/runtime.yml']).trim();
     if (changed) throw Error('Runtime build inputs changed after candidate validation');
-    const archive = manifest.files.find(file => /-x86_64\.tar\.xz$/.test(file.name));
-    tag = archive.name.replace(/^xodus-nexus-runtime-/, 'runtime-').replace(/-x86_64\.tar\.xz$/, '');
+    const archive = manifest.files.find(file => /-(?:x86_64|aarch64)\.tar\.xz$/.test(file.name));
+    tag = archive.name.replace(/^xodus-nexus-runtime-/, 'runtime-').replace(/-(?:x86_64|aarch64)\.tar\.xz$/, '');
   } else if (kind === 'backend') {
     const lock = JSON.parse(command('git', ['show', `${run.head_sha}:assets/backend-source.lock.json`]));
-    const file = manifest.files.find(file => file.name.endsWith('.manifest.json'));
-    const metadata = JSON.parse(await fs.readFile(path.join(directory, file.name), 'utf8'));
     const recipeHash = createHash('sha256').update(command('git', ['show', `${run.head_sha}:assets/backend-source.lock.json`])).digest('hex');
-    if (!/^\d+\.\d+\.\d+$/.test(lock.version) || metadata.version !== lock.version || metadata.commit !== lock.commit ||
-        metadata.recipeSha256 !== recipeHash || metadata.compatibility !== lock.compatibility) throw Error('Backend recipe provenance mismatch');
-    const checksumFile = manifest.files.find(file => file.name === metadata.archive?.replace('.tar.xz', '.sha512sum'));
-    if (!checksumFile || (await fs.readFile(path.join(directory, checksumFile.name), 'utf8')).trim() !== `${metadata.archiveSha512}  ${metadata.archive}`) throw Error('Backend archive identity mismatch');
+    const metadataFiles = manifest.files.filter(file => file.name.endsWith('.manifest.json'));
+    if (metadataFiles.length === 0) throw Error('Backend metadata missing');
+    // One candidate may carry x86_64 and aarch64; each archive carries its own provenance.
+    for (const file of metadataFiles) {
+      const metadata = JSON.parse(await fs.readFile(path.join(directory, file.name), 'utf8'));
+      if (!/^\d+\.\d+\.\d+$/.test(lock.version) || metadata.version !== lock.version || metadata.commit !== lock.commit ||
+          metadata.recipeSha256 !== recipeHash || metadata.compatibility !== lock.compatibility ||
+          !['x64', 'arm64'].includes(metadata.arch) || metadata.platform !== 'linux' || metadata.authUi !== 'electron' ||
+          metadata.archive !== `xodus-nexus-backend-${lock.version}-linux-${{x64:'x86_64',arm64:'aarch64'}[metadata.arch]}.tar.xz` ||
+          file.name !== metadata.archive?.replace('.tar.xz', '.manifest.json')) throw Error('Backend recipe provenance mismatch');
+      const checksumFile = manifest.files.find(entry => entry.name === metadata.archive?.replace('.tar.xz', '.sha512sum'));
+      if (!checksumFile || (await fs.readFile(path.join(directory, checksumFile.name), 'utf8')).trim() !== `${metadata.archiveSha512}  ${metadata.archive}`) throw Error('Backend archive identity mismatch');
+    }
     tag = `backend-v${lock.version}`;
   } else {
     const pkg = JSON.parse(command('git', ['show', `${run.head_sha}:package.json`]));

@@ -1,7 +1,7 @@
 import { ui } from './i18n';
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { Check, Eye, LoaderCircle, LockKeyhole, RefreshCw, Trophy, X } from 'lucide-react';
-import type { AppSnapshot, GameAchievement, GameAchievements } from '../shared/types';
+import type { AppSnapshot, GameAchievement, GameAchievements, GameDetailsTarget } from '../shared/types';
 import './achievements.css';
 
 export type AchievementFilter = 'all' | 'unlocked' | 'locked';
@@ -87,15 +87,15 @@ export function AchievementsContent({ title, value, loading, refresh }: { title:
   </section>;
 }
 
-export function Achievements({ gameId, title, data }: { gameId: string; title: string; data: AppSnapshot }) {
+export function Achievements({ gameId, target=gameId, title, data }: { gameId: string; target?:GameDetailsTarget; title: string; data: AppSnapshot }) {
   const [value, setValue] = useState<GameAchievements>(), [loading, setLoading] = useState(true);
   const request = useRef(0);
   const load = useCallback((refresh = false) => {
     const id = ++request.current; setLoading(true);
-    void window.launcher.getGameAchievements(gameId, refresh).then(value => { if (request.current === id) setValue(value); })
+    void window.launcher.getGameAchievements(target, refresh).then(value => { if (request.current === id) setValue(value); })
       .catch(() => { if (request.current === id) setValue({ status: 'error' }); })
       .finally(() => { if (request.current === id) setLoading(false); });
-  }, [gameId, data.auth.username, data.auth.stored, data.auth.running, data.backend.binaryPath, data.backend.capabilities.achievements]);
+  }, [target, data.auth.username, data.auth.stored, data.auth.running, data.backend.binaryPath, data.backend.capabilities.achievements, data.settings.market]);
   useEffect(() => { setValue(undefined); load(); return () => { request.current++; }; }, [load]);
   return <AchievementsContent title={title} value={value} loading={loading} refresh={() => load(true)} />;
 }

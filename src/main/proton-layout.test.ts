@@ -31,5 +31,8 @@ describe('proton layout', () => {
     // An x86_64 runtime on an arm64 host (run under FEX) keeps files/bin.
     await rm(path.join(root, 'files', 'bin-arm64'), { recursive: true });
     expect(await runtimeLoader(root, 'arm64')).toBe(path.join(root, 'files', 'bin', 'wine'));
+    // A newly downloaded ARM archive must not silently activate x86 code.
+    await expect(runtimeLoader(root, 'arm64', false)).rejects.toThrow('no executable native loader');
+    await expect(runtimeLoader(root, 'riscv64')).rejects.toThrow('not built');
   });
 });

@@ -122,6 +122,7 @@ export class RuntimeManager {
   }
 
   private async discoverArtifact(): Promise<ArtifactInfo> {
+    if (this.hostArch !== 'x64') throw new Error('The upstream runtime snapshot supports x86_64 only. Install the native Nexus runtime instead.');
     const remote = await run('git', ['ls-remote', REPOSITORY_URL, `refs/heads/${BRANCH}`], { maxOutput: 30_000 });
     if (remote.code !== 0) throw new Error('Could not resolve the Xodus Proton branch HEAD.');
     const upstreamCommit = remote.output.trim().split(/\s+/)[0];
@@ -247,7 +248,7 @@ export class RuntimeManager {
       let result = await run('tar', ['-xJf', archivePath, '-C', extracted], { onLine: (line) => this.emitLog('runtime', line), maxOutput: 1_000_000 });
       if (result.code !== 0) throw new Error('Runtime extraction failed.');
       const candidateRoot = path.join(extracted, top);
-      const candidateWine = await runtimeLoader(candidateRoot, this.hostArch);
+      const candidateWine = await runtimeLoader(candidateRoot, this.hostArch, false);
       if (!await this.validateWine(candidateWine)) throw new Error('The downloaded Wine failed --version validation.');
       if (this.isOperationActive()) throw new Error('Another operation started during installation; the runtime was not activated.');
 

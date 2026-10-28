@@ -1,4 +1,5 @@
 import type { CatalogProduct, CatalogSearchResult, GameStoreDetails } from '../shared/types.js';
+import {catalogXboxTitleId} from './game-details-target.js';
 
 type Fetcher = typeof fetch;
 
@@ -275,18 +276,29 @@ export function parseCatalogProducts(search: StoreSearchResponse, catalog: Displ
 
 export class CatalogService {
   private readonly gameCache = new Map<string, { until: number; value: GameStoreDetails }>();
+  private readonly gameRequests = new Map<string,Promise<GameStoreDetails|undefined>>();
   private readonly cache = new Map<string, { expires: number; value: CatalogSearchResult }>();
 
   constructor(private readonly fetcher: Fetcher = fetch) {}
 
-  /** Read descriptive data for an installed game, independently of package support. */
+  /** Read descriptive data independently of installation, ownership or package support. */
   async gameDetails(productId: string, rawMarket: string): Promise<GameStoreDetails | undefined> {
     if (!/^[A-Z0-9]{12}$/.test(productId)) throw Error('Invalid Store product ID.');
     const market = normalizeMarket(rawMarket), key = `${market}:${productId}`;
     const cached = this.gameCache.get(key);
     if (cached && cached.until > Date.now()) return structuredClone(cached.value);
-    const catalog = await this.details([productId], market);
-    const product = (Array.isArray(catalog.Products) ? catalog.Products : []).map(object).find(p => p?.ProductId === productId);
+    const pending=this.gameRequests.get(key);
+    if(pending)return structuredClone(await pending);
+    if(this.gameRequests.size>=8)throw Error('Too many game detail requests. Try again.');
+    const job=this.readGameDetails(productId,market,key);
+    this.gameRequests.set(key,job);
+    try{return structuredClone(await job);}finally{this.gameRequests.delete(key);}
+  }
+
+  private async readGameDetails(productId:string,market:string,key:string):Promise<GameStoreDetails|undefined>{
+    // Descriptive metadata belongs to the selected edition, not a guessed bundle child.
+    const products = await this.fetchDetails([productId], market);
+    const product = products.find(p => p.ProductId === productId);
     if (!product || product.ProductType !== 'Game') return;
     const localized = Array.isArray(product.LocalizedProperties) ? object(product.LocalizedProperties[0]) : undefined;
     const title = string(localized?.ProductTitle)?.slice(0, 512);
@@ -299,7 +311,7 @@ export class CatalogService {
     const marketProperties = Array.isArray(product.MarketProperties) ? object(product.MarketProperties[0]) : undefined;
     const value: GameStoreDetails = { productId, title, description: (string(localized?.ProductDescription) ?? '').slice(0, 64_000),
       publisher: string(localized?.PublisherName)?.slice(0, 512), heroUrl: displayImage(images.filter(image => object(image)), HERO_PURPOSES), categories, screenshots,
-      releaseDate: string(marketProperties?.OriginalReleaseDate) };
+      releaseDate: string(marketProperties?.OriginalReleaseDate),xboxTitleId:catalogXboxTitleId(product.AlternateIds) };
     if (this.gameCache.size >= 100) this.gameCache.delete(this.gameCache.keys().next().value!);
     this.gameCache.set(key, { until: Date.now() + CACHE_TTL_MS, value });
     return structuredClone(value);

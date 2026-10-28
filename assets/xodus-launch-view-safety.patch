@@ -1,0 +1,264 @@
+diff --git a/crates/xodus-cli/src/commands/run.rs b/crates/xodus-cli/src/commands/run.rs
+--- a/crates/xodus-cli/src/commands/run.rs
++++ b/crates/xodus-cli/src/commands/run.rs
+@@ -39,9 +39,6 @@
+ const LAUNCH_STUB_SUFFIX: &str = ".xodus-launch.exe";
+ const LAUNCH_VIEW_PREFIXES: [&str; 2] = [".xodus-chain-", ".xodus-offline-"];
+ const LAUNCH_VIEW_LOCK_SUFFIX: &str = ".lock";
+-// Views from builds before the lock file have no way to say they are in use;
+-// only remove those once nothing can plausibly still be running from them.
+-const UNLOCKED_LAUNCH_VIEW_MAX_AGE: std::time::Duration = std::time::Duration::from_secs(24 * 60 * 60);
+ 
+ /// A temporary launch view plus the lock that marks it in use. The lock fd is
+ /// inherited by Wine and the game, so it stays held while any process of the
+@@ -55,9 +52,13 @@
+ 
+ impl LaunchView {
+     fn new(dir: TempDir) -> Self {
+-        // Without a lock the view is only swept once it is old, so a volume
+-        // that cannot take locks still launches.
+-        let lock = LaunchViewLock::acquire(&launch_view_lock_path(dir.path()))
++        Self::with_lock(dir, LaunchViewLock::acquire)
++    }
++
++    fn with_lock(dir: TempDir, acquire: impl FnOnce(&Path) -> std::io::Result<LaunchViewLock>) -> Self {
++        // A volume without working locks still launches. Its lockless views
++        // are never swept: age alone cannot prove that a session has ended.
++        let lock = acquire(&launch_view_lock_path(dir.path()))
+             .inspect_err(|error| eprintln!("could not lock launch view {}: {}", dir.path().display(), error))
+             .ok();
+         Self { dir, _lock: lock }
+@@ -75,13 +76,21 @@
+ 
+ impl LaunchViewLock {
+     fn acquire(path: &Path) -> std::io::Result<Self> {
++        Self::acquire_with(path, |file| {
++            let flags = fcntl_getfd(file)?;
++            fcntl_setfd(file, flags - FdFlags::CLOEXEC)?;
++            Ok(())
++        })
++    }
++
++    fn acquire_with(path: &Path, prepare: impl FnOnce(&std::fs::File) -> std::io::Result<()>) -> std::io::Result<Self> {
+         // Lock under a private name, then rename into place, so a sweep never
+-        // finds the final lock file unlocked while its view is live.
++        // finds the final lock file unlocked while its view is live. Finish
++        // all fallible preparation before publishing that file.
+         let staging = tempfile::NamedTempFile::new_in(path.parent().unwrap_or(Path::new(".")))?;
+         fs2::FileExt::try_lock_exclusive(staging.as_file())?;
+-        let file = staging.persist(path).map_err(|error| error.error)?;
+-        let flags = fcntl_getfd(&file)?;
+-        fcntl_setfd(&file, flags - FdFlags::CLOEXEC)?;
++        prepare(staging.as_file())?;
++        let file = staging.persist_noclobber(path).map_err(|error| error.error)?;
+         Ok(Self { path: path.to_path_buf(), _file: file })
+     }
+ }
+@@ -100,11 +109,17 @@
+     if !std::fs::symlink_metadata(path)?.is_file() {
+         return Err(std::io::Error::new(std::io::ErrorKind::InvalidInput, "launch view lock is not a file"));
+     }
+-    std::fs::OpenOptions::new()
++    let file = std::fs::OpenOptions::new()
+         .read(true)
+         .write(true)
+         .custom_flags((rustix::fs::OFlags::NOFOLLOW | rustix::fs::OFlags::NONBLOCK).bits() as i32)
+-        .open(path)
++        .open(path)?;
++    // Recheck the opened descriptor too, in case the entry changed after the
++    // initial metadata lookup. A non-regular file is never a session lock.
++    if !file.metadata()?.is_file() {
++        return Err(std::io::Error::new(std::io::ErrorKind::InvalidInput, "launch view lock is not a file"));
++    }
++    Ok(file)
+ }
+ 
+ fn launch_view_lock_path(view: &Path) -> PathBuf {
+@@ -150,17 +165,13 @@
+                     continue;
+                 }
+                 let stale = std::fs::remove_dir_all(&path).is_ok();
+-                let _ = std::fs::remove_file(&lock_path);
++                if stale {
++                    let _ = std::fs::remove_file(&lock_path);
++                }
+                 stale
+             }
+-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+-                let old = metadata
+-                    .modified()
+-                    .ok()
+-                    .and_then(|modified| modified.elapsed().ok())
+-                    .is_some_and(|age| age > UNLOCKED_LAUNCH_VIEW_MAX_AGE);
+-                old && std::fs::remove_dir_all(&path).is_ok()
+-            }
++            // Missing, unsupported or unreadable locks give no reliable proof
++            // of inactivity. Preserve these views, including older builds.
+             Err(_) => false,
+         };
+         if stale {
+@@ -1161,7 +1172,7 @@
+     }
+ 
+     #[test]
+-    fn launch_view_sweep_removes_unlocked_views_only_once_old() {
++    fn launch_view_sweep_preserves_lockless_views_regardless_of_age() {
+         let root = tempfile::tempdir().unwrap();
+         let fresh = root.path().join(".xodus-chain-fresh");
+         let old = root.path().join(".xodus-chain-old");
+@@ -1178,13 +1189,153 @@
+         std::fs::write(target.join("keep"), b"x").unwrap();
+         symlink(&target, root.path().join(".xodus-chain-link")).unwrap();
+         std::fs::write(root.path().join(".xodus-chain-gone.lock"), b"").unwrap();
+-        assert_eq!(sweep_stale_launch_views(root.path()), 2);
+-        assert!(fresh.exists() && !old.exists() && !old_fallback.exists() && unrelated.exists());
++        assert_eq!(sweep_stale_launch_views(root.path()), 0);
++        assert!(fresh.exists() && old.exists() && old_fallback.exists() && unrelated.exists());
+         assert!(target.join("keep").exists());
+         assert!(!root.path().join(".xodus-chain-gone.lock").exists());
+     }
+ 
+     #[test]
++    fn launch_view_lock_failure_keeps_launching_and_never_sweeps_the_live_view() {
++        for kind in [std::io::ErrorKind::Unsupported, std::io::ErrorKind::PermissionDenied] {
++            let root = tempfile::tempdir().unwrap();
++            let dir = Builder::new().prefix(".xodus-chain-").tempdir_in(root.path()).unwrap();
++            let live = LaunchView::with_lock(dir, |_| Err(std::io::Error::from(kind)));
++            assert!(live._lock.is_none());
++            std::fs::write(live.path().join("game.exe"), b"keep").unwrap();
++            age(live.path(), 7 * 24 * 60 * 60);
++            let next = launch_view_directory(&root.path().join("game"), ".xodus-chain-").unwrap();
++            assert_eq!(sweep_stale_launch_views(root.path()), 0);
++            assert_eq!(std::fs::read(live.path().join("game.exe")).unwrap(), b"keep");
++            assert!(next.path().exists());
++            let path = live.path().to_path_buf();
++            drop(live);
++            assert!(!path.exists(), "ordinary session cleanup must still work without flock");
++        }
++    }
++
++    #[test]
++    fn launch_view_failed_lock_preparation_never_publishes_an_unheld_lock() {
++        let root = tempfile::tempdir().unwrap();
++        let path = root.path().join(".xodus-chain-preparation");
++        std::fs::create_dir(&path).unwrap();
++        let lock_path = launch_view_lock_path(&path);
++        let result = LaunchViewLock::acquire_with(&lock_path, |_| Err(std::io::Error::other("synthetic fd failure")));
++        assert!(result.is_err());
++        assert!(!lock_path.exists());
++        assert_eq!(std::fs::read_dir(root.path()).unwrap().count(), 1, "staging file must be cleaned too");
++        age(&path, 7 * 24 * 60 * 60);
++        assert_eq!(sweep_stale_launch_views(root.path()), 0);
++        assert!(path.exists());
++    }
++
++    #[test]
++    fn launch_view_lock_publication_never_replaces_an_existing_lock() {
++        let root = tempfile::tempdir().unwrap();
++        let path = root.path().join(".xodus-chain-existing.lock");
++        let held = LaunchViewLock::acquire(&path).unwrap();
++        let result = LaunchViewLock::acquire(&path);
++        assert!(matches!(result, Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists));
++        let reader = open_launch_view_lock(&path).unwrap();
++        assert!(fs2::FileExt::try_lock_exclusive(&reader).is_err(), "original held inode must survive publication failure");
++        assert_eq!(std::fs::read_dir(root.path()).unwrap().count(), 1);
++        drop(held);
++        assert!(!path.exists());
++    }
++
++    #[test]
++    fn launch_view_sweep_keeps_old_views_with_invalid_locks() {
++        let root = tempfile::tempdir().unwrap();
++        let target = root.path().join("unrelated");
++        std::fs::write(&target, b"keep").unwrap();
++        for (suffix, directory) in [("directory", true), ("symlink", false)] {
++            let view = root.path().join(format!(".xodus-chain-{suffix}"));
++            std::fs::create_dir(&view).unwrap();
++            age(&view, 7 * 24 * 60 * 60);
++            let lock = launch_view_lock_path(&view);
++            if directory { std::fs::create_dir(&lock).unwrap(); } else { symlink(&target, &lock).unwrap(); }
++            assert_eq!(sweep_stale_launch_views(root.path()), 0);
++            assert!(view.exists());
++        }
++        assert_eq!(std::fs::read(&target).unwrap(), b"keep");
++    }
++
++    #[test]
++    fn launch_view_sweep_keeps_concurrent_live_sessions() {
++        let root = tempfile::tempdir().unwrap();
++        let start = std::sync::Barrier::new(6);
++        std::thread::scope(|scope| {
++            for _ in 0..6 {
++                scope.spawn(|| {
++                    start.wait();
++                    for _ in 0..25 {
++                        let live = launch_view_directory(&root.path().join("game"), ".xodus-chain-").unwrap();
++                        std::fs::write(live.path().join("keep"), b"live").unwrap();
++                        age(live.path(), 7 * 24 * 60 * 60);
++                        sweep_stale_launch_views(root.path());
++                        assert_eq!(std::fs::read(live.path().join("keep")).unwrap(), b"live");
++                    }
++                });
++            }
++        });
++        assert_eq!(std::fs::read_dir(root.path()).unwrap().count(), 0);
++    }
++
++    // Spawned only by the process-lifetime regression below. No account, game,
++    // prefix or system configuration is used, just a disposable directory.
++    #[test]
++    #[ignore = "subprocess fixture for launch-view lock inheritance"]
++    fn launch_view_process_fixture() {
++        let root = PathBuf::from(std::env::var_os("NEXUS_LAUNCH_VIEW_TEST_ROOT").unwrap());
++        let _view = launch_view_directory(&root.join("game"), ".xodus-chain-").unwrap();
++        let status = std::process::Command::new("sh")
++            .args(["-c", "printf 'VIEW_CHILD_READY\\n'; read -r release"])
++            .status().unwrap();
++        assert!(status.success());
++    }
++
++    #[test]
++    fn launch_view_child_holds_lock_after_owner_is_killed() {
++        use std::io::{BufRead, Write};
++        use std::process::Stdio;
++        struct Fixture(std::process::Child);
++        impl Drop for Fixture {
++            fn drop(&mut self) { let _ = self.0.kill(); let _ = self.0.wait(); }
++        }
++        let root = tempfile::tempdir().unwrap();
++        let mut fixture = Fixture(std::process::Command::new(std::env::current_exe().unwrap())
++            .args(["--ignored", "--exact", "commands::run::tests::launch_view_process_fixture", "--nocapture"])
++            .env("NEXUS_LAUNCH_VIEW_TEST_ROOT", root.path())
++            .stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::null())
++            .spawn().unwrap());
++        let stdout = fixture.0.stdout.take().unwrap();
++        let (sender, receiver) = std::sync::mpsc::channel();
++        let reader = std::thread::spawn(move || {
++            for line in std::io::BufReader::new(stdout).lines() {
++                if line.unwrap() == "VIEW_CHILD_READY" { sender.send("ready").unwrap(); }
++            }
++            let _ = sender.send("closed");
++        });
++        let limit = std::time::Duration::from_secs(10);
++        assert_eq!(receiver.recv_timeout(limit).unwrap(), "ready");
++        // Child::wait closes its stdin handle. Keep the pipe ourselves so the
++        // surviving shell does not receive EOF when its owner is reaped.
++        let mut release = fixture.0.stdin.take().unwrap();
++        fixture.0.kill().unwrap();
++        fixture.0.wait().unwrap();
++        let paths: Vec<_> = std::fs::read_dir(root.path()).unwrap().map(|e| e.unwrap().path())
++            .filter(|p| p.is_dir()).collect();
++        assert_eq!(paths.len(), 1);
++        assert_eq!(sweep_stale_launch_views(root.path()), 0);
++        assert!(paths[0].exists(), "the child still uses this view after its owner dies");
++        release.write_all(b"release\n").unwrap();
++        assert_eq!(receiver.recv_timeout(limit).unwrap(), "closed");
++        reader.join().unwrap();
++        assert_eq!(sweep_stale_launch_views(root.path()), 1);
++        assert!(!paths[0].exists() && !launch_view_lock_path(&paths[0]).exists());
++    }
++
++    #[test]
+     fn launch_chain_materializes_nested_executables_without_changing_source() {
+         let root = tempfile::tempdir().unwrap();
+         let source = root.path().join("game");

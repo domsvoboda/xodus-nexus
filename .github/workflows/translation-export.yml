@@ -1,0 +1,37 @@
+name: Export reviewed UI translations
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: tolgee-english
+  cancel-in-progress: false
+
+jobs:
+  export:
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: main
+          persist-credentials: false
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+      - run: npm ci --ignore-scripts
+      - name: Export and validate reviewed catalogues without changing Git
+        env:
+          TOLGEE_API_KEY: ${{ secrets.TOLGEE_REVIEW_API_KEY }}
+        run: npm run i18n:pull
+      - uses: actions/upload-artifact@v4
+        with:
+          name: reviewed-ui-translations
+          path: /tmp/nexus-tolgee-reviewed-*/*.json
+          if-no-files-found: error
+          retention-days: 7

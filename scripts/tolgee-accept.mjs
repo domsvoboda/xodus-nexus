@@ -175,7 +175,21 @@ export async function acceptSuggestions({ api, english, apply = false, reviewed 
     source: english[row.keyName], translation: decision.translated }))
     .sort((a, b) => JSON.stringify(a) < JSON.stringify(b) ? -1 : JSON.stringify(a) > JSON.stringify(b) ? 1 : 0);
   report.reviewDigest = createHash('sha256').update(JSON.stringify(snapshot)).digest('hex');
-  if (texts) report.reviewSnapshot = snapshot;
+  if (texts) {
+    report.reviewSnapshot = snapshot;
+    // Public UI text only, never suggestion/contributor/account identifiers.
+    // Include blocked candidates so a maintainer can review conflicts and typos
+    // without weakening the automatic acceptance policy.
+    report.suggestionSnapshot = rows.flatMap(row => targets.flatMap(language => {
+      const cell = row.translations?.[language.tag];
+      if (!cell?.activeSuggestionCount) return [];
+      return [{ language: language.tag, key: row.keyName,
+        source: row.translations.en?.text, current: cell.text, state: cell.state,
+        reason: assess(row, language, english).reason,
+        suggestions: (cell.suggestions ?? []).filter(value => value.state === 'ACTIVE')
+          .map(value => ({ text: value.translation, plural: value.isPlural })) }];
+    }));
+  }
   if (reviewDigest !== undefined && report.reviewDigest !== reviewDigest) throw Error('Suggestions changed since the language review. No writes performed.');
   const excluded = new Set(exclude);
   for (const { language, row, entry } of pending) if (excluded.has(`${language.tag}:${row.keyName}`)) entry.status = 'excluded-by-language-review';

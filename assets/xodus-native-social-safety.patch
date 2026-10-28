@@ -1,0 +1,233 @@
+diff --git a/crates/xodus-cli/src/commands/native_social.rs b/crates/xodus-cli/src/commands/native_social.rs
+index fc05083..8dc302a 100644
+--- a/crates/xodus-cli/src/commands/native_social.rs
++++ b/crates/xodus-cli/src/commands/native_social.rs
+@@ -1,7 +1,6 @@
+ //! Nexus social services. Only chat-auth passes a short-lived socket key to the private main-process transport.
+ use std::{collections::HashSet, io::{self, Read, BufRead, Write}, process::ExitCode, time::Duration};
+ use serde_json::{Value, json};
+-use futures_util::{stream,StreamExt};
+ use base64::{Engine,prelude::BASE64_STANDARD_NO_PAD};
+ use xodus::tokens::TokenManager;
+ use super::profile::{bounded, xbox_session_identity};
+@@ -28,7 +27,7 @@ pub enum Action {
+ }
+ 
+ pub(super) fn xuid(value: &str) -> bool {
+-    !value.is_empty() && value.len() <= 20 && value.bytes().all(|b| b.is_ascii_digit())
++    !value.is_empty() && !value.starts_with('0') && value.len() <= 20 && value.bytes().all(|b| b.is_ascii_digit())
+         && value.parse::<u64>().is_ok_and(|n| n > 0)
+ }
+ fn text(value: &Value, limit: usize) -> Option<String> {
+@@ -37,28 +36,43 @@ fn text(value: &Value, limit: usize) -> Option<String> {
+     Some(s.chars().take(limit).collect())
+ }
+ fn identifier(value: &Value) -> Result<String, &'static str> {
+-    text(value, 256).filter(|s| !s.is_empty() && !s.chars().any(char::is_control)).ok_or("social-id")
++    value.as_str().filter(|s| !s.trim().is_empty() && s.len() <= 256 && !s.chars().any(char::is_control))
++        .map(str::to_owned).ok_or("social-id")
+ }
+ fn message(value: &Value, self_xuid: &str) -> Result<Value, &'static str> {
++    if !value["networkId"].is_null() && value["networkId"] != "Xbox" { return Err("message-network"); }
++    let sender = value["sender"].as_str().filter(|s| *s == "0" || xuid(s)).ok_or("message-sender")?;
++    let timestamp = if value["timestamp"].is_null() { None } else {
++        Some(value["timestamp"].as_str().filter(|s| s.len() <= 64 && chrono::DateTime::parse_from_rfc3339(s).is_ok()).ok_or("message-date")?)
++    };
++    let deleted = value["isDeleted"].as_bool().ok_or("message-flags")?;
+     let parts = value["contentPayload"]["content"]["parts"].as_array();
+-    let mut lines = Vec::new();
+-    let mut hidden = false;
+-    if value["isDeleted"] == true { lines.push("Message deleted".to_owned()); }
+-    else if let Some(parts) = parts {
+-        if parts.len() > 32 { return Err("message-parts"); }
+-        for part in parts {
+-            if part["unsuitableFor"].as_array().is_some_and(|a| !a.is_empty()) {
+-                hidden = true; continue;
+-            }
+-            match part["contentType"].as_str() {
+-                Some("text") => if let Some(t) = text(&part["text"], 4096) { lines.push(t); },
+-                _ => lines.push("Attachment".to_owned()),
+-            }
+-        }
++    let hidden = deleted || parts.is_none_or(|parts| parts.is_empty() || parts.len() > 16 || parts.iter().any(|part|
++        part["contentType"] != "text" || (!part["unsuitableFor"].is_null() && part["unsuitableFor"].as_array().is_none_or(|v| !v.is_empty()))
++        || part["text"].as_str().is_none_or(|s| s.chars().count() > 16384 || s.chars().any(|c| c.is_control() && c != '\n' && c != '\t'))));
++    let content = if hidden { String::new() } else { parts.unwrap().iter().filter_map(|part| part["text"].as_str()).collect::<Vec<_>>().join("\n") };
++    Ok(json!({"id":identifier(&value["messageId"] )?, "sender":sender,
++        "timestamp":timestamp, "text":content, "hidden":hidden,"mine":sender==self_xuid}))
++}
++fn conversation(value: &Value, me: &str, peer: &str) -> Result<Vec<Value>, &'static str> {
++    if me == peer || value["networkId"] != "Xbox" || value["type"] != "OneToOne" { return Err("conversation-identity"); }
++    let empty = Vec::new();
++    let rows = if value["messages"].is_null() { &empty } else { value["messages"].as_array().ok_or("messages-shape")? };
++    if rows.len() > 100 { return Err("messages-count"); }
++    if !rows.is_empty() || !value["participants"].is_null() {
++        let members = value["participants"].as_array().filter(|v| v.len() == 2).ok_or("conversation-identity")?;
++        if !members.iter().any(|v| v == me) || !members.iter().any(|v| v == peer) { return Err("conversation-identity"); }
+     }
+-    if hidden { lines.push("Message hidden by Xbox safety settings".to_owned()); }
+-    Ok(json!({"id":identifier(&value["messageId"] )?, "sender":identifier(&value["sender"] )?,
+-        "timestamp":text(&value["timestamp"],64), "text":lines.join("\n"), "hidden":hidden,"mine":value["sender"]==self_xuid}))
++    let mut seen = HashSet::new();
++    let mut result = Vec::new();
++    for row in rows {
++        let msg = message(row, me)?;
++        if !seen.insert(msg["id"].as_str().unwrap().to_owned()) || (msg["sender"] != me && msg["sender"] != peer)
++            || msg["timestamp"].is_null() { return Err("conversation-identity"); }
++        result.push(msg);
++    }
++    result.sort_by_key(|v| chrono::DateTime::parse_from_rfc3339(v["timestamp"].as_str().unwrap()).unwrap());
++    Ok(result)
+ }
+ fn friends(value: &Value) -> Result<Vec<Value>, &'static str> {
+     let rows = value["people"].as_array().ok_or("friends-shape")?;
+@@ -82,15 +96,26 @@ fn friends(value: &Value) -> Result<Vec<Value>, &'static str> {
+ fn inbox(value: &Value, self_xuid: &str) -> Result<Vec<Value>, &'static str> {
+     let rows = value["primary"]["conversations"].as_array().ok_or("inbox-shape")?;
+     if rows.len() > 100 { return Err("inbox-count"); }
++    let mut ids = HashSet::new();
+     rows.iter().map(|row| {
++        if !row["networkId"].is_null() && row["networkId"] != "Xbox" { return Err("conversation-identity"); }
++        let conversation_id = identifier(&row["conversationId"])?;
++        if !ids.insert(conversation_id.clone()) { return Err("conversation-identity"); }
+         let people = row["participants"].as_array().ok_or("conversation-participants")?;
+-        if people.len() > 100 { return Err("conversation-participants"); }
++        if people.len() < 2 || people.len() > 100 || !people.iter().any(|v| v == self_xuid)
++            || people.iter().any(|v| v.as_str().is_none_or(|s| s != "0" && !xuid(s))) { return Err("conversation-participants"); }
++        let members:HashSet<_> = people.iter().filter_map(Value::as_str).collect();
++        if members.len() != people.len() || (row["type"] == "OneToOne" && people.len() != 2) { return Err("conversation-participants"); }
+         let system=people.iter().any(|v| v=="0");
+         let participants: Result<Vec<_>,_> = people.iter().filter(|v| *v != self_xuid && *v != "0")
+             .map(|v| v.as_str().filter(|s| xuid(s)).map(str::to_owned).ok_or("conversation-xuid")).collect();
+-        Ok(json!({"id":identifier(&row["conversationId"] )?,"type":if system{Some("System".into())}else{text(&row["type"],32)},
+-            "participants":participants?,"gamertag":if system{"Xbox"}else{"Xbox player"},"unread":row["isRead"] == false,
+-            "lastMessage":if row["lastMessage"].is_null(){Value::Null}else{message(&row["lastMessage"],self_xuid)?}}))
++        let last = if row["lastMessage"].is_null() { Value::Null } else {
++            let msg = message(&row["lastMessage"], self_xuid)?;
++            if !members.contains(msg["sender"].as_str().unwrap()) { return Err("conversation-participants"); } msg
++        };
++        Ok(json!({"id":conversation_id,"type":if system{Some("System".into())}else{text(&row["type"],32)},
++            "participants":participants?,"gamertag":if system{"Xbox"}else{"Xbox player"},"unread":!row["isRead"].as_bool().ok_or("conversation-read-state")?,
++            "lastMessage":last}))
+     }).collect()
+ }
+ fn invites(value:&Value)->Result<Vec<Value>,&'static str>{
+@@ -394,7 +419,7 @@ async fn request(tokens: &TokenManager, mut action: Action, input:Option<&str>)
+         Action::Invites => ("invites",client.get(format!("https://notificationinbox.xboxlive.com/users/{self_xuid}/inbox?subscriptionCategory=Microsoft.Xbox.Multiplayer&maxItems=100"))
+             .header("x-xbl-contract-version","1")),
+         Action::Conversation { xuid:id } => ("conversation",client.get(format!("https://xblmessaging.xboxlive.com/network/Xbox/users/me/conversations/users/xuid({id})?maxItems=100")).header("x-xbl-contract-version","1")),
+-        Action::Profile{xuid:id}=>("profile",client.get(format!("https://profile.xboxlive.com/users/xuid({id})/profile/settings?settings=Gamertag,Gamerscore,PublicGamerpic")).header("x-xbl-contract-version","2")),
++        Action::Profile{xuid:id}=>("profile",client.get(format!("https://profile.xboxlive.com/users/xuid({id})/profile/settings?settings=Gamertag,Gamerscore,PublicGamerpic")).header("x-xbl-contract-version","2").timeout(Duration::from_secs(4))),
+         Action::SendMessage => unreachable!(),
+         Action::ChatAuth => unreachable!(),
+         Action::Party | Action::People | Action::Listen => unreachable!(),
+@@ -410,43 +435,18 @@ async fn request(tokens: &TokenManager, mut action: Action, input:Option<&str>)
+     let bytes=bounded(response,4*1024*1024).await?;
+     let value:Value=serde_json::from_slice(&bytes).map_err(|_| "social-json")?;
+     if tokens.get_user().map_err(|_| "account-changed")?.username != account {return Err("account-changed");}
+-    let mut items=match action {
++    let items=match action {
+         Action::Friends => friends(&value)?,
+         Action::Inbox => inbox(&value,&self_xuid)?,
+         Action::Invites => invites(&value)?,
+-        Action::Conversation { .. } => {
+-            let rows=value["messages"].as_array().ok_or("messages-shape")?;
+-            if rows.len()>100{return Err("messages-count");} rows.iter().map(|v| message(v,&self_xuid)).collect::<Result<Vec<_>,_>>()?
+-        },
++        Action::Conversation { xuid:ref peer } => conversation(&value,&self_xuid,peer)?,
+         Action::Profile{xuid:id}=>vec![player_profile(&value,&id)?],
+         Action::SendMessage => unreachable!(),
+         Action::ChatAuth => unreachable!(),
+         Action::Party | Action::People | Action::Listen => unreachable!(),
+     };
+-    if kind=="inbox" {
+-        let ids:Vec<_>=items.iter().filter(|row|row["type"]=="OneToOne").filter_map(|row|row["participants"].as_array())
+-            .flatten().filter_map(Value::as_str).map(str::to_owned).collect::<HashSet<_>>().into_iter().collect();
+-        if !ids.is_empty() {
+-            let profiles:Vec<_>=stream::iter(ids).map(|id|{
+-                let request=client.get(format!("https://profile.xboxlive.com/users/xuid({id})/profile/settings?settings=Gamertag,PublicGamerpic"))
+-                    .header("Authorization",&authorization).header("x-xbl-contract-version","2").timeout(Duration::from_secs(4));
+-                async move {
+-                    let response=request.send().await.ok()?;
+-                    let bytes=bounded(response,128*1024).await.ok()?;
+-                    let value:Value=serde_json::from_slice(&bytes).ok()?;
+-                    let users=value["profileUsers"].as_array()?;
+-                    let profile=users.iter().find(|p|p["id"]==id)?;
+-                    let settings=profile["settings"].as_array()?;
+-                    let name=text(&settings.iter().find(|s|s["id"]=="Gamertag")?["value"],128)?;
+-                    let picture=settings.iter().find(|s|s["id"]=="PublicGamerpic").and_then(|s|s["value"].as_str()).and_then(super::profile::picture_url).map(|u|u.to_string());
+-                    Some((id,name,picture))
+-                }
+-            }).buffer_unordered(4).collect().await;
+-            for row in &mut items {
+-                if let Some((_,name,picture))=profiles.iter().flatten().find(|(id,_,_)|row["participants"][0]==*id) {row["gamertag"]=json!(name);row["avatarUrl"]=json!(picture);}
+-            }
+-        }
+-    }
++    // Return inbox immediately. Optional names and pictures are resolved lazily
++    // by the UI; never block this shared transport on up to 100 profile reads.
+     if tokens.get_user().map_err(|_| "account-changed")?.username != account {return Err("account-changed");}
+     let mut result=json!({"schema":1,"account":account,"kind":kind,"items":items});
+     if kind=="invites" {result["recipient"]=json!(self_xuid);}
+@@ -499,6 +499,41 @@ pub async fn run(tokens: &TokenManager, action: Action) -> ExitCode {
+ }
+ 
+ #[cfg(test)] mod tests {
++    fn safe_message(id:&str,sender:&str)->Value { json!({"messageId":id,"sender":sender,"isDeleted":false,
++        "timestamp":"2026-10-28T12:00:00Z","contentPayload":{"content":{"parts":[{"contentType":"text","text":"Synthetic"}]}}}) }
++    #[test] fn native_conversation_binds_both_users_network_and_unique_ordered_messages() {
++        let value=json!({"networkId":"Xbox","type":"OneToOne","participants":["1","2"],"messages":[safe_message("a","2")]});
++        assert_eq!(conversation(&value,"1","2").unwrap().len(),1);
++        for (field,changed) in [("networkId",json!("other")),("type",json!("Group")),("participants",json!(["2","3"])),
++            ("participants",json!(["1","1"])),("messages",json!([safe_message("a","3")])),
++            ("messages",json!([safe_message("a","2"),safe_message("a","2")]))] {
++            let mut invalid=value.clone();invalid[field]=changed;assert!(conversation(&invalid,"1","2").is_err());
++        }
++        assert!(conversation(&json!({"networkId":"Xbox","type":"OneToOne","messages":[]}),"1","2").unwrap().is_empty());
++        let mut early=safe_message("early","1");early["timestamp"]=json!("2026-10-27T12:00:00Z");
++        let mut reordered=value.clone();reordered["messages"]=json!([safe_message("late","2"),early]);
++        assert_eq!(conversation(&reordered,"1","2").unwrap()[0]["id"],"early");
++    }
++    #[test] fn native_message_filtering_fails_closed_and_does_not_truncate_identifiers() {
++        for flag in [json!(["child"]),json!("invalid"),json!({"bad":true})] {
++            let mut row=safe_message("a","2");row["contentPayload"]["content"]["parts"][0]["unsuitableFor"]=flag;
++            let value=message(&row,"1").unwrap();assert_eq!(value["text"],"");assert_eq!(value["hidden"],true);
++        }
++        let mut deleted=safe_message("a","2");deleted["isDeleted"]=json!(true);assert_eq!(message(&deleted,"1").unwrap()["text"],"");
++        for (field,value) in [("messageId",json!("x".repeat(257))),("sender",json!("01")),("sender",json!("18446744073709551616")),
++            ("timestamp",json!("not a date")),("isDeleted",Value::Null),("networkId",json!("other"))] {
++            let mut row=safe_message("a","2");row[field]=value;assert!(message(&row,"1").is_err());
++        }
++    }
++    #[test] fn native_inbox_keeps_explicit_unread_state_and_rejects_cross_account_or_duplicate_rows() {
++        let row=json!({"conversationId":"a","type":"OneToOne","participants":["1","2"],"isRead":false,"lastMessage":safe_message("m","2")});
++        assert_eq!(inbox(&json!({"primary":{"conversations":[row.clone()]}}),"1").unwrap()[0]["unread"],true);
++        for (field,value) in [("participants",json!(["2","3"])),("participants",json!(["1","1"])),("isRead",Value::Null),
++            ("lastMessage",safe_message("a","3")),("networkId",json!("other"))] {
++            let mut invalid=row.clone();invalid[field]=value;assert!(inbox(&json!({"primary":{"conversations":[invalid]}}),"1").is_err());
++        }
++        assert!(inbox(&json!({"primary":{"conversations":[row.clone(),row]}}),"1").is_err());
++    }
+     fn people_fixture()->Value{json!({"xuid":"2","gamertag":"Player","modernGamertag":"Player","uniqueModernGamertag":"Player#1234","gamerScore":"1250",
+         "isFriend":true,"isFavorite":true,"isFollowedByCaller":true,"isFollowingCaller":false,"isFriendRequestReceived":false,"isFriendRequestSent":false,
+         "detail":{"blocked":false,"bio":"Public biography","location":"Canada","tenure":"14","friendCount":12,"followingCount":23,"followerCount":34},
+@@ -634,7 +669,7 @@ pub async fn run(tokens: &TokenManager, action: Action) -> ExitCode {
+         }
+     }
+     #[test] fn never_discloses_filtered_content_or_unused_profile_fields() {
+-        let msg=message(&json!({"messageId":"id","sender":"1","timestamp":"now","contentPayload":{"content":{"parts":[
++        let msg=message(&json!({"messageId":"id","sender":"1","isDeleted":false,"timestamp":"2026-10-28T00:00:00Z","contentPayload":{"content":{"parts":[
+             {"contentType":"text","text":"private filtered","unsuitableFor":["child"]}]}}}),"2").unwrap();
+         assert_eq!(msg["hidden"],true);assert!(!msg.to_string().contains("private filtered"));
+         let result=friends(&json!({"people":[{"xuid":"1","gamertag":"Player","realName":"Private Name","presenceState":"Online","presenceText":"Playing"}]})).unwrap();
+@@ -647,8 +682,8 @@ pub async fn run(tokens: &TokenManager, action: Action) -> ExitCode {
+     }
+     #[test] fn inbox_removes_self_and_recognizes_system_sender_zero() {
+         let rows=inbox(&json!({"primary":{"conversations":[
+-            {"conversationId":"a","type":"OneToOne","participants":["1","2"]},
+-            {"conversationId":"b","type":"OneToOne","participants":["0","1"]}]}}),"1").unwrap();
++            {"conversationId":"a","type":"OneToOne","participants":["1","2"],"isRead":false},
++            {"conversationId":"b","type":"OneToOne","participants":["0","1"],"isRead":true}]}}),"1").unwrap();
+         assert_eq!(rows[0]["participants"],json!(["2"]));assert_eq!(rows[1]["type"],"System");assert_eq!(rows[1]["gamertag"],"Xbox");
+     }
+ }

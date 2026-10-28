@@ -1,0 +1,194 @@
+
+.xbox-social.xbox-guide { --social-app:#1a1b1e;--social-surface:#24262a;--social-button:#484e58;--social-hover:#515863;--social-muted:rgba(255,255,255,.651);--social-divider:rgba(255,255,255,.122);position:relative;isolation:isolate;display:flex;flex-direction:column;width:440px;max-width:100%;height:min(840px,calc(100vh - 72px));min-height:520px;margin:0 auto;background:var(--social-app);color:#fff;font:400 14px/20px system-ui,sans-serif;overflow:hidden; }
+.xbox-social.xbox-guide.social-overlay { height:100vh;min-height:0;width:100%;margin:0; }
+.xbox-guide * { box-sizing:border-box; }
+.xbox-guide button,.xbox-guide input,.xbox-guide textarea,.xbox-guide select { font:inherit;color:inherit; }
+.xbox-guide button { cursor:pointer;box-shadow:none; }
+.xbox-guide button:disabled { opacity:.45;cursor:default; }
+.xbox-guide button:focus-visible,.xbox-guide input:focus-visible,.xbox-guide textarea:focus-visible,.xbox-guide select:focus-visible { outline:3px solid #fff;outline-offset:3px; }
+.xbox-guide button svg { width:20px;height:20px;flex-shrink:0; }
+.social-sr-only { position:absolute;width:1px;height:1px;padding:0;margin:-1px;overflow:hidden;clip:rect(0,0,0,0);white-space:nowrap;border:0; }
+.social-guide-chrome { position:relative;z-index:2;display:flex;align-items:center;gap:8px;height:64px;min-height:64px;padding:16px; }
+.social-chrome-spacer { flex:1; }
+.xbox-guide .social-circle-button { display:grid;place-items:center;width:32px;height:32px;min-width:32px;padding:7px;border:0;border-radius:50%;background:transparent; }
+.xbox-guide .social-close { background:var(--social-button); }
+.xbox-guide .social-circle-button:hover { background:var(--social-hover); }
+.xbox-guide .social-circle-button svg { width:18px;height:18px; }
+.xbox-guide .social-back { margin-left:0; }
+.social-tabs { display:flex;justify-content:center;gap:16px;flex-shrink:0;height:66px;padding-top:6px; }
+.xbox-guide .social-tabs button { position:relative;display:grid;place-items:center;width:60px;height:60px;padding:18px;border:0;border-radius:4px 4px 0 0;background:transparent; }
+.xbox-guide .social-tabs button:hover { background:var(--social-button); }
+.xbox-guide .social-tabs button[aria-selected=true] { background:transparent; }
+.xbox-guide .social-tabs button[aria-selected=true]:hover { background:var(--social-button); }
+.social-tabs button[aria-selected=true]::after { content:'';position:absolute;bottom:0;left:0;right:0;height:4px;background:#00cc6a;border-radius:4px; }
+.social-tabs .social-gamerpic { width:24px;height:24px;font-size:12px;box-shadow:none; }
+.social-tabs button[aria-selected=false] .social-gamerpic { opacity:.65; }
+.social-tabs button:hover .social-gamerpic,.social-tabs button:focus .social-gamerpic { opacity:1; }
+.social-guide-content { display:flex;flex:1;flex-direction:column;min-height:0;overflow-y:auto;overflow-x:hidden;background:var(--social-surface);scrollbar-width:thin;scrollbar-color:rgba(255,255,255,.349) transparent; }
+.social-guide-content::-webkit-scrollbar { width:8px; }
+.social-guide-content::-webkit-scrollbar-thumb { border-radius:4px;background:rgba(255,255,255,.349); }
+.social-people-pane,.social-chats-pane { padding:16px 24px 24px; }
+.xbox-guide h2 { margin:0;font:400 20px/24px system-ui,sans-serif; }
+.social-page-heading { display:flex;align-items:center;justify-content:space-between;margin-bottom:16px; }
+.social-search { display:flex;align-items:center;gap:16px;height:40px;margin:16px 0 12px;padding:0 16px;background:var(--social-button);border-radius:24px; }
+.social-search>svg { width:18px;height:18px;flex-shrink:0; }
+.xbox-guide .social-search input { width:100%;min-width:0;border:0;outline:0;background:transparent;padding:0;box-shadow:none; }
+.social-search input::placeholder,.social-compose textarea::placeholder { color:#fff;opacity:1; }
+.social-search:focus-within { outline:2px solid #fff;outline-offset:2px; }
+.social-list-heading { display:flex;justify-content:space-between;align-items:center;min-height:56px;border-bottom:1px solid var(--social-divider);margin-bottom:8px;padding:12px 8px; }
+.social-list-heading>span:last-child { color:var(--social-muted); }
+.social-friends,.social-inbox { display:flex;flex-direction:column; }
+.xbox-guide .social-person,.xbox-guide .social-conversation { display:flex;align-items:center;gap:8px;width:100%;min-height:72px;padding:12px 8px;border:0;border-radius:4px;background:transparent;text-align:left; }
+.xbox-guide .social-person:hover,.xbox-guide .social-conversation:hover { background:var(--social-hover); }
+.social-gamerpic { position:relative;display:grid;place-items:center;flex:0 0 auto;width:48px;height:48px;overflow:visible;border-radius:50%;background:#484e58;box-shadow:0 2px 4px rgba(0,0,0,.5);font:600 20px system-ui,sans-serif; }
+.social-gamerpic img { display:block;width:100%;height:100%;border-radius:50%;object-fit:cover; }
+.social-gamerpic>svg { width:50%;height:50%; }
+.social-gamerpic.is-online::after { content:'';position:absolute;right:-1px;bottom:-1px;width:12px;height:12px;border:2px solid var(--social-surface);border-radius:50%;background:#00cc6a; }
+.social-person-text,.social-conversation>span:nth-child(2) { flex:1;min-width:0; }
+.social-person strong,.social-conversation strong { font-weight:700; }
+.social-person small,.social-conversation small { display:block;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:14px;line-height:20px; }
+.social-gamertag-suffix { color:var(--social-muted);font-weight:400; }
+.social-conversation.unread strong { font-weight:700; }
+.unread-dot { flex:0 0 8px;width:8px;height:8px;border-radius:50%;background:#00cc6a; }
+.social-empty,.social-notice { color:var(--social-muted);padding:24px; }
+.social-loading { display:flex;align-items:center;gap:12px;justify-content:center;padding:24px; }
+.social-loading svg { width:20px;height:20px; }
+.social-error { margin:16px 24px;padding:12px;border:1px solid #b95858;border-radius:4px;background:#522b2b;overflow-wrap:anywhere; }
+.social-chat-identity { display:flex;align-items:center;gap:12px;flex-shrink:0;width:100%;padding:8px 24px 16px;border:0;background:var(--social-app);text-align:left; }
+.social-chat-identity>span:last-child { min-width:0; }
+.social-chat-identity strong { display:block;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font:400 20px/24px system-ui,sans-serif; }
+.social-chat-identity small { display:block;color:var(--social-muted); }
+.social-messages { display:flex;flex:1;min-height:0;flex-direction:column;align-items:flex-start;gap:16px;padding:24px;overflow:auto; }
+.social-message { max-width:88%; }
+.social-message p { margin:0;padding:12px 16px;border-radius:12px;background:#3a3e46;white-space:pre-wrap;overflow-wrap:anywhere;font-size:16px;line-height:24px; }
+.social-message.is-mine { align-self:flex-end; }
+.social-message.is-mine p { background:#006d3b; }
+.social-message time { display:block;margin:4px 4px 0;font-size:12px;color:var(--social-muted); }
+.social-message.is-mine time { text-align:right; }
+.social-message.filtered p { color:var(--social-muted);font-style:italic; }
+.social-compose { display:flex;align-items:flex-end;gap:8px;padding:16px 24px;background:var(--social-surface); }
+.xbox-guide .social-compose textarea { flex:1;min-width:0;min-height:40px;max-height:140px;resize:vertical;padding:10px 16px;border:0;border-radius:20px;background:var(--social-button);box-shadow:none; }
+.xbox-guide .social-compose button { display:grid;place-items:center;width:40px;height:40px;flex-shrink:0;padding:10px;border:0;border-radius:50%;background:transparent; }
+.xbox-guide .social-compose button:hover { background:var(--social-hover); }
+.xbox-guide.has-profile { background:var(--social-app); }
+.social-guide-content.profile-content { background:var(--social-app); }
+.social-player-card { position:relative;flex:1;z-index:0;padding:0; }
+.social-profile-scrollable { padding:16px 24px 24px; }
+.social-profile-backdrop { position:absolute;z-index:-1;top:0;left:0;right:0;height:396px;background-size:cover;background-position:center top;pointer-events:none; }
+.social-profile-backdrop::after { content:'';position:absolute;inset:0;background:linear-gradient(180deg,rgba(26,27,30,.55),rgba(26,27,30,.75) 51%,#1a1b1e); }
+.social-profile-hero { display:flex;align-items:center;flex-direction:column;gap:16px;text-align:center; }
+.social-gamerpic.social-profile-picture { width:128px;height:128px;font-size:48px; }
+.social-profile-identity { display:flex;flex-direction:column;gap:8px;max-width:100%; }
+.social-profile-identity h2 { overflow-wrap:anywhere; }
+.social-profile-identity p { margin:0;color:var(--social-muted);font-size:14px;line-height:18px; }
+.social-profile-details { display:flex;align-items:center;gap:16px;min-height:48px;margin-top:16px; }
+.social-profile-details>span { display:inline-flex;align-items:center;gap:8px; }
+.social-profile-details svg { width:16px;height:16px; }
+.social-score-icon { display:grid;place-items:center;width:16px;height:16px;border-radius:50%;background:#fff;color:#1a1b1e;font:bold 11px/16px system-ui,sans-serif; }
+.social-profile-actions { display:flex;flex-direction:column;gap:12px;padding:0 4px 16px;border-bottom:1px solid var(--social-divider); }
+.xbox-guide .social-menu-action { display:flex;align-items:center;gap:8px;min-height:40px;width:100%;padding:10px;border:0;border-radius:4px;background:transparent;text-align:left; }
+.xbox-guide .social-menu-action:hover { background:var(--social-hover); }
+.social-menu-action svg { width:16px;height:16px; }
+.social-profile-favourite { margin:20px 12px;color:var(--social-muted); }
+.social-profile-notice { margin:16px 12px;color:var(--social-muted); }
+.social-party { display:flex;flex-direction:column;gap:20px;padding:16px 24px 24px; }
+.social-party[hidden] { display:none; }
+.social-party-status,.social-party-controls,.social-party-member,.social-party-invite>div { display:flex;align-items:center;gap:12px; }
+.social-party-status>svg { width:32px;height:32px;flex-shrink:0; }
+.social-party-status small,.social-party-existing>small { display:block;margin-top:6px;color:var(--social-muted); }
+.social-party button { display:inline-flex;align-items:center;justify-content:center;gap:8px; }
+.social-party button>svg { width:18px;height:18px; }
+.social-party-controls { flex-wrap:wrap; }
+.xbox-guide .social-party button,.xbox-guide .social-party select { min-height:40px;padding:10px 14px;border:0;border-radius:4px;background:var(--social-button); }
+.xbox-guide .social-party button:hover { background:var(--social-hover); }
+.xbox-guide .social-party select { appearance:none; }
+.xbox-guide .social-party .primary { background:#008746;color:#fff; }
+.xbox-guide .social-party .primary:hover { background:#00a85a; }
+.social-party .social-error { margin:0; }
+.social-party-members h2,.social-party-invitations h2 { margin-bottom:16px;font-size:20px; }
+.social-party-member { justify-content:space-between;min-height:64px;padding:8px 0;border-bottom:1px solid var(--social-divider); }
+.social-party-member>span { flex:1; }
+.social-party-member small { display:block;margin-top:4px;color:var(--social-muted); }
+.social-party-member>.social-gamerpic { flex:none; }
+.social-party-invite label { display:block;margin-bottom:12px; }
+.social-party-invite select { flex:1;min-width:0; }
+.social-party-invite>small { display:block;margin-top:10px;color:#71bb88; }
+.social-party-invitations article { display:flex;align-items:center;justify-content:space-between;gap:12px;padding:12px 0;border-bottom:1px solid var(--social-divider); }
+.social-party-invitations small { display:block;color:var(--social-muted); }
+
+.social-person-row { position:relative;display:flex;align-items:center;border-radius:4px; }
+.social-person-row .social-person { flex:1;min-width:0; }
+.social-person-row:hover { background:var(--social-hover); }
+.xbox-guide .social-person-more { flex:0 0 32px; }
+.social-person-menu { position:absolute;right:0;top:58px;z-index:20;width:304px;max-width:calc(100vw - 64px);padding:8px;border:1px solid var(--social-divider);border-radius:4px;background:#292c31;box-shadow:0 12px 32px rgba(0,0,0,.6); }
+.social-person-menu .social-menu-action { padding:9px 12px; }
+.social-people-selector { display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin:12px 0; }
+.xbox-guide .social-people-selector select { flex:1;min-width:0;appearance:none;padding:10px 14px;border:1px solid var(--social-divider);border-radius:4px;background:var(--social-button); }
+.social-people-selector button,.social-people-search-submit,.social-people-load-more { padding:8px 12px;border:0;border-radius:4px;background:var(--social-button); }
+.social-people-selector button:hover,.social-people-search-submit:hover,.social-people-load-more:hover { background:var(--social-hover); }
+.social-search .social-people-search-submit { display:grid;place-items:center;flex-shrink:0;padding:4px;min-height:28px;border-radius:50%;background:transparent; }
+.social-people-search-submit svg { width:18px;height:18px; }
+.social-people-load-more { margin-top:16px; }
+.social-player-actions { display:flex;flex-direction:column;gap:4px;padding:8px 0; }
+.social-player-actions .social-error { margin:8px 0;font-size:13px; }
+.social-action-status { display:flex;align-items:center;gap:8px;margin:8px 10px;color:var(--social-muted);font-size:13px; }
+.social-action-status svg { width:16px;height:16px;flex-shrink:0; }
+.social-action-confirmation { margin:8px;padding:12px;border:1px solid #6b707a;border-radius:4px;background:#202226; }
+.social-action-confirmation p { margin:0 0 12px; }
+.social-action-confirmation>div { display:flex;gap:8px;flex-wrap:wrap; }
+.xbox-guide .social-action-confirmation button { padding:8px 12px;border:0;border-radius:4px;background:var(--social-button); }
+.xbox-guide .social-action-confirmation button:hover { background:var(--social-hover); }
+.social-profile-columns { display:flex;flex-direction:column; }
+.social-profile-about h3,.social-profile-games h3 { margin:20px 0 12px;font:400 20px/24px system-ui,sans-serif; }
+.social-profile-bio { white-space:pre-wrap;overflow-wrap:anywhere; }
+.social-profile-location { display:flex;align-items:center;gap:8px;color:var(--social-muted); }
+.social-profile-location svg { width:16px;height:16px; }
+.social-profile-counts { display:flex;flex-wrap:wrap;gap:24px;padding:16px 0;border-bottom:1px solid var(--social-divider); }
+.social-profile-counts>div { display:flex;flex-direction:column;gap:4px; }
+.social-profile-counts strong { font-size:20px;font-weight:600; }
+.social-profile-counts span { color:var(--social-muted); }
+.social-profile-private { color:var(--social-muted); }
+.xbox-profile-desktop { height:100vh;overflow:hidden;background:#1a1b1e; }
+.xbox-social.xbox-guide.social-expanded-view { width:100%;height:100vh;min-height:0;max-width:none;margin:0; }
+.social-expanded-view .social-people-pane,.social-expanded-view .social-chats-pane { width:min(700px,100%);margin:0 auto; }
+.social-player-expanded .social-profile-scrollable { padding:24px 48px 48px;max-width:1440px;margin:0 auto; }
+.social-player-expanded .social-profile-hero { flex-direction:row;gap:28px;text-align:left; }
+.social-player-expanded .social-profile-picture { width:160px;height:160px; }
+.social-player-expanded .social-profile-identity h2 { font-size:36px;line-height:44px; }
+.social-player-expanded .social-profile-details { gap:24px;margin:24px 0; }
+.social-player-expanded .social-profile-columns { display:grid;grid-template-columns:minmax(0,1fr) 280px;gap:40px;align-items:start; }
+.social-player-expanded .social-profile-backdrop { height:460px; }
+.social-player-expanded .social-profile-about h3:first-child { margin-top:8px; }
+.social-profile-game-list { display:flex;flex-direction:column; }
+.social-profile-game { display:flex;gap:16px;padding:16px 0;border-bottom:1px solid var(--social-divider); }
+.social-profile-game>img,.social-profile-game-placeholder { width:72px;height:96px;flex:0 0 auto;object-fit:cover;border-radius:4px;background:#33383e; }
+.social-profile-game-placeholder { display:grid;place-items:center; }
+.social-profile-game-placeholder svg { width:32px;height:32px; }
+.social-profile-game h4 { margin:0 0 8px;font-size:16px;line-height:22px; }
+.social-profile-game p { display:flex;align-items:center;gap:4px;margin:4px 0;color:var(--social-muted);font-size:13px; }
+@media(max-width:900px) {
+ .social-player-expanded .social-profile-scrollable { padding:20px 28px 40px; }
+ .social-player-expanded .social-profile-columns { grid-template-columns:minmax(0,1fr) 240px;gap:24px; }
+ .social-player-expanded .social-profile-identity h2 { font-size:30px;line-height:38px; }
+}
+.social-people-search-form { display:flex;align-items:center;gap:8px; }
+.social-people-search-form .social-search { flex:1;min-width:0; }
+.social-people-search-form .social-people-search-submit { white-space:nowrap;flex-shrink:0; }
+.social-people-search-hint { margin:4px 0 12px;color:var(--social-muted);font-size:12px;line-height:18px; }
+.social-person-reason,.social-person-last-seen { color:var(--social-muted);font-size:12px!important; }
+.social-people-selector select { padding-right:38px!important; }
+.social-people-selector { position:relative; }
+.social-people-selector::after { content:'';position:absolute;right:16px;top:calc(50% - 5px);width:7px;height:7px;border-right:2px solid #fff;border-bottom:2px solid #fff;transform:rotate(45deg);pointer-events:none; }
+.social-chat-header .social-chat-identity .social-gamerpic { width:40px;height:40px; }
+.social-chat-header .social-chat-identity strong { font:600 16px/22px system-ui,sans-serif; }
+.social-chat-header .social-chat-identity small { font-size:12px; }
+.social-inline-chat { overflow:hidden; }
+.social-chat .social-compose { gap:6px;padding:12px 16px; }
+.social-chat .social-compose textarea { min-height:40px; }
+.xbox-social.xbox-guide.xbox-chat-desktop { width:100%;height:100vh;min-height:0;max-width:none; }
+
+.social-runtime-invites{padding:10px 16px;max-height:180px;overflow:auto;border-block:1px solid #ffffff20;flex-shrink:0;}
+.social-runtime-invites article{display:flex;flex-wrap:wrap;gap:8px;margin-block:8px;}
+.social-runtime-invites strong,.social-runtime-invites small{width:100%;}
+.social-runtime-invites button,.social-runtime-invites select{font:inherit;color:inherit;background:#292d32;border:1px solid #65686d;border-radius:4px;padding:6px 9px;}
+.social-runtime-invites button:disabled{opacity:.5;}

@@ -38,7 +38,11 @@ warn() { printf '\033[1;33m -> %s\033[0m\n' "$*"; }
 die()  { printf '\033[1;31mError:\033[0m %s\n' "$*" >&2; exit 1; }
 
 [[ "$(uname -s)" == "Linux" ]] || die "This installer supports Linux only."
-[[ "$(uname -m)" == "x86_64" ]] || die "Only x86_64 builds are published."
+case "$(uname -m)" in
+  x86_64) APPIMAGE_ARCH=x86_64 ;;
+  aarch64) APPIMAGE_ARCH=arm64 ;;
+  *) die "Only x86_64 and aarch64 builds are published." ;;
+esac
 command -v curl >/dev/null || die "curl is required to run this installer."
 
 # ---------------------------------------------------------------- system deps
@@ -109,7 +113,7 @@ else
   release_json="$(curl -fsSL --max-time 30 "https://api.github.com/repos/$REPO/releases/latest" \
     || die "Could not reach GitHub. Check your connection, or download the AppImage manually from https://github.com/$REPO/releases")"
   download_url="$(printf '%s\n' "$release_json" \
-    | grep -o '"browser_download_url": *"[^"]*x86_64\.AppImage"' \
+    | grep -o "\"browser_download_url\": *\"[^\"]*-$APPIMAGE_ARCH\.AppImage\"" \
     | head -n1 | sed 's/.*"\(https[^"]*\)".*/\1/')"
   [[ -n "$download_url" ]] || die "No AppImage found in the latest release. Publish a release first (npm run dist), or set XODUS_NEXUS_APPIMAGE=<file>."
   log "Downloading $(basename "$download_url")…"

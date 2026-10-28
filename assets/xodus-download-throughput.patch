@@ -1,0 +1,266 @@
+diff --git a/crates/msixvc/src/download_throughput_tests.rs b/crates/msixvc/src/download_throughput_tests.rs
+new file mode 100644
+index 0000000..60c6f3f
+--- /dev/null
++++ b/crates/msixvc/src/download_throughput_tests.rs
+@@ -0,0 +1,151 @@
++//! Loopback bytes and counting writers only, never an account or installed game.
++use super::*;
++use std::{
++    pin::Pin,
++    task::{Context, Poll},
++};
++
++#[derive(Default)]
++struct CountingWriter {
++    data: Vec<u8>,
++    calls: usize,
++    largest: usize,
++    short: bool,
++}
++impl AsyncWrite for CountingWriter {
++    fn poll_write(
++        mut self: Pin<&mut Self>,
++        _: &mut Context<'_>,
++        bytes: &[u8],
++    ) -> Poll<io::Result<usize>> {
++        self.calls += 1;
++        self.largest = self.largest.max(bytes.len());
++        let len = if self.short {
++            bytes.len().min(3001)
++        } else {
++            bytes.len()
++        };
++        self.data.extend_from_slice(&bytes[..len]);
++        Poll::Ready(Ok(len))
++    }
++    fn poll_flush(self: Pin<&mut Self>, _: &mut Context<'_>) -> Poll<io::Result<()>> {
++        Poll::Ready(Ok(()))
++    }
++    fn poll_shutdown(self: Pin<&mut Self>, _: &mut Context<'_>) -> Poll<io::Result<()>> {
++        Poll::Ready(Ok(()))
++    }
++}
++
++#[tokio::test]
++async fn streaming_throughput_batches_page_writes_without_changing_plain_bytes_or_short_writes() {
++    for short in [false, true] {
++        let length = 4 * 1024 * 1024 + 107;
++        let stored = (length as usize).div_ceil(PAGE_SIZE) * PAGE_SIZE;
++        let body: Vec<u8> = (0..stored).map(|i| (i % 251) as u8).collect();
++        let expected = body[..length].to_vec();
++        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
++        let address = listener.local_addr().unwrap();
++        let server = tokio::spawn(async move {
++            let (mut socket, _) = listener.accept().await.unwrap();
++            let mut request = Vec::new();
++            while !request.ends_with(b"\r\n\r\n") {
++                request.push(socket.read_u8().await.unwrap());
++            }
++            socket.write_all(format!("HTTP/1.1 206 Test\r\nContent-Length: {stored}\r\nContent-Range: bytes 0-{}/{stored}\r\nConnection: close\r\n\r\n",stored-1).as_bytes()).await.unwrap();
++            socket.write_all(&body).await.unwrap();
++        });
++        let file = SegmentFile {
++            offset: 0,
++            length: length as u64,
++            keep_encrypted: false,
++            data_hashs: vec![],
++        };
++        let mut writer = CountingWriter {
++            short,
++            ..Default::default()
++        };
++        let mut positions = Vec::new();
++        tokio::time::timeout(
++            std::time::Duration::from_secs(10),
++            XvdFile::download_segment_http(
++                &[],
++                &reqwest::Client::new(),
++                &format!("http://{address}/fixture"),
++                &mut writer,
++                &file,
++                [0; 32],
++                |_, _| {},
++                None,
++                0,
++                |n| {
++                    positions.push(n);
++                    Ok(())
++                },
++            ),
++        )
++        .await
++        .unwrap()
++        .unwrap();
++        server.await.unwrap();
++        assert_eq!(writer.data, expected);
++        assert_eq!(positions.last(), Some(&(length as u64)));
++        assert!(writer.largest <= 256 * 1024);
++        if !short {
++            assert!(
++                writer.calls <= 17,
++                "4MiB should require at most17 writes, got {}",
++                writer.calls
++            );
++        }
++    }
++}
++
++#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
++#[ignore = "local disk/loopback benchmark, not an Internet bandwidth claim"]
++async fn streaming_throughput_loopback_file_benchmark() {
++    let length = 64 * 1024 * 1024;
++    let body = vec![37u8; length];
++    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
++    let address = listener.local_addr().unwrap();
++    let server = tokio::spawn(async move {
++        let (mut socket, _) = listener.accept().await.unwrap();
++        let mut request = Vec::new();
++        while !request.ends_with(b"\r\n\r\n") {
++            request.push(socket.read_u8().await.unwrap());
++        }
++        socket.write_all(format!("HTTP/1.1 206 Test\r\nContent-Length: {length}\r\nContent-Range: bytes 0-{}/{length}\r\nConnection: close\r\n\r\n",length-1).as_bytes()).await.unwrap();
++        socket.write_all(&body).await.unwrap();
++    });
++    let target = std::env::temp_dir().join(format!("nexus-throughput-{}.bin", Uuid::new_v4()));
++    let mut output = tokio::fs::OpenOptions::new().create_new(true).write(true).open(&target).await.unwrap();
++    let file = SegmentFile {
++        offset: 0,
++        length: length as u64,
++        keep_encrypted: false,
++        data_hashs: vec![],
++    };
++    let start = std::time::Instant::now();
++    XvdFile::download_segment_http(
++        &[],
++        &reqwest::Client::new(),
++        &format!("http://{address}/fixture"),
++        &mut output,
++        &file,
++        [0; 32],
++        |_, _| {},
++        None,
++        0,
++        |_| Ok(()),
++    )
++    .await
++    .unwrap();
++    output.sync_all().await.unwrap();
++    let elapsed = start.elapsed().as_secs_f64();
++    server.await.unwrap();
++    assert_eq!(std::fs::read(&target).unwrap(), vec![37u8; length]);
++    std::fs::remove_file(&target).unwrap();
++    eprintln!(
++        "SYNTHETIC_FILE_BENCH bytes={length} seconds={elapsed:.6} MiBps={:.2}",
++        64.0 / elapsed
++    );
++}
+diff --git a/crates/msixvc/src/encrypted_image_tests.rs b/crates/msixvc/src/encrypted_image_tests.rs
+index afde1bc..8ca55bc 100644
+--- a/crates/msixvc/src/encrypted_image_tests.rs
++++ b/crates/msixvc/src/encrypted_image_tests.rs
+@@ -46,9 +46,30 @@ fn streaming_stored_length_distinguishes_plain_and_ciphertext_and_rejects_overfl
+     assert_eq!(file.stored_length().unwrap(), u64::MAX);
+ }
+ 
++#[tokio::test]
++async fn streaming_throughput_decrypts_large_batches_with_exact_unpadded_plaintext() {
++    let (xvd, mut file, key, plain, ciphertext) = fixture(1024 * 1024 + 107);
++    file.keep_encrypted = false;
++    let stored = ciphertext.len();
++    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
++    let address = listener.local_addr().unwrap();
++    let server = tokio::spawn(async move {
++        let (mut socket, _) = listener.accept().await.unwrap();
++        let mut request = Vec::new();
++        while !request.ends_with(b"\r\n\r\n") { request.push(socket.read_u8().await.unwrap()); }
++        socket.write_all(format!("HTTP/1.1 206 Test\r\nContent-Length: {stored}\r\nContent-Range: bytes 0-{}/{stored}\r\nConnection: close\r\n\r\n",stored-1).as_bytes()).await.unwrap();
++        socket.write_all(&ciphertext).await.unwrap();
++    });
++    let mut output = Vec::new();
++    xvd.download_file_http(&reqwest::Client::new(), &format!("http://{address}/fixture"),
++        &mut output,&file,key,|_,_|{},None,0,|_|Ok(())).await.unwrap();
++    server.await.unwrap();
++    assert_eq!(output, plain);
++}
++
+ #[tokio::test]
+ async fn streaming_encrypted_download_and_partial_resume_keep_exact_ciphertext_for_launch_decryption() {
+-    for length in [1u64, 4095, 4096, 4097, 5000, 8192, 8193] {
++    for length in [1u64, 4095, 4096, 4097, 5000, 8192, 8193, 1024 * 1024 + 107] {
+         for initial in [0u64, 4096].into_iter().filter(|&n| n < length) {
+             let (xvd, content, key, plain, ciphertext) = fixture(length);
+             let stored = ciphertext.len();
+diff --git a/crates/msixvc/src/xvd.rs b/crates/msixvc/src/xvd.rs
+index 261d352..7addb37 100644
+--- a/crates/msixvc/src/xvd.rs
++++ b/crates/msixvc/src/xvd.rs
+@@ -42,6 +42,10 @@ mod resume_tests;
+ #[path = "encrypted_image_tests.rs"]
+ mod encrypted_image_tests;
+ 
++#[cfg(test)]
++#[path = "download_throughput_tests.rs"]
++mod throughput_tests;
++
+ pub struct SyncSubstream<R> {
+     inner: R,
+     start: u64,
+@@ -921,6 +925,10 @@ impl XvdFile {
+         let mut page_in_section = page_start + resume_offset / PAGE_SIZE as u64;
+         let page_length = sfile.length.div_ceil(PAGE_SIZE as u64) * PAGE_SIZE as u64;
+         let mut pending = bytes::BytesMut::new();
++        // Avoid one blocking filesystem write/task per decrypted 4KiB page.
++        // Bounded independently of HTTP frame sizes and parallel file count.
++        const WRITE_BATCH: usize = 256 * 1024;
++        let mut write_batch = Vec::with_capacity(WRITE_BATCH);
+         let mut v: u64 = resume_offset;
+         let mut last_checkpoint = resume_offset;
+         let start = sfile.offset.checked_add(v).ok_or(TransferError::new("transfer-range", 0))?;
+@@ -935,6 +943,8 @@ impl XvdFile {
+                     // Release the HTTP connection while parked. Resuming issues
+                     // a fresh Range request at v, preserving pending partial pages.
+                     transfer.disconnect();
++                    out.write_all(&write_batch).await?;
++                    write_batch.clear();
+                     out.flush().await?;
+                     checkpoint(sfile.length - remaining)?;
+                     control.wait_for(|paused| !*paused).await.ok();
+@@ -959,6 +969,8 @@ impl XvdFile {
+                 result => {
+                     // Only fully written pages become durable, never a pending
+                     // partial encrypted page or merely reported progress.
++                    out.write_all(&write_batch).await?;
++                    write_batch.clear();
+                     out.flush().await?;
+                     checkpoint(sfile.length - remaining)?;
+                     return Err(Box::new(result.err().unwrap_or(TransferError::new("transfer-eof", 0))));
+@@ -1011,13 +1023,19 @@ impl XvdFile {
+                 } else {
+                     to_write_remaining
+                 };
+-                out.write_all(&page[..to_write]).await?;
++                write_batch.extend_from_slice(&page[..to_write]);
++                if write_batch.len() >= WRITE_BATCH {
++                    out.write_all(&write_batch).await?;
++                    write_batch.clear();
++                }
+                 remaining -= to_write_remaining as u64;
+ 
+                 page_in_section += 1;
+             }
+             let written = sfile.length - remaining;
+             if written.saturating_sub(last_checkpoint) >= 32 * 1024 * 1024 {
++                out.write_all(&write_batch).await?;
++                write_batch.clear();
+                 out.flush().await?;
+                 checkpoint(written)?;
+                 last_checkpoint = written;
+@@ -1029,6 +1047,7 @@ impl XvdFile {
+                 remaining, sfile.length, v
+             ))));
+         }
++        out.write_all(&write_batch).await?;
+         out.flush().await?;
+         checkpoint(sfile.length)?;
+         Ok(())

@@ -31,3 +31,12 @@ it('keeps pause and failure distinct from completion', () => {
   progress.update(record({ sequence: 3, phase: 'failed', canPause: false }));
   expect(progress.terminal).toBe('failed');
 });
+
+it('separates verified local reuse from network bytes and validates both counters', () => {
+  expect(new DownloadProgress().update(record({ networkBytes: 5, reusedBytes: 20 }))).toMatchObject({
+    downloadedBytes: 25, networkBytes: 5, reusedBytes: 20, phase: 'Updating files from local data and downloads',
+  });
+  for (const patch of [{networkBytes:-1},{reusedBytes:'20'},{reusedBytes:Number.MAX_SAFE_INTEGER+1}]) {
+    expect(new DownloadProgress().update(record(patch))).toBeUndefined();
+  }
+});

@@ -1,0 +1,498 @@
+diff --git a/crates/xodus-cli/src/main.rs b/crates/xodus-cli/src/main.rs
+--- a/crates/xodus-cli/src/main.rs
++++ b/crates/xodus-cli/src/main.rs
+@@ -8,6 +8,7 @@
+ 
+ mod commands;
+ mod license;
++mod installation_state;
+ mod package;
+ mod package_plan;
+ #[cfg(feature = "native-webview")]
+@@ -123,6 +124,7 @@
+         device: bool,
+     },
+     #[command(about = "Download and extract the game through streaming algorithm")]
++    #[command(after_help = "Nexus capabilities: update-recovery-v1")]
+     Streaming {
+         source: String,
+         destination: String,
+diff --git a/crates/xodus-cli/src/commands/run.rs b/crates/xodus-cli/src/commands/run.rs
+--- a/crates/xodus-cli/src/commands/run.rs
++++ b/crates/xodus-cli/src/commands/run.rs
+@@ -550,6 +550,10 @@
+     let mut lfiles: HashMap<String, SegmentFile> = HashMap::new();
+ 
+     let out: &Path = Path::new(&source);
++    let _installation_guard = match crate::installation_state::launch_guard(out) {
++        Ok(guard) => guard,
++        Err(error) => { eprintln!("Cannot launch this game: {error}"); return ExitCode::FAILURE; }
++    };
+     let out_absolute = std::fs::canonicalize(out).unwrap();
+     let final_path = out.join(".xodus-streaming.msixvc");
+ 
+diff --git a/crates/xodus-cli/src/commands/streaming.rs b/crates/xodus-cli/src/commands/streaming.rs
+--- a/crates/xodus-cli/src/commands/streaming.rs
++++ b/crates/xodus-cli/src/commands/streaming.rs
+@@ -451,7 +451,11 @@
+         Err(_) => { eprintln!("The content key could not be authenticated. Retry the installation or sign in again."); return ExitCode::FAILURE; }
+     };
+ 
+-    let mut pending = match pending_files(out, &rfiles, &lfiles) {
++    let recovering = match crate::installation_state::incomplete(out) {
++        Ok(value) => value,
++        Err(error) => { failure::report(&error); return ExitCode::FAILURE; }
++    };
++    let mut pending = match update::pending(out, &rfiles, &lfiles, recovering) {
+         Ok(files) => files,
+         Err(error) => { eprintln!("Unable to inspect installed package files: {error}"); return ExitCode::FAILURE; }
+     };
+@@ -459,7 +463,7 @@
+         Ok(journal) => std::sync::Arc::new(std::sync::Mutex::new(journal)),
+         Err(error) => { eprintln!("Unable to prepare download checkpoints: {error}"); return ExitCode::FAILURE; }
+     };
+-    let stage = if lfiles.is_empty() { None } else {
++    let stage = if !final_path.exists() && !recovering { None } else {
+         match update::staging(out) {
+             Ok(stage) => Some(stage),
+             Err(error) => { failure::report(&error); return ExitCode::FAILURE; }
+@@ -511,6 +515,11 @@
+         return ExitCode::FAILURE;
+     }
+ 
++    if stage.is_some() {
++        if let Err(error) = update::begin(out, &rfiles, &pending) {
++            failure::report(&error); return ExitCode::FAILURE;
++        }
++    }
+     tx.send(ProgressEvent::UpdateRemaining {
+         name: "Downloading".to_owned(),
+         total: total_size,
+@@ -658,7 +667,7 @@
+     })
+     .await
+     .ok();
+-    if let Err(error) = failure::finalize(&cache_path, &final_path, false) {
++    if let Err(error) = crate::installation_state::finish(out, &cache_path, &final_path) {
+         failure::report(&error);
+         return ExitCode::FAILURE;
+     }
+diff --git a/crates/xodus-cli/src/commands/streaming_update.rs b/crates/xodus-cli/src/commands/streaming_update.rs
+--- a/crates/xodus-cli/src/commands/streaming_update.rs
++++ b/crates/xodus-cli/src/commands/streaming_update.rs
+@@ -30,6 +30,42 @@
+     Ok(path)
+ }
+ 
++pub(super) fn pending<'a>(
++    root: &Path,
++    remote: &'a HashMap<String, SegmentFile>,
++    local: &HashMap<String, SegmentFile>,
++    recovering: bool,
++) -> io::Result<Vec<(&'a String, &'a SegmentFile)>> {
++    let mut files = super::pending_files(root, remote, local)?;
++    if recovering {
++        let queued: std::collections::HashSet<&String> = files.iter().map(|(name, _)| *name).collect();
++        let placeholders = crate::installation_state::placeholders(root)?;
++        // The old final metadata no longer describes every installed file.
++        // If a newer package arrives during recovery, even an apparent revert
++        // to the old metadata must pass the new package's verification again.
++        for (name, file) in remote {
++            if queued.contains(name) { continue; }
++            let path = resume::target(root, name)?;
++            if placeholders.contains(name) && !file.keep_encrypted && file.length > 0 && fs::metadata(&path).is_ok_and(|m| m.is_file() && m.len() == 0) {
++                continue; // Preserve deliberately uninstalled optional archives.
++            }
++            files.push((name, file));
++        }
++    }
++    Ok(files)
++}
++
++pub(super) fn begin(root: &Path, remote: &HashMap<String, SegmentFile>, pending: &[(&String, &SegmentFile)]) -> io::Result<()> {
++    let queued: std::collections::HashSet<&String> = pending.iter().map(|(name, _)| *name).collect();
++    let mut placeholders = Vec::new();
++    for (name, file) in remote {
++        if queued.contains(name) || file.keep_encrypted || file.length == 0 { continue; }
++        let path = resume::target(root, name)?;
++        if fs::metadata(path).is_ok_and(|m| m.is_file() && m.len() == 0) { placeholders.push(name.clone()); }
++    }
++    crate::installation_state::begin_with_placeholders(root, &placeholders)
++}
++
+ /// Existing output is reclaimed only after its staged replacement is complete.
+ /// Count growth conservatively regardless of download order; never credit hardlinks.
+ pub(super) fn required_space<'a>(
+@@ -86,6 +122,7 @@
+         return Err(io::Error::other("staged output is not a regular file"));
+     }
+     fs::File::open(&from)?.sync_all()?;
++    crate::installation_state::begin(root)?;
+     fs::rename(&from, &to)?;
+     fs::File::open(to.parent().unwrap())?.sync_all()?;
+     fs::File::open(from.parent().unwrap())?.sync_all()
+@@ -101,7 +138,7 @@
+     journal.offset(name, file.length) == file.length
+         && resume::target(root, name)
+             .and_then(fs::metadata)
+-            .is_ok_and(|m| m.is_file() && m.len() >= file.stored_length().unwrap_or(u64::MAX))
++            .is_ok_and(|m| m.is_file() && m.len() == file.stored_length().unwrap_or(u64::MAX))
+ }
+ 
+ pub(super) async fn transfer(
+@@ -252,6 +289,24 @@
+ mod tests {
+     use super::*;
+     #[test]
++    fn streaming_update_completed_never_skips_zero_length_or_oversized_replacements() {
++        let root = tempfile::tempdir().unwrap();
++        let files = HashMap::from([("zero.bin".to_owned(), SegmentFile {
++            offset: 0, length: 0, keep_encrypted: false, data_hashs: vec![],
++        }), ("short.bin".to_owned(), SegmentFile {
++            offset: 4096, length: 3, keep_encrypted: false, data_hashs: vec![],
++        })]);
++        fs::write(root.path().join("zero.bin"), b"must be emptied").unwrap();
++        fs::write(root.path().join("short.bin"), b"new trailing old bytes").unwrap();
++        let mut journal = resume::Journal::open(root.path(), "fixture", &files).unwrap();
++        journal.checkpoint("short.bin", 3).unwrap();
++        for name in ["zero.bin", "short.bin"] { assert!(!completed(&journal, root.path(), name, &files[name])); }
++        fs::write(root.path().join("zero.bin"), []).unwrap();
++        fs::write(root.path().join("short.bin"), b"new").unwrap();
++        for name in ["zero.bin", "short.bin"] { assert!(completed(&journal, root.path(), name, &files[name])); }
++    }
++
++    #[test]
+     fn streaming_update_stages_and_commits_without_touching_old_file_until_ready() {
+         let dir = tempfile::tempdir().unwrap();
+         let root = dir.path();
+@@ -260,10 +315,68 @@
+         fs::write(stage.join("game.bin"), b"new valid file").unwrap();
+         assert_eq!(fs::read(root.join("game.bin")).unwrap(), b"old valid file");
+         commit(&stage, root, "game.bin").unwrap();
++        assert!(crate::installation_state::incomplete(root).unwrap());
+         assert_eq!(fs::read(root.join("game.bin")).unwrap(), b"new valid file");
+         assert!(!stage.join("game.bin").exists());
+         assert!(commit(&stage, root, "../outside").is_err());
+     }
++
++    #[test]
++    fn streaming_update_recovery_rechecks_old_metadata_and_preserves_optional_placeholders() {
++        let root = tempfile::tempdir().unwrap();
++        let file = |length| SegmentFile { offset: 0, length, keep_encrypted: false, data_hashs: vec![[7;20]; 2] };
++        let files = HashMap::from([("game.bin".to_owned(), file(8192)), ("optional.ucas".to_owned(), file(8192))]);
++        fs::write(root.path().join("game.bin"), b"partly replaced game").unwrap();
++        fs::write(root.path().join("optional.ucas"), []).unwrap();
++        assert!(pending(root.path(), &files, &files, false).unwrap().is_empty());
++        begin(root.path(), &files, &[]).unwrap();
++        let recovered = pending(root.path(), &files, &files, true).unwrap();
++        assert_eq!(recovered.len(), 1);
++        assert_eq!(recovered[0].0, "game.bin");
++        assert_eq!(fs::metadata(root.path().join("optional.ucas")).unwrap().len(), 0);
++        // A prior target may have deliberately replaced a full file with an
++        // empty one. A newer target reverting to old metadata must repair it.
++        fs::write(root.path().join("game.bin"), []).unwrap();
++        let recovered = pending(root.path(), &files, &files, true).unwrap();
++        assert_eq!(recovered.len(), 1);
++        assert_eq!(recovered[0].0, "game.bin");
++        // A torn/old-format barrier has no trustworthy placeholder snapshot.
++        fs::write(root.path().join(crate::installation_state::INCOMPLETE), b"{").unwrap();
++        assert_eq!(pending(root.path(), &files, &files, true).unwrap().len(), 2);
++    }
++
++    #[test]
++    fn streaming_update_interrupted_multifile_commit_remains_blocked_until_recovery_finishes() {
++        let dir = tempfile::tempdir().unwrap();
++        let root = dir.path();
++        let files = HashMap::from([("one.bin".to_owned(), SegmentFile {
++            offset: 0, length: 3, keep_encrypted: false, data_hashs: vec![[7;20]],
++        }), ("two.bin".to_owned(), SegmentFile {
++            offset: 4096, length: 3, keep_encrypted: false, data_hashs: vec![[8;20]],
++        })]);
++        for name in files.keys() { fs::write(root.join(name), b"old").unwrap(); }
++        let final_path = root.join(".xodus-streaming.msixvc");
++        let cache = root.join(".xodus-streaming-tmp.msixvc");
++        fs::write(&final_path, b"old metadata").unwrap();
++        let stage = staging(root).unwrap();
++        let mut journal = resume::Journal::open(root, "new version", &files).unwrap();
++        fs::write(stage.join("one.bin"), b"new").unwrap();
++        commit(&stage, root, "one.bin").unwrap();
++        journal.checkpoint("one.bin", 3).unwrap();
++        drop(journal); // Model cancellation/restart after only the first replacement.
++        assert_eq!(fs::read(root.join("one.bin")).unwrap(), b"new");
++        assert_eq!(fs::read(root.join("two.bin")).unwrap(), b"old");
++        assert!(crate::installation_state::launch_guard(root).is_err());
++        let reopened = resume::Journal::open(root, "new version", &files).unwrap();
++        assert!(completed(&reopened, root, "one.bin", &files["one.bin"]));
++        assert!(!completed(&reopened, root, "two.bin", &files["two.bin"]));
++        fs::write(stage.join("two.bin"), b"new").unwrap();
++        commit(&stage, root, "two.bin").unwrap();
++        fs::write(&cache, b"new metadata").unwrap();
++        crate::installation_state::finish(root, &cache, &final_path).unwrap();
++        assert!(crate::installation_state::launch_guard(root).is_ok());
++        assert_eq!(fs::read(root.join("two.bin")).unwrap(), b"new");
++    }
+     #[test]
+     fn streaming_update_rejects_symlinked_stage_and_commit_targets() {
+         let dir = tempfile::tempdir().unwrap();
+@@ -278,6 +391,37 @@
+         assert!(commit(&stage, dir.path(), "game.bin").is_err());
+         assert!(stage.join("game.bin").exists());
+     }
++
++    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
++    async fn streaming_update_reuses_complete_ciphertext_tail_on_initial_and_resumed_updates() {
++        for offset in [0, PAGE_SIZE as u64] {
++            let root = tempfile::tempdir().unwrap();
++            let bytes = [vec![3u8; PAGE_SIZE], vec![7u8; PAGE_SIZE]].concat();
++            let hashes = bytes.chunks_exact(PAGE_SIZE).map(|page| {
++                let digest = msixvc::streaming::resume_digest(page);
++                std::array::from_fn(|i| u8::from_str_radix(&digest[i * 2..i * 2 + 2], 16).unwrap())
++            }).collect();
++            let file = SegmentFile { offset: 0, length: 5000, keep_encrypted: true, data_hashs: hashes };
++            let installed = root.path().join("installed.exe");
++            fs::write(&installed, &bytes).unwrap();
++            let mut header = vec![0u8; 0x3000];
++            header[512..520].copy_from_slice(b"msft-xvd");
++            header[528..536].copy_from_slice(&116444736000000000u64.to_le_bytes());
++            header[652..656].copy_from_slice(&4u32.to_le_bytes());
++            let xvd = XvdFile::parse(&mut std::io::Cursor::new(header)).await.unwrap();
++            let target = root.path().join("staged.exe");
++            let mut out = tokio::fs::File::create(&target).await.unwrap();
++            out.write_all(&bytes[..offset as usize]).await.unwrap();
++            let (_sender, pause) = watch::channel(false);
++            let (tx, _rx) = tokio::sync::mpsc::channel(16);
++            tokio::time::timeout(std::time::Duration::from_secs(2), transfer(&xvd, &reqwest::Client::new(),
++                "http://127.0.0.1:9/must-not-download", &installed, Some(&file), &file,
++                &mut out, [0;32], offset, pause, &tx, 0, |_| Ok(()))).await.unwrap().unwrap();
++            out.flush().await.unwrap();
++            assert_eq!(fs::read(&target).unwrap(), bytes, "the physical ciphertext tail must not be truncated to 5000 logical bytes");
++            assert_eq!(fs::read(&installed).unwrap(), bytes);
++        }
++    }
+     #[test]
+     fn streaming_update_space_uses_largest_staged_file_not_sum_of_replacements() {
+         let dir = tempfile::tempdir().unwrap();
+diff --git a/crates/xodus-cli/src/commands/streaming_failure.rs b/crates/xodus-cli/src/commands/streaming_failure.rs
+--- a/crates/xodus-cli/src/commands/streaming_failure.rs
++++ b/crates/xodus-cli/src/commands/streaming_failure.rs
+@@ -1,6 +1,8 @@
+ //! Settles active writes before a failed batch releases its installation lock.
+ use msixvc::streaming_http::TransferError;
+-use std::{future::Future, path::Path};
++use std::future::Future;
++#[cfg(test)]
++use std::path::Path;
+ use tokio::{
+     io::{AsyncWrite, AsyncWriteExt},
+     sync::watch,
+@@ -50,6 +52,7 @@
+     eprintln!("{}", error.diagnostic());
+     eprintln!("{error} Retry this installation to obtain a fresh package link and resume safely.");
+ }
++#[cfg(test)]
+ pub(super) fn finalize(cache: &Path, final_path: &Path, failed: bool) -> std::io::Result<bool> {
+     if failed {
+         return Ok(false);
+diff --git a/crates/xodus-cli/src/installation_state.rs b/crates/xodus-cli/src/installation_state.rs
+new file mode 100644
+--- /dev/null
++++ b/crates/xodus-cli/src/installation_state.rs
+@@ -0,0 +1,198 @@
++//! Durable update barrier, independent of launcher queue/history state.
++use std::{fs::{self, File, OpenOptions}, io::{self, Read, Write}, path::Path};
++use std::os::unix::fs::OpenOptionsExt;
++
++pub(crate) const INCOMPLETE: &str = ".nexus-update-incomplete-v1";
++const LOCK: &str = ".nexus-streaming.lock";
++
++pub(crate) fn incomplete(root: &Path) -> io::Result<bool> {
++    match fs::symlink_metadata(root.join(INCOMPLETE)) {
++        Ok(_) => Ok(true),
++        Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(false),
++        Err(error) => Err(error),
++    }
++}
++
++pub(crate) fn ensure_ready(root: &Path) -> io::Result<()> {
++    if incomplete(root)? {
++        return Err(io::Error::other("An update was interrupted. Resume the update before playing."));
++    }
++    Ok(())
++}
++
++fn no_follow(options: &mut OpenOptions) -> &mut OpenOptions {
++    options.custom_flags((rustix::fs::OFlags::NOFOLLOW | rustix::fs::OFlags::NONBLOCK).bits() as i32)
++}
++
++/// Hold the same installation lock as streaming, shared for a running game.
++/// Read-only installations remain launchable, but never bypass an existing lock.
++pub(crate) fn launch_guard(root: &Path) -> io::Result<Option<File>> {
++    launch_guard_with(root, fs2::FileExt::try_lock_shared)
++}
++
++fn launch_guard_with(root: &Path, shared_lock: impl FnOnce(&File) -> io::Result<()>) -> io::Result<Option<File>> {
++    ensure_ready(root)?;
++    let path = root.join(LOCK);
++    let file = match no_follow(OpenOptions::new().read(true).write(true).create(true).truncate(false).mode(0o600)).open(&path) {
++        Ok(file) => Some(file),
++        Err(error) if matches!(error.kind(), io::ErrorKind::PermissionDenied | io::ErrorKind::ReadOnlyFilesystem) => {
++            match no_follow(OpenOptions::new().read(true)).open(&path) {
++                Ok(file) => Some(file),
++                Err(error) if error.kind() == io::ErrorKind::NotFound => None,
++                Err(error) => return Err(error),
++            }
++        }
++        Err(error) => return Err(error),
++    };
++    if let Some(file) = &file {
++        if !file.metadata()?.is_file() { return Err(io::Error::other("invalid installation lock")); }
++        if let Err(error) = shared_lock(file) {
++            if error.kind() == io::ErrorKind::Unsupported || matches!(error.raw_os_error(), Some(nix::libc::EOPNOTSUPP | nix::libc::ENOSYS)) {
++                // Existing read-only/unsupported volumes must remain usable.
++                // Streaming itself already requires an exclusive folder lock.
++                ensure_ready(root)?;
++                return Ok(None);
++            }
++            return Err(io::Error::other("Finish this game's installation before playing it."));
++        }
++        let flags = rustix::io::fcntl_getfd(file)?;
++        rustix::io::fcntl_setfd(file, flags - rustix::io::FdFlags::CLOEXEC)?;
++    }
++    ensure_ready(root)?;
++    Ok(file)
++}
++
++/// Sync this barrier before the first in-place file replacement. Do not remove
++/// it on error/cancel/process death, even if the queue entry is later deleted.
++pub(crate) fn begin(root: &Path) -> io::Result<()> {
++    begin_with_placeholders(root, &[])
++}
++
++pub(crate) fn begin_with_placeholders(root: &Path, placeholders: &[String]) -> io::Result<()> {
++    let path = root.join(INCOMPLETE);
++    let mut file = match no_follow(OpenOptions::new().write(true).create_new(true).mode(0o600)).open(&path) {
++        Ok(mut file) => {
++            let bytes = serde_json::to_vec(&serde_json::json!({"schema":1,"placeholders":placeholders}))?;
++            if bytes.len() > 4 * 1024 * 1024 { return Err(io::Error::other("update placeholder snapshot is too large")); }
++            file.write_all(&bytes)?;
++            file
++        }
++        Err(error) if error.kind() == io::ErrorKind::AlreadyExists => {
++            no_follow(OpenOptions::new().read(true)).open(&path)?
++        }
++        Err(error) => return Err(error),
++    };
++    if !file.metadata()?.is_file() { return Err(io::Error::other("invalid incomplete-update marker")); }
++    file.flush()?;
++    file.sync_all()?;
++    File::open(root)?.sync_all()
++}
++
++pub(crate) fn placeholders(root: &Path) -> io::Result<std::collections::HashSet<String>> {
++    let file = no_follow(OpenOptions::new().read(true)).open(root.join(INCOMPLETE))?;
++    if !file.metadata()?.is_file() { return Err(io::Error::other("invalid incomplete-update marker")); }
++    let mut bytes = Vec::new();
++    file.take(4 * 1024 * 1024 + 1).read_to_end(&mut bytes)?;
++    if bytes.len() > 4 * 1024 * 1024 { return Ok(Default::default()); }
++    let Ok(value) = serde_json::from_slice::<serde_json::Value>(&bytes) else { return Ok(Default::default()); };
++    if value["schema"] != 1 { return Ok(Default::default()); }
++    Ok(value["placeholders"].as_array().into_iter().flatten()
++        .filter_map(|name| name.as_str().map(str::to_owned)).collect())
++}
++
++/// Publish and sync the new package metadata before allowing any game launch.
++pub(crate) fn finish(root: &Path, cache: &Path, final_path: &Path) -> io::Result<()> {
++    let file = no_follow(OpenOptions::new().read(true)).open(cache)?;
++    if !file.metadata()?.is_file() { return Err(io::Error::other("invalid package metadata")); }
++    file.sync_all()?;
++    fs::rename(cache, final_path)?;
++    File::open(root)?.sync_all()?;
++    if incomplete(root)? {
++        fs::remove_file(root.join(INCOMPLETE))?;
++        File::open(root)?.sync_all()?;
++    }
++    Ok(())
++}
++
++#[cfg(test)]
++mod tests {
++    use super::*;
++    #[test]
++    fn streaming_update_barrier_survives_failure_and_clears_only_after_metadata_commit() {
++        let root = tempfile::tempdir().unwrap();
++        let cache = root.path().join(".xodus-streaming-tmp.msixvc");
++        let final_path = root.path().join(".xodus-streaming.msixvc");
++        fs::write(&final_path, b"old package").unwrap();
++        begin(root.path()).unwrap();
++        assert!(ensure_ready(root.path()).is_err());
++        assert!(finish(root.path(), &cache, &final_path).is_err());
++        assert!(incomplete(root.path()).unwrap());
++        assert_eq!(fs::read(&final_path).unwrap(), b"old package");
++        begin(root.path()).unwrap();
++        fs::write(&cache, b"new package").unwrap();
++        finish(root.path(), &cache, &final_path).unwrap();
++        assert!(!incomplete(root.path()).unwrap());
++        ensure_ready(root.path()).unwrap();
++        assert_eq!(fs::read(&final_path).unwrap(), b"new package");
++    }
++
++    #[test]
++    fn streaming_update_launch_lock_excludes_writers_and_never_bypasses_an_active_download() {
++        let root = tempfile::tempdir().unwrap();
++        let reader = launch_guard(root.path()).unwrap();
++        assert!(!rustix::io::fcntl_getfd(reader.as_ref().unwrap()).unwrap().contains(rustix::io::FdFlags::CLOEXEC));
++        let file = OpenOptions::new().write(true).open(root.path().join(LOCK)).unwrap();
++        assert!(fs2::FileExt::try_lock_exclusive(&file).is_err());
++        drop(reader);
++        fs2::FileExt::try_lock_exclusive(&file).unwrap();
++        assert!(launch_guard(root.path()).is_err());
++        drop(file);
++        assert!(launch_guard(root.path()).is_ok());
++    }
++
++    #[test]
++    fn streaming_update_barrier_and_locks_reject_symlinks_without_touching_targets() {
++        let root = tempfile::tempdir().unwrap();
++        let outside = tempfile::NamedTempFile::new().unwrap();
++        fs::write(outside.path(), b"keep").unwrap();
++        std::os::unix::fs::symlink(outside.path(), root.path().join(INCOMPLETE)).unwrap();
++        assert!(ensure_ready(root.path()).is_err());
++        assert!(begin(root.path()).is_err());
++        fs::remove_file(root.path().join(INCOMPLETE)).unwrap();
++        std::os::unix::fs::symlink(outside.path(), root.path().join(LOCK)).unwrap();
++        assert!(launch_guard(root.path()).is_err());
++        assert_eq!(fs::read(outside.path()).unwrap(), b"keep");
++    }
++
++    #[test]
++    fn streaming_update_launch_preserves_read_only_and_unsupported_lock_installations() {
++        use std::os::unix::fs::PermissionsExt;
++        let root = tempfile::tempdir().unwrap();
++        fs::set_permissions(root.path(), fs::Permissions::from_mode(0o555)).unwrap();
++        assert!(launch_guard(root.path()).is_ok());
++        fs::set_permissions(root.path(), fs::Permissions::from_mode(0o755)).unwrap();
++        for errno in [nix::libc::EOPNOTSUPP, nix::libc::ENOSYS] {
++            assert!(launch_guard_with(root.path(), |_| Err(io::Error::from_raw_os_error(errno))).unwrap().is_none());
++        }
++        assert!(launch_guard_with(root.path(), |_| Err(io::ErrorKind::WouldBlock.into())).is_err());
++        begin(root.path()).unwrap();
++        assert!(launch_guard_with(root.path(), |_| Err(io::ErrorKind::Unsupported.into())).is_err());
++    }
++
++    #[tokio::test]
++    async fn streaming_update_actual_run_refuses_incomplete_installation_before_game_or_account_access() {
++        let root = tempfile::tempdir().unwrap();
++        begin(root.path()).unwrap();
++        let result = crate::commands::run::run(&reqwest::Client::new(), &xodus::tokens::TokenManager::with_memory(),
++            root.path().to_string_lossy().into_owned(), "/must-not-run".into(), None, false, false, None).await;
++        assert_eq!(result, std::process::ExitCode::FAILURE);
++    }
++
++    #[test]
++    fn streaming_update_cli_advertises_the_real_recovery_contract_before_authentication() {
++        use clap::CommandFactory;
++        let mut command = crate::CliArgs::command();
++        let help = command.find_subcommand_mut("streaming").unwrap().render_help().to_string();
++        assert!(help.lines().any(|line| line == "Nexus capabilities: update-recovery-v1"));
++    }
++}

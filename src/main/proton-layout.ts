@@ -37,10 +37,12 @@ export function runtimeArchiveArch(arch: string = process.arch): 'x86_64' | 'aar
  * The loader to run from a Proton root on this host. An arm64 host prefers the
  * native arm64 loader; every other combination uses `files/bin/wine`.
  */
-export async function runtimeLoader(protonRoot: string, arch: string = process.arch): Promise<string> {
+export async function runtimeLoader(protonRoot: string, arch: string = process.arch, allowEmulated = true): Promise<string> {
+  runtimeArchiveArch(arch);
   if (arch === 'arm64') {
     const native = path.join(protonRoot, 'files', ARM64_LAYOUT.bin, 'wine');
     if (await fs.access(native, constants.X_OK).then(() => true, () => false)) return native;
+    if (!allowEmulated) throw new Error('The ARM64 runtime has no executable native loader.');
   }
   return path.join(protonRoot, 'files', X86_64_LAYOUT.bin, 'wine');
 }
