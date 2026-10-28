@@ -18,6 +18,35 @@ afterEach(async () => {
 });
 
 describe('prepareProtonRunner', () => {
+  it('runs an arm64 runtime from its own loader, prefix and ARM64X component checksums', async () => {
+    const root = await mkdtemp(path.join(tmpdir(), 'nexus-arm64-prefix-')); created.push(root);
+    const runtime = path.join(root, 'runtime'), compat = path.join(root, 'compat');
+    const wine = path.join(runtime, 'files/bin-arm64/wine');
+    const system32 = path.join(compat, 'pfx/drive_c/windows/system32');
+    const source = path.join(runtime, 'files/lib/wine/aarch64-windows');
+    await mkdir(path.dirname(wine), { recursive: true }); await mkdir(source, { recursive: true }); await mkdir(system32, { recursive: true });
+    await writeFile(wine, '#!/bin/sh\nprintf "%s|%s" "$PATH" "$WINEDLLOVERRIDES"\n', { mode: 0o700 });
+    await writeFile(path.join(runtime, 'files/bin-arm64/wineserver'), '#!/bin/sh\nexit 0\n', { mode: 0o700 });
+    await writeFile(path.join(runtime, 'proton'), '#!/bin/sh\nexit 0\n', { mode: 0o700 });
+    for (const name of ['libvkd3d-utils-1.dll', 'dxgi.dll', 'd3d12.dll']) await writeFile(path.join(system32, name), 'ready');
+    await writeFile(path.join(source, 'libnghttp2.dll'), 'arm64x nghttp2');
+    const sha = (text: string) => createHash('sha256').update(text).digest('hex');
+    const metadata = { features: ['wine-winhttp-http2-v1'], components: { 'libnghttp2.dll': sha('arm64x nghttp2') }, componentsByArch: { 'aarch64-windows': { 'libnghttp2.dll': sha('arm64x nghttp2') } } };
+    await writeFile(path.join(runtime, 'XODUS_NEXUS_PATCH.json'), JSON.stringify(metadata));
+    // Without the arm64 template prefix the runtime is not a usable Proton.
+    expect(await prepareProtonRunner(wine, compat, path.join(root, 'steam'))).toBeUndefined();
+    await mkdir(path.join(runtime, 'files/share/default_pfx_arm64'), { recursive: true });
+    const runner = (await prepareProtonRunner(wine, compat, path.join(root, 'steam')))!;
+    expect(await readFile(path.join(system32, 'libnghttp2.dll'), 'utf8')).toBe('arm64x nghttp2');
+    const script = await readFile(runner.command, 'utf8');
+    expect(script).toContain(path.join(runtime, 'files/bin-arm64/wineserver'));
+    expect(script).not.toContain(path.join(runtime, 'files/bin/wineserver'));
+    expect((await execFile(runner.command)).stdout).toMatch(new RegExp(`^${path.join(runtime, 'files/bin-arm64').replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}:.*\\|.*libnghttp2=n`));
+    // An arm64 PE directory is never checked against x86_64 checksums.
+    await writeFile(path.join(runtime, 'XODUS_NEXUS_PATCH.json'), JSON.stringify({ ...metadata, componentsByArch: undefined }));
+    await expect(prepareProtonRunner(wine, compat, path.join(root, 'steam'))).rejects.toThrow('libnghttp2.dll checksum');
+  });
+
   it('provisions every verified shared DXVK module, without modifying prior runtime symlinks', async () => {
     const root = await mkdtemp(path.join(tmpdir(), 'nexus-dxvk-prefix-')); created.push(root);
     const runtime = path.join(root, 'runtime'), compat = path.join(root, 'compat');

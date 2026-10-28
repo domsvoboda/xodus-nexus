@@ -8,6 +8,7 @@ import { systemGameLocale } from './game-locale.js';
 import { windowsGameLocale } from '../shared/game-language.js';
 import { prepareShaderCache } from './shader-cache.js';
 import { DEFAULT_SHADER_CACHE_GIB, shaderCacheLimits } from '../shared/shader-cache.js';
+import { layoutOfWine, protonRootOf } from './proton-layout.js';
 
 function shellQuote(value: string): string {
   return `'${value.replace(/'/g, `'"'"'`)}'`;
@@ -343,9 +344,12 @@ export async function prepareProtonRunner(
   shaderCacheLimitGiB = DEFAULT_SHADER_CACHE_GIB,
 ): Promise<ProtonRunner | undefined> {
   const cacheLimits = shaderCacheLimits(shaderCacheLimitGiB);
-  const protonRoot = path.resolve(path.dirname(winePath), '..', '..');
+  // An arm64 runtime keeps its own loader, prefix and ARM64X modules; Proton's
+  // `run` selects the same layout itself when it creates the prefix.
+  const layout = layoutOfWine(winePath);
+  const protonRoot = protonRootOf(winePath);
   const proton = path.join(protonRoot, 'proton');
-  const defaultPrefix = path.join(protonRoot, 'files', 'share', 'default_pfx');
+  const defaultPrefix = path.join(protonRoot, 'files', 'share', layout.defaultPrefix);
   try {
     await fs.access(proton, constants.X_OK);
     await fs.access(defaultPrefix, constants.R_OK);
@@ -390,7 +394,7 @@ export async function prepareProtonRunner(
   let appStateRuntime = false;
   let dxvkRuntime = false;
   try {
-    const metadata = JSON.parse(await fs.readFile(path.join(protonRoot, 'XODUS_NEXUS_PATCH.json'), 'utf8')) as { features?: unknown; components?: Record<string, string> };
+    const metadata = JSON.parse(await fs.readFile(path.join(protonRoot, 'XODUS_NEXUS_PATCH.json'), 'utf8')) as { features?: unknown; components?: Record<string, string>; componentsByArch?: Record<string, Record<string, string>> };
     hostLibraries = Array.isArray(metadata.features) && metadata.features.includes('wine-host-libraries-v1');
     http2Runtime = Array.isArray(metadata.features) && metadata.features.includes('wine-winhttp-http2-v1');
     jsonRuntime = Array.isArray(metadata.features) && metadata.features.includes('winrt-json-v1');
@@ -398,6 +402,9 @@ export async function prepareProtonRunner(
     appStateRuntime = Array.isArray(metadata.features) && metadata.features.includes('appstate-registration-v1');
     dxvkRuntime = Array.isArray(metadata.features) && metadata.features.includes('dxvk-constant-compare-v1');
     const dxvkComponents = ['d3d8.dll', 'd3d9.dll', 'd3d10core.dll', 'd3d11.dll', 'dxgi.dll'];
+    // `components` are the x86_64 checksums; other PE directories are listed
+    // under `componentsByArch` and are never checked against x86_64 bytes.
+    const expectedComponents = metadata.componentsByArch?.[layout.peArch] ?? (layout.peArch === 'x86_64-windows' ? metadata.components : undefined);
     const components = [ ...(http2Runtime ? ['libnghttp2.dll'] : []), ...(jsonRuntime ? ['windows.web.dll'] : []), ...(shaderRuntime ? ['libvkd3d-shader-1.dll'] : []), ...(appStateRuntime ? ['twinapi.appcore.dll'] : []), ...(dxvkRuntime ? dxvkComponents : []) ];
     // Validate every component before changing any prefix entry.
     const verified = await Promise.all(components.map(async (name) => {
@@ -405,8 +412,8 @@ export async function prepareProtonRunner(
       // alone is insufficient in existing prefixes. Validate before replacing
       // a directory entry so symlinks cannot overwrite another runtime.
       const library = name === 'libvkd3d-shader-1.dll' ? 'vkd3d' : dxvkComponents.includes(name) ? 'wine/dxvk' : 'wine';
-      const source = path.join(files, 'lib', library, 'x86_64-windows', name);
-      const expected = metadata.components?.[name];
+      const source = path.join(files, 'lib', library, layout.peArch, name);
+      const expected = expectedComponents?.[name];
       const bytes = await fs.readFile(source);
       if (!expected || createHash('sha256').update(bytes).digest('hex') !== expected) throw new Error(`The shared runtime has an invalid ${name} checksum.`);
       return { name, bytes };
@@ -436,7 +443,8 @@ export async function prepareProtonRunner(
   const protonLibraries = [...(hostLibraries ? ['/usr/lib'] : []), ...libraryDirectories].join(':');
   const gstPlugins = hostLibraries ? '/usr/lib/gstreamer-1.0' : libraryDirectories.map((directory) => path.join(directory, 'gstreamer-1.0')).join(':');
   const wineDllPath = [path.join(files, 'lib', 'vkd3d'), path.join(files, 'lib', 'wine')].join(':');
-  const executablePath = [path.join(files, 'bin'), process.env.PATH ?? ''].filter(Boolean).join(':');
+  const executablePath = [path.join(files, layout.bin), process.env.PATH ?? ''].filter(Boolean).join(':');
+  const wineserver = path.join(files, layout.bin, 'wineserver');
   const eacRuntime = await installedEacRuntime(steamRoot);
   // Keep the caches outside temporary launch views, separately for each prefix.
   const shaderCaches = await prepareShaderCache(compatibilityDataPath);
@@ -488,18 +496,18 @@ export async function prepareProtonRunner(
     // Private lifecycle command uses the exact same prefix/library environment
     // as launch. It is only invoked for explicit Stop/launcher shutdown.
     'if [ "${1:-}" = "--nexus-stop-prefix" ]; then',
-    `  exec ${shellQuote(path.join(files, 'bin', 'wineserver'))} -k`,
+    `  exec ${shellQuote(wineserver)} -k`,
     'fi',
     // Launchers (including EAC) may finish before the game they spawned.
     // Keep Xodus and its temporary launch view/account service alive until
     // the isolated game prefix has no remaining Wine processes.
-    `if [ ! -x ${shellQuote(path.join(files, 'bin', 'wineserver'))} ]; then`,
+    `if [ ! -x ${shellQuote(wineserver)} ]; then`,
     `  exec ${shellQuote(launchWine)} "$@"`,
     'fi',
     'launch_status=0',
     `${shellQuote(launchWine)} "$@" || launch_status=$?`,
     'wait_status=0',
-    `${shellQuote(path.join(files, 'bin', 'wineserver'))} -w || wait_status=$?`,
+    `${shellQuote(wineserver)} -w || wait_status=$?`,
     'if [ "$launch_status" -ne 0 ]; then exit "$launch_status"; fi',
     'exit "$wait_status"',
     '',
