@@ -5,7 +5,7 @@ import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { promisify } from 'node:util';
 import { afterEach, describe, expect, it } from 'vitest';
-import { managedUnrealCultureGameIni, prefixUserLocale, prepareProtonRunner, syncPrefixUserLocale, syncUnrealCultureGameIni } from './proton.js';
+import { fexEnvironment, managedUnrealCultureGameIni, prefixUserLocale, prepareProtonRunner, syncPrefixUserLocale, syncUnrealCultureGameIni } from './proton.js';
 import { prepareGameWrapper } from './game-wrapper.js';
 import { defaultLaunchTools } from '../shared/launch-tools.js';
 import { preparedGameWine } from './game-launch.js';
@@ -15,6 +15,44 @@ const execFile = promisify(execFileCallback);
 
 afterEach(async () => {
   await Promise.all(created.splice(0).map((directory) => rm(directory, { recursive: true, force: true })));
+});
+
+describe('fexEnvironment', () => {
+  // Runs the runner's FEX block as an arm64 (or x86_64) host would and reports
+  // the exported FEX variables and the per-game config it wrote.
+  async function evaluate(machine: string, env: Record<string, string>) {
+    const root = await mkdtemp(path.join(tmpdir(), 'nexus-fex-')); created.push(root);
+    const bin = path.join(root, 'bin'), config = path.join(root, 'compat', 'proton-fex-config.json');
+    await mkdir(bin); await mkdir(path.dirname(config));
+    await writeFile(path.join(bin, 'uname'), `#!/bin/sh\necho ${machine}\n`, { mode: 0o755 });
+    const script = [...fexEnvironment(config, '/runtime/files/share/fex-emu/'), 'echo "APP=${FEX_APP_CONFIG:-}"', 'echo "LOCATION=${FEX_APP_CONFIG_LOCATION:-}"', 'echo "CACHE=${FEX_DISKCACHE:-}"'].join('\n');
+    const { stdout } = await execFile('/bin/sh', ['-c', script], { env: { PATH: `${bin}:/usr/bin:/bin`, ...env } });
+    const written = await readFile(config, 'utf8').then(text => JSON.parse(text), () => undefined);
+    return { stdout, config, written };
+  }
+
+  it.skipIf(process.platform === 'win32')('writes an empty per-game config like Proton when Steam sets nothing', async () => {
+    const result = await evaluate('aarch64', {});
+    expect(result.written).toEqual({ Config: {}, ThunksDB: {} });
+    expect(result.stdout).toBe(`APP=${result.config}\nLOCATION=/runtime/files/share/fex-emu/\nCACHE=1\n`);
+  });
+
+  it.skipIf(process.platform === 'win32')('takes each game\'s Steam FEX variables, and the compat override sets both', async () => {
+    expect((await evaluate('aarch64', { STEAM_FEX_TSOENABLED: '0' })).written.Config).toEqual({ TSOEnabled: '0' });
+    expect((await evaluate('aarch64', { STEAM_FEX_TSOENABLED: '1', STEAM_FEX_MULTIBLOCK: '0' })).written.Config).toEqual({ TSOEnabled: '1', Multiblock: '0' });
+    expect((await evaluate('aarch64', { STEAM_FEX_TSOENABLED: '1', STEAM_COMPAT_FEX_CONFIG: 'Multiblock:1' })).written.Config).toEqual({ TSOEnabled: '0', Multiblock: '1' });
+    // Only FEX's boolean values reach the JSON file.
+    expect((await evaluate('aarch64', { STEAM_FEX_TSOENABLED: '1", "Evil": "x' })).written.Config).toEqual({});
+  });
+
+  it.skipIf(process.platform === 'win32')('keeps explicit FEX settings and does nothing on x86_64 hosts', async () => {
+    const explicit = await evaluate('aarch64', { FEX_APP_CONFIG: '/mine.json', FEX_APP_CONFIG_LOCATION: '/profiles/', FEX_DISKCACHE: '0', STEAM_FEX_TSOENABLED: '0' });
+    expect(explicit.written).toBeUndefined();
+    expect(explicit.stdout).toBe('APP=/mine.json\nLOCATION=/profiles/\nCACHE=0\n');
+    const x86 = await evaluate('x86_64', { STEAM_FEX_TSOENABLED: '0' });
+    expect(x86.written).toBeUndefined();
+    expect(x86.stdout).toBe('APP=\nLOCATION=\nCACHE=\n');
+  });
 });
 
 describe('prepareProtonRunner', () => {

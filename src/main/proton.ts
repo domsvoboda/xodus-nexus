@@ -335,6 +335,35 @@ export async function syncUnrealCultureGameIni(
   }
 }
 
+/**
+ * Proton's per-game FEX setup for arm64 hosts, evaluated at each launch: the
+ * Steam variables of that launch become the prefix's FEX app config. An
+ * explicit FEX_APP_CONFIG (or FEX_DISKCACHE / FEX_APP_CONFIG_LOCATION) wins.
+ */
+export function fexEnvironment(configFile: string, profiles: string | undefined): string[] {
+  return [
+    'if [ "$(uname -m)" = aarch64 ]; then',
+    '  if [ "${FEX_DISKCACHE+x}" != x ]; then export FEX_DISKCACHE=1; fi',
+    ...(profiles ? ['  if [ "${FEX_APP_CONFIG_LOCATION+x}" != x ]; then', `    export FEX_APP_CONFIG_LOCATION=${shellQuote(profiles)}`, '  fi'] : []),
+    '  if [ -z "${FEX_APP_CONFIG:-}" ]; then',
+    '    fex_tso=; fex_multiblock=',
+    '    case "${STEAM_FEX_TSOENABLED:-}" in 0|1) fex_tso=$STEAM_FEX_TSOENABLED;; esac',
+    '    case "${STEAM_FEX_MULTIBLOCK:-}" in 0|1) fex_multiblock=$STEAM_FEX_MULTIBLOCK;; esac',
+    // A user override sets both values, exactly like Proton.
+    '    if [ -n "${STEAM_COMPAT_FEX_CONFIG:-}" ]; then',
+    '      case "$STEAM_COMPAT_FEX_CONFIG" in *TSOEnabled:1*) fex_tso=1;; *) fex_tso=0;; esac',
+    '      case "$STEAM_COMPAT_FEX_CONFIG" in *Multiblock:1*) fex_multiblock=1;; *) fex_multiblock=0;; esac',
+    '    fi',
+    '    fex_config=',
+    '    if [ -n "$fex_tso" ]; then fex_config="\\"TSOEnabled\\": \\"$fex_tso\\""; fi',
+    '    if [ -n "$fex_multiblock" ]; then fex_config="${fex_config:+$fex_config, }\\"Multiblock\\": \\"$fex_multiblock\\""; fi',
+    `    printf '{\\n  "Config": {%s},\\n  "ThunksDB": {}\\n}\\n' "$fex_config" > ${shellQuote(configFile + '.tmp')} && mv -f ${shellQuote(configFile + '.tmp')} ${shellQuote(configFile)}`,
+    `    export FEX_APP_CONFIG=${shellQuote(configFile)}`,
+    '  fi',
+    'fi',
+  ];
+}
+
 export async function prepareProtonRunner(
   winePath: string,
   compatibilityDataPath: string,
@@ -440,6 +469,7 @@ export async function prepareProtonRunner(
   const eacRuntime = await installedEacRuntime(steamRoot);
   // Keep the caches outside temporary launch views, separately for each prefix.
   const shaderCaches = await prepareShaderCache(compatibilityDataPath);
+  const fexProfiles = await fs.access(path.join(files, 'share', 'fex-emu')).then(() => path.join(files, 'share', 'fex-emu') + '/', () => undefined);
   const defaultEnvironment = (name: string, value: string) => [
     `if [ "\${${name}+x}" != x ]; then`,
     `  export ${name}=${shellQuote(value)}`,
@@ -490,6 +520,7 @@ export async function prepareProtonRunner(
     'if [ "${1:-}" = "--nexus-stop-prefix" ]; then',
     `  exec ${shellQuote(path.join(files, 'bin', 'wineserver'))} -k`,
     'fi',
+    ...fexEnvironment(path.join(compatibilityDataPath, 'proton-fex-config.json'), fexProfiles),
     // Launchers (including EAC) may finish before the game they spawned.
     // Keep Xodus and its temporary launch view/account service alive until
     // the isolated game prefix has no remaining Wine processes.
