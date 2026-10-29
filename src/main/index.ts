@@ -10,7 +10,7 @@ import path from 'node:path';
 import os from 'node:os';
 import { fileURLToPath } from 'node:url';
 import { randomUUID } from 'node:crypto';
-import type { ChildProcessWithoutNullStreams } from 'node:child_process';
+import type { ChildProcess } from 'node:child_process';
 import type { AppSnapshot, AuthStatus, DownloadTask, Game, OfflinePermissions, GameLaunchOptions, GameOperation, GameUpdate, InstallRequest, Settings } from '../shared/types.js';
 import { downloadFailure, safeProductId } from '../shared/utils.js';
 import { interfaceLanguagePreference } from '../shared/interface-language.js';
@@ -54,6 +54,11 @@ import { DownloadCleanup } from './download-cleanup.js';
 import { GameSession, gameLocales, type ActiveGame } from './game-session.js';
 import { EphemeralServiceSessions } from './service-sessions.js';
 import { bundledCloseHelper, closeGracefully } from './graceful-close.js';
+import { DaemonUnits } from './daemon-units.js';
+import { DaemonLink } from './daemon-link.js';
+import { daemonSocketPath } from './daemon-client.js';
+import { filterClientEnvironment, type DaemonState } from '../shared/daemon-protocol.js';
+import { profileIdOf } from '../shared/profile-id.js';
 import { InstallQueue, assertActivityCompatible, assertInstallDestination, canonicalInstallPath, installPathsOverlap } from './install-queue.js';
 import { GameDisplayBlocker } from './game-display.js';
 import { GameShortcuts, shortcutArguments, shortcutInstanceData, shortcutInstanceRequest, shortcutLauncherPath, type ShortcutDestination } from './game-shortcuts.js';
@@ -160,7 +165,7 @@ let backend: BackendManager;
 let backendDiagnostics: BackendDiagnostics;
 let runtime: RuntimeManager;
 let connectivity: ConnectivityMonitor | undefined;
-const operations = new Map<string, ChildProcessWithoutNullStreams>();
+const operations = new Map<string, ChildProcess>();
 const gameProcesses = new Map<string, GameProcess>();
 const cancelledDownloads = new Set<string>();
 const downloadCancellations = new Map<string, Promise<void>>();
@@ -239,6 +244,17 @@ let launcherUpdater: LauncherUpdater;
 const gameUpdates: Record<string, GameUpdate> = {};
 let checkingGameUpdates = false;
 let gameUpdateController: AbortController | undefined;
+// Background game daemon (systemd user units). The launcher only installs and
+// removes the units; Steam's thin client talks to the daemon directly.
+let daemonUnits: DaemonUnits | undefined;
+let daemonLauncher: string | undefined;
+let daemonInstalled = false;
+let daemonError: string | undefined;
+// While the daemon runs the games, the launcher mirrors its operation state.
+let daemonLink: DaemonLink | undefined;
+let mirroredOperation: GameOperation | undefined;
+let mirroredState: DaemonState | undefined;
+let releaseMirroredGame: (() => void) | undefined;
 let gameUpdateJob: Promise<void> | undefined;
 let snapshotTimer: ReturnType<typeof setTimeout> | undefined;
 let shortcuts: GameShortcuts;
@@ -275,7 +291,7 @@ else if (!demoMode) app.on('second-instance', (_event, _argv, _workingDirectory,
   }
 });
 const shortcutLaunch = new ShortcutLaunch(
-  () => gameOperation?.kind === 'launch' && ['preparing', 'running', 'stopping'].includes(gameOperation.status) ? gameOperation.gameId : undefined,
+  () => { const active = visibleGameOperation(); return active?.kind === 'launch' && ['preparing', 'running', 'stopping'].includes(active.status) ? active.gameId : undefined; },
   (id) => launchGame(id),
 );
 
@@ -303,6 +319,90 @@ function receiveLaunchRequest(id?: string): void {
   void shortcutLaunch.request(id).catch(shortcutError).finally(finishShortcutSession);
 }
 
+function daemonStatus(): AppSnapshot['daemon'] {
+  if (process.platform !== 'linux') return { supported: false, installed: false, reason: 'The background service is available on Linux only.' };
+  if (!daemonUnits) return { supported: false, installed: false, reason: 'The background service needs a systemd user session (XDG_RUNTIME_DIR).' };
+  if (!daemonLauncher) return { supported: false, installed: false, reason: 'The background service needs an installed launcher or AppImage with a persistent path.' };
+  return { supported: true, installed: daemonInstalled, connected: Boolean(daemonLink?.connected), warm: mirroredState?.session.warm, error: daemonError };
+}
+
+const ACTIVE_STATUSES = ['preparing', 'running', 'stopping'];
+/** The game operation to show and to guard against: a local one while active, else the daemon's. */
+function visibleGameOperation(): GameOperation | undefined {
+  if (gameOperation && ACTIVE_STATUSES.includes(gameOperation.status)) return gameOperation;
+  if (mirroredOperation && ACTIVE_STATUSES.includes(mirroredOperation.status)) return mirroredOperation;
+  if (gameOperation && mirroredOperation) return Date.parse(mirroredOperation.startedAt) > Date.parse(gameOperation.startedAt) ? mirroredOperation : gameOperation;
+  return gameOperation ?? mirroredOperation;
+}
+function daemonRunsGames(): boolean { return Boolean(daemonLink?.connected); }
+
+function receiveDaemonState(state: DaemonState): void {
+  mirroredState = state;
+  mirroredOperation = state.gameOperation;
+  if (state.inspected) {
+    const { gameId, patch } = state.inspected;
+    if (store.games.some(game => game.id === gameId)) void store.patchGame(gameId, patch).catch(error => console.error('Could not persist the daemon\'s inspection:', error));
+  }
+  followMirroredGame(mirroredOperation);
+  scheduleSnapshot();
+}
+
+/** Keeps the display awake and the Nexus Overlay bound while the daemon's game runs, as for a local one. */
+function followMirroredGame(operation: GameOperation | undefined): void {
+  const running = operation && (operation.status === 'running' || operation.status === 'stopping') ? operation : undefined;
+  if (running && !releaseMirroredGame) {
+    const release = gameDisplay.acquire(), gameId = running.gameId;
+    gameGuide?.bind(gameId, running.title);
+    releaseMirroredGame = () => { release(); gameGuide?.unbind(gameId); };
+  }
+  if (!running && releaseMirroredGame) { releaseMirroredGame(); releaseMirroredGame = undefined; }
+}
+
+function connectDaemonLink(): void {
+  const runtimeDir = process.env.XDG_RUNTIME_DIR;
+  if (daemonLink || !daemonUnits || !daemonInstalled || !store.settings.backgroundDaemon || !runtimeDir) return;
+  daemonLink = new DaemonLink({ socketPath: daemonSocketPath(runtimeDir, profileIdOf(app.getPath('userData'))), version: app.getVersion() });
+  daemonLink.on('state', receiveDaemonState);
+  daemonLink.on('invite', notice => {
+    if (notice.notice === 'choose') { void showFriends().catch(() => {}); return; }
+    notifyGameInvitation(notice.sender ?? 'Xbox player', notice.game);
+  });
+  daemonLink.on('connected', connected => {
+    if (!connected) { mirroredState = undefined; mirroredOperation = undefined; followMirroredGame(undefined); }
+    scheduleSnapshot();
+  });
+  daemonLink.start();
+}
+function disconnectDaemonLink(): void {
+  daemonLink?.stop();
+  daemonLink = undefined;
+  mirroredState = undefined; mirroredOperation = undefined;
+  followMirroredGame(undefined);
+}
+
+/** Writes or removes the per-profile units to match `enabled`; an install also refreshes the launcher path after an update. */
+async function syncDaemonUnits(enabled: boolean): Promise<void> {
+  if (!daemonUnits) throw Error('The background service needs a systemd user session.');
+  const profileId = profileIdOf(app.getPath('userData'));
+  try {
+    if (enabled) {
+      if (!daemonLauncher) throw Error('The background service needs an installed launcher or AppImage with a persistent path.');
+      await daemonUnits.install({ profileId, launcher: await fs.realpath(daemonLauncher), userData: app.getPath('userData') });
+      daemonInstalled = true;
+      connectDaemonLink();
+    } else {
+      disconnectDaemonLink();
+      await daemonUnits.remove(profileId);
+      daemonInstalled = false;
+    }
+    daemonError = undefined;
+  } catch (error) {
+    daemonError = (error as Error).message;
+    daemonInstalled = await daemonUnits.installed(profileId).catch(() => false);
+    throw error;
+  } finally { emitSnapshot(); }
+}
+
 function snapshot(): AppSnapshot {
   if (demoMode) return demoSnapshot({ launcher: app.getVersion(), backend: backendLock.version,
     backendCommit: backendLock.commit, backendCompatibility: backendLock.compatibility }, demoArtwork);
@@ -319,8 +419,13 @@ function snapshot(): AppSnapshot {
     gameUpdates: structuredClone(gameUpdates),
     overlayShortcut:overlayShortcut?.current,
     downloadProgressSupported: Boolean(backend.current.capabilities.streamingProgressJson),
-    gameOperation: gameOperation ? structuredClone(gameOperation) : undefined,
-    social: combinedInviteState(gameInviteBridges.values()),
+    gameOperation: (() => { const visible = visibleGameOperation(); return visible ? structuredClone(visible) : undefined; })(),
+    social: (() => {
+      const social = combinedInviteState(gameInviteBridges.values()), daemon = mirroredState?.invites;
+      if (daemon) { social.active.push(...daemon.active); social.outgoing.push(...daemon.outgoing); social.incoming.push(...daemon.incoming); }
+      return social;
+    })(),
+    daemon: daemonStatus(),
   };
 }
 
@@ -437,7 +542,7 @@ function ensureIdle(mode?: 'install' | 'launch' | 'remove'): void {
   if (launcherUpdater?.state.updating) throw new Error('The launcher is being updated.');
   if (checkingGameUpdates) throw new Error('A game update check is in progress.');
   if (gameRemovalInProgress) throw new Error('A game is being removed. Wait for it to finish.');
-  assertActivityCompatible(operations.keys(), store.downloads, gameOperation, installQueue.size, mode);
+  assertActivityCompatible(operations.keys(), store.downloads, visibleGameOperation(), installQueue.size, mode);
   if (backend.current.updating) throw new Error('The backend is being updated.');
   if (runtime.current.updating) throw new Error('Xodus Runtime is being installed.');
 }
@@ -773,8 +878,9 @@ async function prepareInstall(request: InstallRequest, updateGame?: Game, conten
     if (identity !== `${authState.username}:${backend.current.binaryPath}:${currentMarket()}`) throw Error('Account, backend or Store market changed. Retry the installation.');
     if (await backend.externalDownloadRunning()) throw Error('Another Xodus download is running outside this queue.');
     await assertInstallDestination(destination, store.games.filter(game => game.id !== updateGame?.id && game.id !== content?.game.id).map(game => game.path));
-    if (gameOperation && ['preparing', 'running', 'stopping'].includes(gameOperation.status)) {
-      const playing = store.games.find(game => game.id === gameOperation?.gameId);
+    const activeOperation = visibleGameOperation();
+    if (activeOperation && ['preparing', 'running', 'stopping'].includes(activeOperation.status)) {
+      const playing = store.games.find(game => game.id === activeOperation.gameId);
       if (playing && (playing.id === content?.game.id || installPathsOverlap(destination, await canonicalInstallPath(playing.path)))) throw Error('Close this game before changing its installed files.');
     }
     if (shutdownStarted || isCancelled()) return;
@@ -1021,6 +1127,11 @@ async function gameLaunchOptions(id: string): Promise<GameLaunchOptions> {
   };
 }
 
+function notifyGameInvitation(sender: string, game: string): void {
+  if (!Notification.isSupported()) return;
+  try { const notice = new Notification({ title: nativeText('Game invitation'), body: nativeText(`${sender} invited you to ${game}. Open Friends to accept.`), urgency: 'normal' }); notice.on('click', () => { void showFriends().catch(() => {}); }); notice.on('failed', () => {}); notice.show(); } catch { /* The dock remains available without desktop notifications. */ }
+}
+
 const ephemeralServices = new EphemeralServiceSessions();
 const gameSession = new GameSession({
   store: { get games() { return store.games; }, get downloads() { return store.downloads; }, get settings() { return store.settings; } },
@@ -1058,10 +1169,7 @@ const gameSession = new GameSession({
   inviteBridge: async (operationId, game, titleId, log) => {
     const account=authState.username,epoch=xboxSocial.epoch;
     const current=()=>!shutdownStarted&&authState.stored===true&&authState.username===account&&xboxSocial.epoch===epoch;
-    const bridge=new GameInviteBridge(operationId,game.title,titleId,current,emitSnapshot,()=>{void showFriends().catch(()=>{});},Date.now,sender=>{
-      if(!Notification.isSupported())return;
-        try{const notice=new Notification({title:nativeText('Game invitation'),body:nativeText(`${sender} invited you to ${game.title}. Open Friends to accept.`),urgency:'normal'});notice.on('click',()=>{void showFriends().catch(()=>{});});notice.on('failed',()=>{});notice.show();}catch{/* The dock remains available without desktop notifications. */}
-    },new XboxTitlePresence(current,log));
+    const bridge=new GameInviteBridge(operationId,game.title,titleId,current,emitSnapshot,()=>{void showFriends().catch(()=>{});},Date.now,sender=>notifyGameInvitation(sender,game.title),new XboxTitlePresence(current,log));
     try{await bridge.start();}
     catch(error){await bridge.stop().catch(()=>{});throw error;}
     gameInviteBridges.set(operationId,bridge);
@@ -1431,15 +1539,18 @@ function registerIpc(): void {
   ipcMain.handle('xbox-conversation', (event, xuid: unknown) => socialClient(event).conversation(xuid));
   ipcMain.handle('xbox-send-message', (event, xuid: unknown, text: unknown) => socialClient(event).send(xuid, text));
   ipcMain.handle('xbox-social-close', event => socialClient(event).close());
+  // A game the daemon runs keeps its bridge there; the Friends UI acts on it through the link.
+  const daemonInvites=(id:string)=>Boolean(daemonLink?.connected&&mirroredState?.gameOperation&&id.startsWith(mirroredState.gameOperation.id));
+  const daemonXuid=(xuid:unknown)=>{if(typeof xuid!=='string'||!/^\d{1,20}$/.test(xuid))throw Error('Invalid friend.');return xuid;};
   const invitation=(event:Electron.IpcMainInvokeEvent,id:unknown)=>{
     socialClient(event);if(typeof id!=='string'||id.length>160)throw Error('Invalid invitation.');
     const bridge=[...gameInviteBridges.values()].find(value=>id.startsWith(value.id+':'));
-    if(!bridge)throw Error('The game is no longer running.');return {bridge,id};
+    if(!bridge&&!daemonInvites(id))throw Error('The game is no longer running.');return {bridge,id};
   };
-  ipcMain.handle('game-invite-choose',(event,id:unknown,xuid:unknown)=>{const value=invitation(event,id);value.bridge.choose(value.id,xuid);});
-  ipcMain.handle('game-invite-cancel',(event,id:unknown)=>{const value=invitation(event,id);value.bridge.cancel(value.id);});
-  ipcMain.handle('game-invite-accept',(event,id:unknown)=>{const value=invitation(event,id);value.bridge.accept(value.id);});
-  ipcMain.handle('game-invite-friend',(event,id:unknown,xuid:unknown)=>{socialClient(event);if(typeof id!=='string'||id.length>100)throw Error('Invalid game.');const bridge=gameInviteBridges.get(id);if(!bridge)throw Error('The game is no longer running.');bridge.invite(xuid);});
+  ipcMain.handle('game-invite-choose',async(event,id:unknown,xuid:unknown)=>{const value=invitation(event,id);if(value.bridge)value.bridge.choose(value.id,xuid);else await daemonLink!.invite('choose',value.id,daemonXuid(xuid));});
+  ipcMain.handle('game-invite-cancel',async(event,id:unknown)=>{const value=invitation(event,id);if(value.bridge)value.bridge.cancel(value.id);else await daemonLink!.invite('cancel',value.id);});
+  ipcMain.handle('game-invite-accept',async(event,id:unknown)=>{const value=invitation(event,id);if(value.bridge)value.bridge.accept(value.id);else await daemonLink!.invite('accept',value.id);});
+  ipcMain.handle('game-invite-friend',async(event,id:unknown,xuid:unknown)=>{socialClient(event);if(typeof id!=='string'||id.length>100)throw Error('Invalid game.');const bridge=gameInviteBridges.get(id);if(bridge){bridge.invite(xuid);return;}if(!daemonInvites(id))throw Error('The game is no longer running.');await daemonLink!.invite('friend',id,daemonXuid(xuid));});
   ipcMain.handle('keyring-check', () => keyringSupport.check());
   ipcMain.handle('keyring-start', async () => {
     ensureIdle();
@@ -1460,6 +1571,8 @@ function registerIpc(): void {
   ipcMain.handle('restart-launcher', () => {
     ensureIdle();
     if (!launcherUpdater.state.restartRequired || !launcherUpdater.targetPath) throw new Error('No launcher restart is pending.');
+    // The daemon exits once idle; socket activation starts the updated build next time.
+    daemonLink?.reload();
     // AppImage sets these again for the new mount. Do not reuse the old mount.
     for (const key of ['APPIMAGE', 'APPDIR', 'ARGV0', 'OWD']) delete process.env[key];
     const externalEnvironment = externalLauncherEnvironment();
@@ -1476,17 +1589,20 @@ function registerIpc(): void {
     return gameUpdateJob;
   });
   ipcMain.handle('read-diagnostic-log', (_event, id: string) => {
-    if (!gameOperation?.logPath || gameOperation.id !== id) throw new Error('This diagnostic log is no longer available.');
-    return readDiagnosticTail(gameOperation.logPath, path.join(path.dirname(store.settings.runtimeRoot), 'logs'));
+    const visible = visibleGameOperation();
+    if (!visible?.logPath || visible.id !== id) throw new Error('This diagnostic log is no longer available.');
+    return readDiagnosticTail(visible.logPath, path.join(path.dirname(store.settings.runtimeRoot), 'logs'));
   });
   ipcMain.handle('reveal-diagnostic-log', async (_event, id: string) => {
-    if (!gameOperation?.logPath || gameOperation.id !== id) throw new Error('This diagnostic log is no longer available.');
-    const file = await diagnosticLogFile(gameOperation.logPath, path.join(path.dirname(store.settings.runtimeRoot), 'logs'));
+    const visible = visibleGameOperation();
+    if (!visible?.logPath || visible.id !== id) throw new Error('This diagnostic log is no longer available.');
+    const file = await diagnosticLogFile(visible.logPath, path.join(path.dirname(store.settings.runtimeRoot), 'logs'));
     shell.showItemInFolder(file);
   });
   ipcMain.handle('copy-diagnostic-log', async (_event, id: string) => {
-    if (!gameOperation?.logPath || gameOperation.id !== id) throw new Error('This diagnostic log is no longer available.');
-    await copyDiagnosticFile(gameOperation.logPath, path.join(path.dirname(store.settings.runtimeRoot), 'logs'), text => clipboard.writeText(text));
+    const visible = visibleGameOperation();
+    if (!visible?.logPath || visible.id !== id) throw new Error('This diagnostic log is no longer available.');
+    await copyDiagnosticFile(visible.logPath, path.join(path.dirname(store.settings.runtimeRoot), 'logs'), text => clipboard.writeText(text));
   });
   ipcMain.handle('login', () => requestAuth('login'));
   ipcMain.handle('logout', () => requestAuth('logout'));
@@ -1626,7 +1742,8 @@ function registerIpc(): void {
     if (!game) throw new Error('Game not found.');
     gameRemovalInProgress = true;
     try {
-      const activeGame = gameOperation && ['preparing', 'running', 'stopping'].includes(gameOperation.status) ? gameOperation : undefined;
+      const visible = visibleGameOperation();
+      const activeGame = visible && ['preparing', 'running', 'stopping'].includes(visible.status) ? visible : undefined;
       const runningGame = activeGame ? store.games.find(entry => entry.id === activeGame.gameId) : undefined;
       if (activeGame && !runningGame) throw Error('Could not verify the active game. Close it before removing a game.');
       await assertGameRemovalAvailable(game, store.downloads, task => operations.has(task.id) || installQueue.has(task.id), runningGame);
@@ -1683,7 +1800,14 @@ function registerIpc(): void {
     if (authState.running || authState.stored !== true || account !== authState.username || binary !== backend.current.binaryPath || !target.game&&market!==currentMarket()) return { status: 'error' };
     return value;
   });
-  ipcMain.handle('launch-game', (_event, id: string) => launchGame(id));
+  ipcMain.handle('launch-game', async (_event, id: string) => {
+    if (!daemonRunsGames()) return launchGame(id);
+    ensureIdle('launch');
+    await prepareSystemWallet();
+    // In Game Mode Steam's Exit game ends Nexus; own the game so the daemon then closes it gracefully.
+    const gameMode = Boolean(process.env.XDG_CURRENT_DESKTOP?.split(':').some(part => part.toLowerCase() === 'gamescope'));
+    await daemonLink!.launch(id, filterClientEnvironment(process.env), gameMode);
+  });
   ipcMain.handle('add-to-steam', async (_event, id?: string) => {
     if (process.platform !== 'linux') throw Error('Steam integration is currently supported on Linux only.');
     if (id !== undefined && typeof id !== 'string') throw Error('Invalid game ID.');
@@ -1746,6 +1870,8 @@ function registerIpc(): void {
   });
   ipcMain.handle('install-game-vc-runtime', (_event, id: string) => installGameVcRuntime(id));
   ipcMain.handle('cancel-game', async () => {
+    const visible = visibleGameOperation();
+    if (visible && visible === mirroredOperation && ['preparing', 'running', 'stopping'].includes(visible.status)) { await daemonLink!.cancel(); return; }
     if (!gameOperation || !['preparing', 'running', 'stopping'].includes(gameOperation.status)) throw new Error('No game launch is currently active.');
     const child = operations.get(gameOperation.id);
     const gameProcess = gameProcesses.get(gameOperation.id);
@@ -1807,6 +1933,7 @@ function registerIpc(): void {
     if (patch.closeToTray !== undefined) {if(typeof patch.closeToTray !== 'boolean')throw Error('Invalid close-to-tray setting.');allowed.closeToTray=patch.closeToTray;}
     if (typeof patch.firstRunCompleted === 'boolean') allowed.firstRunCompleted = patch.firstRunCompleted;
     const previous = store.settings;
+    if (typeof patch.backgroundDaemon === 'boolean') allowed.backgroundDaemon = patch.backgroundDaemon;
     const settings = await store.setSettings(allowed);
     if(patch.closeToTray!==undefined){
       if(!launcherTray.configure(settings.closeToTray===true)){
@@ -1815,6 +1942,16 @@ function registerIpc(): void {
       }
       if(!settings.closeToTray&&mainWindow&&!mainWindow.isVisible())await showLauncher();
       if(Object.keys(patch).every(key=>key==='closeToTray')){emitSnapshot();return settings;}
+    }
+    // Saving the whole Settings form repeats the current value; only a change installs or removes units.
+    if (typeof patch.backgroundDaemon === 'boolean' && patch.backgroundDaemon !== Boolean(previous.backgroundDaemon)) {
+      try { await syncDaemonUnits(patch.backgroundDaemon); }
+      catch (error) {
+        if (patch.backgroundDaemon) await store.setSettings({ backgroundDaemon: false });
+        emitSnapshot();
+        throw Error(`Could not ${patch.backgroundDaemon ? 'enable' : 'disable'} the background service: ${(error as Error).message}`);
+      }
+      if (Object.keys(patch).every(key => key === 'backgroundDaemon')) { emitSnapshot(); return settings; }
     }
     if(Object.keys(xboxOverlayPatch(patch)).length){
       await overlayShortcut?.configure(settings);gameGuide?.publish('overlay',xboxOverlaySettings(settings));
@@ -2105,6 +2242,20 @@ app.whenReady().then(async () => {
     applications: path.join(dataHome, 'applications'), launcher: appImage ? await shortcutLauncherPath(appImage,process.env.ARGV0) : persistentBinary,
     icon: fileURLToPath(new URL('../../assets/icon.png', import.meta.url)) });
   if (!demoMode) await shortcuts.initialize().catch((error) => console.error('Game shortcut integration unavailable:', error));
+  daemonLauncher = appImage ?? persistentBinary;
+  const runtimeDir = process.env.XDG_RUNTIME_DIR;
+  if (process.platform === 'linux' && !demoMode && runtimeDir && path.isAbsolute(runtimeDir)) {
+    const configHome = process.env.XDG_CONFIG_HOME && path.isAbsolute(process.env.XDG_CONFIG_HOME) ? process.env.XDG_CONFIG_HOME : path.join(os.homedir(), '.config');
+    daemonUnits = new DaemonUnits({ configHome, runtimeDir });
+    const profileId = profileIdOf(app.getPath('userData'));
+    void daemonUnits.installed(profileId).then(async installed => {
+      daemonInstalled = installed;
+      // Keep the unit's launcher path current after the AppImage moved or updated.
+      if (store.settings.backgroundDaemon && daemonLauncher) await syncDaemonUnits(true);
+      else emitSnapshot();
+      connectDaemonLink();
+    }).catch(error => { daemonError = (error as Error).message; emitSnapshot(); });
+  }
   if (demoMode) {
     // Demo mode: no backend build, no runtime, no account access. Library
     // covers are fetched from the live Store; Store pages are live too.
@@ -2244,6 +2395,7 @@ app.on('before-quit', (event) => {
   launcherTray.quit();
   connectivity?.stop();
   xboxSocial.close();
+  disconnectDaemonLink();
   walletUnlocker.cancel();
   installQueue.stop();
   installQueue.stop();

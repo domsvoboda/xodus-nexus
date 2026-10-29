@@ -12,6 +12,20 @@ module.exports = async function afterPack(context) {
   await fs.chmod(executable, 0o755);
   await fs.copyFile(path.join(__dirname, 'launcher-font-bootstrap.mjs'), path.join(bootstrap, 'bootstrap.mjs'));
   await fs.copyFile(path.join(__dirname, '..', 'dist-electron', 'main', 'launcher-fonts.js'), path.join(bootstrap, 'launcher-fonts.mjs'));
+  // The background daemon and the thin Steam client are Node entry points run
+  // through the wrapper (ELECTRON_RUN_AS_NODE). They need a module-type package
+  // root outside app.asar, so ship the compiled tree beside the font bootstrap.
+  const nodeRoot = path.join(root, 'resources', 'nexus-node');
+  await fs.rm(nodeRoot, { recursive: true, force: true });
+  for (const part of ['main', 'shared', 'daemon', 'client']) {
+    await fs.cp(path.join(__dirname, '..', 'dist-electron', part), path.join(nodeRoot, 'dist-electron', part), { recursive: true, filter: source => !/\.(map|cts)$/.test(source) });
+  }
+  // Main modules read assets relative to themselves (backend-package.ts reads the
+  // backend lock at import), and the daemon reports the launcher version from
+  // the nearest package.json.
+  await fs.cp(path.join(__dirname, '..', 'assets'), path.join(nodeRoot, 'assets'), { recursive: true, filter: source => !/[\\/]assets[\\/]fonts(?:[\\/]|$)/.test(source) });
+  const { version } = JSON.parse(await fs.readFile(path.join(__dirname, '..', 'package.json'), 'utf8'));
+  await fs.writeFile(path.join(nodeRoot, 'package.json'), JSON.stringify({ type: 'module', private: true, version }) + '\n');
   // Native helpers CI compiled into build/tools/<arch>/ (nexus-close-window), only
   // this package's CPU. A local pack without them still works: Stop falls back to signals.
   const arch = { 1: 'x86_64', 3: 'aarch64' }[context.arch];

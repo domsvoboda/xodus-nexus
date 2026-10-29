@@ -1,6 +1,7 @@
 import { constants, promises as fs } from 'node:fs';
-import { createHash, randomUUID } from 'node:crypto';
+import { randomUUID } from 'node:crypto';
 import path from 'node:path';
+import { profileIdOf } from '../shared/profile-id.js';
 import type { Game } from '../shared/types.js';
 import { steamArgument, type SteamLaunch } from './steam-shortcuts.js';
 
@@ -26,6 +27,8 @@ export function shortcutArguments(argv: string[]): { gameId?: string; profile?: 
   const result: { gameId?: string; profile?: string } = {};
   for (let index = 0; index < argv.length; index++) {
     const flag = argv[index];
+    // The launcher wrapper dispatches these to the Node entry points; reaching Electron means a stale wrapper.
+    if (flag === '--nexus-client' || flag === '--nexus-daemon') throw new Error('This Nexus build cannot run the background-service mode. Update the launcher and recreate the shortcut.');
     if (flag !== '--launch-game' && flag !== '--nexus-profile') continue;
     const value = argv[++index];
     if (flag === '--launch-game') {
@@ -82,7 +85,7 @@ export class GameShortcuts {
   private nexusEntry?: string;
   private readonly profileId: string;
   constructor(private locations: Locations) {
-    this.profileId = createHash('sha256').update(path.resolve(locations.userData)).digest('hex').slice(0, 12);
+    this.profileId = profileIdOf(locations.userData);
   }
   get available(): boolean { return Boolean(this.entry); }
   get reason(): string | undefined { return this.available ? undefined : 'Shortcuts require an installed Linux launcher or AppImage with a persistent executable path.'; }
@@ -118,7 +121,10 @@ export class GameShortcuts {
     await this.directory(directory);
     const entry = path.join(directory, 'launch-game');
     // No tokens or runtime paths in shortcuts. Refresh after moving/updating the app.
-    const body = (game: boolean) => `#!/bin/sh\n# ${this.marker}\nunset APPIMAGE APPDIR ARGV0 OWD ELECTRON_RUN_AS_NODE VITE_DEV_SERVER_URL XODUS_DEMO XODUS_DEMO_TOUR XODUS_DEMO_CAPTURE_DIR XODUS_SMOKE_SCREENSHOT\nexec ${shellQuote(launcher)} --nexus-profile ${shellQuote(this.locations.userData)}${game ? ' --launch-game' : ''} "$@"\n`;
+    // The game entry is the thin client: it asks the background daemon to run the
+    // game and falls back to this launcher when the daemon is unavailable. The
+    // wrapper strips Steam's overlay from LD_PRELOAD, so keep the original for the game.
+    const body = (game: boolean) => `#!/bin/sh\n# ${this.marker}\n${game ? 'export XODUS_NEXUS_STEAM_LD_PRELOAD="${LD_PRELOAD-}"\n' : ''}unset APPIMAGE APPDIR ARGV0 OWD ELECTRON_RUN_AS_NODE VITE_DEV_SERVER_URL XODUS_DEMO XODUS_DEMO_TOUR XODUS_DEMO_CAPTURE_DIR XODUS_SMOKE_SCREENSHOT\nexec ${shellQuote(launcher)}${game ? ' --nexus-client' : ''} --nexus-profile ${shellQuote(this.locations.userData)}${game ? ' --launch-game' : ''} "$@"\n`;
     await this.write(entry, body(true), 0o700, `# ${this.marker}`);
     const nexusEntry = path.join(directory, 'launch-nexus');
     await this.write(nexusEntry, body(false), 0o700, `# ${this.marker}`);
