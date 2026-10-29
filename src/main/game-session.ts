@@ -113,6 +113,8 @@ export interface ActiveGame {
 export interface LaunchOptions {
   /** Steam's `%command%` from the shortcut: a Proton there runs the game instead of the Nexus runtime. */
   steamCommand?: string[];
+  /** The command came from a shortcut handed to this running launcher, without Steam's launch environment. */
+  handedOff?: boolean;
 }
 
 /** One game at a time: preparation, spawn and cleanup, independent of Electron. */
@@ -181,6 +183,9 @@ export class GameSession {
     // The "Xodus Nexus" entry in Steam's dropdown is the Nexus runtime itself.
     const nexusTool = Boolean(selectedProton && await isNexusTool(selectedProton.protonRoot));
     const steamProton = nexusTool ? undefined : selectedProton;
+    // Steam passes its compatibility data, runtime and mounts in the shortcut's
+    // own environment, which a running launcher does not have.
+    if (steamProton && options.handedOff) throw new Error("Xodus Nexus was already open, so it cannot use the Proton selected in Steam for this game. Close Xodus Nexus, then start the game from Steam again.");
     if (steamProton && !backend.capabilities.fullView) throw new Error("Steam's compatibility tool needs a newer Xodus backend. Update the backend in Settings, or clear the compatibility tool for this game in Steam.");
     const args = gameLaunchArguments(inspected, wine, store.settings.market, backend.linuxRunPatch,
       licenseCache, offlineLaunch && Boolean(licenseCache && backend.capabilities.offlineLaunch));

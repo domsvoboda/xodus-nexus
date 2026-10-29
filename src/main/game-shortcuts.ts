@@ -28,6 +28,8 @@ export interface ShortcutRequest {
   profile?: string;
   /** Steam's `%command%`: every word after the game id, from a shortcut whose options end in it. */
   steamCommand?: string[];
+  /** Received from another launcher process (set by the receiver, never parsed from a request). */
+  handedOff?: boolean;
 }
 
 export function shortcutArguments(argv: string[]): ShortcutRequest {

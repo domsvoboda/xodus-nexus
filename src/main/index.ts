@@ -51,7 +51,7 @@ import { createDiagnosticReport, reportSystemInfo, saveDiagnosticReport, validat
 import { queryGameUpdate } from './game-updates.js';
 import { DownloadProgress, PROGRESS_PREFIX } from './download-progress.js';
 import { DownloadCleanup } from './download-cleanup.js';
-import { GameSession, gameLocales, type ActiveGame } from './game-session.js';
+import { GameSession, gameLocales, type ActiveGame, type LaunchOptions } from './game-session.js';
 import { EphemeralServiceSessions } from './service-sessions.js';
 import { InstallQueue, assertActivityCompatible, assertInstallDestination, canonicalInstallPath, installPathsOverlap } from './install-queue.js';
 import { GameDisplayBlocker } from './game-display.js';
@@ -267,7 +267,7 @@ if (process.platform === 'linux') {
 const primaryInstance = demoMode || app.requestSingleInstanceLock(shortcutInstanceData(startupRequest, Boolean(startupError)));
 if (!primaryInstance) app.quit();
 else if (!demoMode) app.on('second-instance', (_event, _argv, _workingDirectory, additionalData) => {
-  try { receiveLaunchRequest(shortcutInstanceRequest(additionalData, app.getPath('userData'))); }
+  try { receiveLaunchRequest({ ...shortcutInstanceRequest(additionalData, app.getPath('userData')), handedOff: true }); }
   catch (error) {
     if (launchReady) void shortcutError(error);
     else pendingShortcutErrors.push(error);
@@ -275,7 +275,7 @@ else if (!demoMode) app.on('second-instance', (_event, _argv, _workingDirectory,
 });
 const shortcutLaunch = new ShortcutLaunch(
   () => gameOperation?.kind === 'launch' && ['preparing', 'running', 'stopping'].includes(gameOperation.status) ? gameOperation.gameId : undefined,
-  (id, steamCommand) => launchGame(id, steamCommand),
+  (id, options) => launchGame(id, options),
 );
 
 async function showLauncher(): Promise<void> {
@@ -299,7 +299,7 @@ function finishShortcutSession(): void {
 function receiveLaunchRequest(request: ShortcutRequest): void {
   if (!launchReady) { pendingRequests.push(request); return; }
   if (!request.gameId) { void showLauncher(); return; }
-  void shortcutLaunch.request(request.gameId, request.steamCommand).catch(shortcutError).finally(finishShortcutSession);
+  void shortcutLaunch.request(request.gameId, { steamCommand: request.steamCommand, handedOff: request.handedOff }).catch(shortcutError).finally(finishShortcutSession);
 }
 
 function snapshot(): AppSnapshot {
@@ -1085,12 +1085,12 @@ const gameSession = new GameSession({
   },
 });
 
-async function launchGame(id: string, steamCommand?: string[]): Promise<void> {
+async function launchGame(id: string, options: LaunchOptions = {}): Promise<void> {
   await stopGameUpdateCheck();
   ensureIdle('launch');
   preparingLaunch = true;
   let active: ActiveGame;
-  try { active = await gameSession.launch(id, { steamCommand }); }
+  try { active = await gameSession.launch(id, options); }
   finally { preparingLaunch = false; }
   operations.set(active.operationId, active.process.child);
   gameProcesses.set(active.operationId, active.process);

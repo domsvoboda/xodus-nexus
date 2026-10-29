@@ -166,6 +166,12 @@ describe('GameSession', () => {
     await active.finished;
   });
 
+  it('refuses a Steam-selected Proton handed to an already running launcher', async () => {
+    const steamCommand = ['/steam/reaper', 'SteamLaunch', 'AppId=1', '--', '/steam/GE-Proton/proton', 'waitforexitandrun', '/bin/sh'];
+    await expect(new GameSession(deps()).launch('g', { steamCommand, handedOff: true })).rejects.toThrow('Close Xodus Nexus, then start the game from Steam again');
+    expect(h.spawnCalls).toEqual([]);
+  });
+
   it('refuses to play an interrupted update before inspecting the installation', async () => {
     const session = new GameSession(deps({ incompleteUpdate: async () => true }));
     await expect(session.launch('g')).rejects.toThrow(INCOMPLETE_UPDATE_MESSAGE);
