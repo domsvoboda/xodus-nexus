@@ -23,12 +23,30 @@ export function shortcutTitleStem(title: string): string {
   return stem.trimEnd() || 'Xodus Nexus game';
 }
 
+/**
+ * The thin Steam client's refused launches: Game Mode has no terminal, so it
+ * starts the launcher in this dialog-only mode inside Steam's process tree.
+ * One `--flag=value` token, because Chromium may reorder separate switches.
+ */
+const LAUNCH_ERROR_FLAG = '--nexus-launch-error=';
+
+export function launchErrorArgument(message: string): string {
+  return LAUNCH_ERROR_FLAG + message.replace(/[\0-\x08\x0b-\x1f\x7f]/g, ' ').slice(0, 2000);
+}
+
+export function launchErrorMessage(argv: string[]): string | undefined {
+  const flag = argv.find(arg => arg.startsWith(LAUNCH_ERROR_FLAG));
+  const message = flag?.slice(LAUNCH_ERROR_FLAG.length).replace(/[\0-\x08\x0b-\x1f\x7f]/g, ' ').trim().slice(0, 2000);
+  return flag === undefined ? undefined : message || 'The game could not be launched.';
+}
+
 export function shortcutArguments(argv: string[]): { gameId?: string; profile?: string } {
   const result: { gameId?: string; profile?: string } = {};
   for (let index = 0; index < argv.length; index++) {
     const flag = argv[index];
     // The launcher wrapper dispatches these to the Node entry points; reaching Electron means a stale wrapper.
     if (flag === '--nexus-client' || flag === '--nexus-daemon') throw new Error('This Nexus build cannot run the background-service mode. Update the launcher and recreate the shortcut.');
+    if (flag.startsWith(LAUNCH_ERROR_FLAG)) return {};
     if (flag !== '--launch-game' && flag !== '--nexus-profile') continue;
     const value = argv[++index];
     if (flag === '--launch-game') {

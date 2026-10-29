@@ -5,7 +5,7 @@ import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 import { createHash } from 'node:crypto';
 import { expect, it } from 'vitest';
-import { GameShortcuts, shortcutLauncherPath, desktopArgument, shortcutArguments, shortcutInstanceData, shortcutInstanceRequest, shortcutTitleStem } from './game-shortcuts.js';
+import { GameShortcuts, shortcutLauncherPath, desktopArgument, launchErrorArgument, launchErrorMessage, shortcutArguments, shortcutInstanceData, shortcutInstanceRequest, shortcutTitleStem } from './game-shortcuts.js';
 import { ShortcutLaunch } from './shortcut-launch.js';
 
 const execute = promisify(execFile);
@@ -216,6 +216,17 @@ it('parses only validated shortcut requests and escapes desktop Exec separately 
   for (const argv of [['--launch-game'], ['--launch-game', '../game'], ['--launch-game', id, '--launch-game', id],
     ['--nexus-profile', 'relative'], ['--nexus-profile', '/x\nExec=evil']]) expect(() => shortcutArguments(argv)).toThrow();
   expect(desktopArgument('/a b/100%/"$`\\')).toBe('"/a b/100%%/\\\\"\\\\$\\\\`\\\\\\\\"');
+});
+
+it('carries a refused launch to the dialog-only mode as one sanitized switch', () => {
+  const message = 'Offline play requires a compatible Nexus backend and runtime.  --launch-game ' + id;
+  const argv = ['--nexus-profile', '/p', launchErrorArgument(message), '--ozone-platform=wayland'];
+  expect(launchErrorMessage(argv)).toBe('Offline play requires a compatible Nexus backend and runtime.  --launch-game ' + id);
+  // The dialog mode never launches a game, whatever the message contains.
+  expect(shortcutArguments(argv)).toEqual({});
+  expect(launchErrorMessage(['--launch-game', id])).toBeUndefined();
+  expect(launchErrorMessage([launchErrorArgument('')])).toBe('The game could not be launched.');
+  expect(launchErrorArgument('x'.repeat(5000)).length).toBeLessThan(2100);
 });
 
 it('hands off the original request independently of Chromium switch reordering', () => {

@@ -6,9 +6,10 @@ import { randomUUID } from 'node:crypto';
 import { pathToFileURL } from 'node:url';
 import { profileIdOf } from '../shared/profile-id.js';
 import { filterClientEnvironment, type DaemonFrame } from '../shared/daemon-protocol.js';
-import { shortcutArguments } from '../main/game-shortcuts.js';
+import { launchErrorArgument, shortcutArguments } from '../main/game-shortcuts.js';
 import { DaemonConnection, daemonSocketPath } from '../main/daemon-client.js';
 import { unitNames } from '../main/daemon-units.js';
+import { bundledCloseHelper, keepSteamFocus } from '../main/graceful-close.js';
 
 const CONNECT_WINDOW_MS = 10_000;
 const REATTACH_WINDOW_MS = 60_000;
@@ -30,6 +31,31 @@ export function legacyFallback(profile: string | undefined, gameId: string, env:
     const child = spawn(launcher, args, { stdio: 'inherit', env: rest });
     child.once('error', reject);
     child.once('exit', (code, signal) => resolve(code ?? (signal ? 1 : 0)));
+  });
+}
+
+/**
+ * Shows why a launch was refused. Game Mode has no terminal for this client's
+ * output, so the launcher opens a dialog. The launcher drops Steam's overlay,
+ * which is what tells gamescope a window's app, so the dialog's window is
+ * stamped like a daemon-run game's. The helper finds it by the launch id in an
+ * owner's environment, which Chromium's process title rewrite hides, so a
+ * plain shell stays in between as the parent that carries it. Steam keeps the
+ * game "running" until the dialog closes.
+ */
+export async function showLaunchError(profile: string | undefined, message: string, env: NodeJS.ProcessEnv = process.env): Promise<void> {
+  if (!env.DISPLAY && !env.WAYLAND_DISPLAY) return;
+  const args = [...(profile ? ['--nexus-profile', profile] : []), launchErrorArgument(message)];
+  const launchId = `launch-error-${randomUUID()}`;
+  const { ELECTRON_RUN_AS_NODE: _node, ...rest } = env;
+  const helper = await bundledCloseHelper();
+  await new Promise<void>(resolve => {
+    const child = spawn('/bin/sh', ['-c', '"$@"; status=$?; exit $status', 'sh', legacyLauncher(process.execPath), ...args],
+      { stdio: 'inherit', env: { ...rest, XODUS_NEXUS_LAUNCH_ID: launchId } });
+    const stopFocus = keepSteamFocus(helper, launchId, env, say);
+    const done = () => { stopFocus(); resolve(); };
+    child.once('error', done);
+    child.once('exit', done);
   });
 }
 
@@ -92,7 +118,7 @@ export async function main(argv = process.argv.slice(2), env = process.env): Pro
             say(`${frame.message} Starting Nexus directly.`);
             connection.close();
             legacyFallback(request.profile, gameId, env).then(resolve, reject);
-          } else { warn(frame.message); exited = true; connection.close(); resolve(1); }
+          } else { warn(frame.message); exited = true; connection.close(); void showLaunchError(request.profile, frame.message, env).then(() => resolve(1)); }
           break;
         case 'exit':
           if (operationId && frame.operationId !== operationId) break;
@@ -105,7 +131,10 @@ export async function main(argv = process.argv.slice(2), env = process.env): Pro
     };
     const onClose = async (error: Error | undefined) => {
       if (exited) return;
-      if (!operationId) { warn(error ? `Lost the background service: ${error.message}` : 'The background service closed the connection.'); resolve(1); return; }
+      if (!operationId) {
+        const message = error ? `Lost the background service: ${error.message}` : 'The background service closed the connection.';
+        warn(message); void showLaunchError(request.profile, message, env).then(() => resolve(1)); return;
+      }
       // The daemon went away under a running game: it restarts and re-adopts the
       // game, so keep Steam's "running" state and take the game back by its id.
       warn('Lost the background service; reconnecting to the running game.');

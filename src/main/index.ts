@@ -5,7 +5,7 @@ import type {XboxProfileRequest} from '../shared/types.js';
 import {XboxSocial as NativeXboxSocial} from './xbox-native-social.js';
 import {resetSocialTransport} from './xbox-social-transport.js';
 import { app, BrowserWindow, clipboard, dialog, globalShortcut, ipcMain, nativeImage, net, Notification, powerSaveBlocker, screen, shell, Tray, Menu } from 'electron';
-import { constants, createWriteStream, promises as fs, readFileSync, writeFileSync } from 'node:fs';
+import { constants, createWriteStream, mkdtempSync, promises as fs, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
 import { fileURLToPath } from 'node:url';
@@ -61,7 +61,8 @@ import { filterClientEnvironment, type DaemonState } from '../shared/daemon-prot
 import { profileIdOf } from '../shared/profile-id.js';
 import { InstallQueue, assertActivityCompatible, assertInstallDestination, canonicalInstallPath, installPathsOverlap } from './install-queue.js';
 import { GameDisplayBlocker } from './game-display.js';
-import { GameShortcuts, shortcutArguments, shortcutInstanceData, shortcutInstanceRequest, shortcutLauncherPath, type ShortcutDestination } from './game-shortcuts.js';
+import { launchErrorPage } from './launch-error-page.js';
+import { GameShortcuts, launchErrorMessage, shortcutArguments, shortcutInstanceData, shortcutInstanceRequest, shortcutLauncherPath, type ShortcutDestination } from './game-shortcuts.js';
 import { ShortcutLaunch } from './shortcut-launch.js';
 import { loadShortcutIcon } from './shortcut-icon.js';
 import { AccountProfile } from './account-profile.js';
@@ -274,6 +275,14 @@ try {
   startupRequest = shortcutArguments(process.argv.slice(1));
   if (startupRequest.profile) app.setPath('userData', startupRequest.profile);
 } catch (error) { startupError = error as Error; }
+// The thin Steam client's dialog-only mode runs beside an open launcher, so it
+// takes no instance lock and never touches the profile.
+const launchError = launchErrorMessage(process.argv.slice(1));
+if (launchError !== undefined) {
+  const scratch = mkdtempSync(path.join(os.tmpdir(), 'xodus-nexus-error-'));
+  app.setPath('userData', scratch);
+  app.once('will-quit', () => rmSync(scratch, { recursive: true, force: true }));
+}
 if (process.platform === 'linux') {
   try {
     const fonts = adoptLauncherFonts();
@@ -281,8 +290,8 @@ if (process.platform === 'linux') {
   } catch (error) { console.warn('Launcher fallback font unavailable:', (error as Error).message); }
 }
 // Electron's lock is scoped to userData, so independent profiles stay isolated.
-const primaryInstance = demoMode || app.requestSingleInstanceLock(shortcutInstanceData(startupRequest, Boolean(startupError)));
-if (!primaryInstance) app.quit();
+const primaryInstance = launchError === undefined && (demoMode || app.requestSingleInstanceLock(shortcutInstanceData(startupRequest, Boolean(startupError))));
+if (!primaryInstance && launchError === undefined) app.quit();
 else if (!demoMode) app.on('second-instance', (_event, _argv, _workingDirectory, additionalData) => {
   try { receiveLaunchRequest(shortcutInstanceRequest(additionalData, app.getPath('userData')).gameId); }
   catch (error) {
@@ -2184,6 +2193,17 @@ async function createWindow(): Promise<void> {
 }
 
 app.whenReady().then(async () => {
+  if (launchError !== undefined) {
+    // A normal window: gamescope does not show GTK message boxes here, and the
+    // client stamps this window's STEAM_GAME so Game Mode focuses it.
+    const title = nativeText('Unable to launch game');
+    const window = new BrowserWindow({ width: 760, height: 380, title, backgroundColor: '#111316', autoHideMenuBar: true, webPreferences: { sandbox: true } });
+    const closed = new Promise<void>(resolve => window.once('closed', () => resolve()));
+    const timer = setTimeout(() => { if (!window.isDestroyed()) window.close(); }, 60_000);
+    await window.loadURL('data:text/html;charset=utf-8,' + encodeURIComponent(launchErrorPage(title, launchError, 'OK'))).catch(() => undefined);
+    await closed; clearTimeout(timer);
+    app.quit(); return;
+  }
   if (!primaryInstance) return;
   if (startupError) { dialog.showErrorBox(nativeText('Invalid Nexus shortcut'), startupError.message); app.quit(); return; }
   xboxNativeSocial=new NativeXboxSocial(nativeSocialConnection);
