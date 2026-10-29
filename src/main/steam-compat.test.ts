@@ -4,7 +4,8 @@ import { createHash } from 'node:crypto';
 import os from 'node:os';
 import path from 'node:path';
 import {
-  forwardedSteamCommand, forwardedWrappers, launchViewDirectory, OVERLAY_COMPONENTS, overlayRuntime, parseSteamCommand, prefixArchitecture, prepareSteamOverlay, requireSupportedGameExecutable,
+  clearLaunchViews, forwardedSteamCommand, forwardedWrappers, LAUNCH_VIEW_MARGIN, LAUNCH_VIEW_SPACE_MESSAGE, launchViewDirectory, launchViewFailure, launchViewNeed,
+  requireLaunchViewSpace, steamProtonLimits, steamShaderCacheEnvironment, writeSteamPrefixStop, OVERLAY_COMPONENTS, overlayRuntime, parseSteamCommand, prefixArchitecture, prepareSteamOverlay, requireSupportedGameExecutable,
   steamCompatData, steamCompatMounts, steamLaunchCommand, steamProtonCommand, steamProtonLayout, wrapperPrefix, writeSteamLauncher, writeWrappedLauncher,
 } from './steam-compat.js';
 
@@ -290,9 +291,76 @@ describe.skipIf(!linux)('Steam prefix and overlay', () => {
     expect(await fs.readFile(file, 'utf8')).not.toContain('reaper');
   });
 
+  it('stops only Steam\'s prefix, with that Proton\'s own wineserver', async () => {
+    const stop = await writeSteamPrefixStop(path.join(root, 'wrappers'), '/steam/GE-Proton10', { bin: 'bin', defaultPrefix: 'default_pfx', peArch: 'x86_64-windows' }, "/steam/compatdata/1/it's pfx");
+    expect(stop.args).toEqual([]);
+    expect(await fs.readFile(stop.command, 'utf8')).toBe(`#!/bin/sh\nexport WINEPREFIX='/steam/compatdata/1/it'"'"'s pfx'\nexec '/steam/GE-Proton10/files/bin/wineserver' -k\n`);
+    expect((await fs.stat(stop.command)).mode & 0o777).toBe(0o700);
+  });
+
   it('wraps the Nexus runtime launcher in the shortcut\'s wrappers', async () => {
     const file = await writeWrappedLauncher(path.join(root, 'wrappers'), [armada], '/data/compatdata/x/xodus-proton-wine');
     expect(await fs.readFile(file, 'utf8')).toBe(`#!/bin/sh\nexec '${armada}' '/data/compatdata/x/xodus-proton-wine' "$@"\n`);
+  });
+});
+
+describe('Steam Proton launch view and limits', () => {
+  let root: string;
+  beforeEach(async () => { root = await fs.mkdtemp(path.join(os.tmpdir(), 'nexus-steam-view-')); });
+  afterEach(async () => { await fs.rm(root, { recursive: true, force: true }); });
+
+  it('counts only executables and DLLs that are still encrypted', async () => {
+    await fs.mkdir(path.join(root, 'Bin'));
+    await fs.writeFile(path.join(root, 'Game.exe'), Buffer.alloc(3000, 0xa5));
+    await fs.writeFile(path.join(root, 'Bin/Code.DLL'), Buffer.alloc(500, 0x11));
+    await fs.writeFile(path.join(root, 'Bin/plain.dll'), Buffer.concat([Buffer.from('MZ'), Buffer.alloc(8000)]));
+    await fs.writeFile(path.join(root, 'Bin/data.pak'), Buffer.alloc(9000, 0xa5));
+    await fs.writeFile(path.join(root, 'empty.exe'), '');
+    expect(await launchViewNeed(root)).toBe(3500);
+  });
+
+  it('refuses a view that would take more than half of the free space', async () => {
+    const statfs = (free: number) => async () => ({ bavail: free / 4096, bsize: 4096 });
+    const gib = 1024 ** 3;
+    expect(await requireLaunchViewSpace(root, 2 * 1024 ** 2, statfs(1.5 * gib))).toEqual({ need: 2 * 1024 ** 2, free: 1.5 * gib });
+    await expect(requireLaunchViewSpace(root, 0.75 * gib, statfs(1.5 * gib))).rejects.toThrow(LAUNCH_VIEW_SPACE_MESSAGE);
+    await expect(requireLaunchViewSpace(root, 0, statfs(LAUNCH_VIEW_MARGIN))).rejects.toThrow('clear the compatibility tool');
+  });
+
+  it('reports a launch view that ran out of space, and nothing else', () => {
+    expect(launchViewFailure('could not create launch view /run/user/1000/x: No space left on device (os error 28)')).toBe(LAUNCH_VIEW_SPACE_MESSAGE);
+    expect(launchViewFailure('game.exe: No space left on device')).toBeUndefined();
+    expect(launchViewFailure('created a temporary launch view with 2 decrypted files')).toBeUndefined();
+  });
+
+  it('removes only the backend\'s views', async () => {
+    await fs.mkdir(path.join(root, '.xodus-chain-a/Bin'), { recursive: true });
+    await fs.writeFile(path.join(root, '.xodus-chain-a/Bin/Code.dll'), 'decrypted');
+    await fs.writeFile(path.join(root, '.xodus-chain-file'), 'x');
+    await fs.mkdir(path.join(root, 'other'));
+    await clearLaunchViews(root);
+    expect((await fs.readdir(root)).sort()).toEqual(['.xodus-chain-file', 'other']);
+  });
+
+  it('names what a Steam Proton launch does not get from the Nexus runtime', () => {
+    const lines = steamProtonLimits('/steam/compatdata/1/pfx');
+    expect(lines[0]).toContain('Package identity and ApplicationData');
+    expect(lines[1]).toContain("Steam's prefix (/steam/compatdata/1/pfx)");
+  });
+
+  it('applies the managed shader caches only where Steam or the player set none', () => {
+    const caches = { vkd3d: '/c/vkd3d-proton', nvidia: '/c/nvidia', mesa: '/c/mesa' };
+    const limits = { bytes: String(4 * 1024 ** 3), mesa: '4G' };
+    expect(steamShaderCacheEnvironment({}, caches, limits)).toEqual({
+      VKD3D_SHADER_CACHE_PATH: caches.vkd3d, __GL_SHADER_DISK_CACHE_PATH: caches.nvidia, __GL_SHADER_DISK_CACHE: '1',
+      __GL_SHADER_DISK_CACHE_SIZE: limits.bytes, MESA_SHADER_CACHE_DIR: caches.mesa, MESA_SHADER_CACHE_MAX_SIZE: '4G',
+    });
+    // Steam's own cache directories (and an explicit empty value) win, and so do their limits.
+    expect(steamShaderCacheEnvironment({ __GL_SHADER_DISK_CACHE_PATH: '/steam/shadercache/1/nvidiav1', MESA_SHADER_CACHE_DIR: '', VKD3D_SHADER_CACHE_PATH: '/v' }, caches, limits)).toEqual({});
+    expect(steamShaderCacheEnvironment({ MESA_SHADER_CACHE_MAX_SIZE: '1G', __GL_SHADER_DISK_CACHE: '0' }, caches, limits)).toMatchObject({
+      MESA_SHADER_CACHE_DIR: caches.mesa, __GL_SHADER_DISK_CACHE_PATH: caches.nvidia });
+    expect(steamShaderCacheEnvironment({ MESA_SHADER_CACHE_MAX_SIZE: '1G', __GL_SHADER_DISK_CACHE: '0' }, caches, limits)).not.toHaveProperty('MESA_SHADER_CACHE_MAX_SIZE');
+    expect(steamShaderCacheEnvironment({ MESA_SHADER_CACHE_MAX_SIZE: '1G', __GL_SHADER_DISK_CACHE: '0' }, caches, limits)).not.toHaveProperty('__GL_SHADER_DISK_CACHE');
   });
 });
 

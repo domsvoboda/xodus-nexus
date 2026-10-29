@@ -20,7 +20,9 @@ import { INCOMPLETE_UPDATE_MESSAGE } from './installation-state.js';
 import { contentLicenseFailure } from '../shared/content-license.js';
 import type { AcquiredService, ServiceSessions } from './service-sessions.js';
 import { protonRootOf } from './proton-layout.js';
-import { forwardedWrappers, launchViewDirectory, prepareSteamOverlay, requireSupportedGameExecutable, steamCompatData, steamCompatMounts, steamLaunchCommand, steamProtonCommand, writeSteamLauncher, writeWrappedLauncher } from './steam-compat.js';
+import { clearLaunchViews, forwardedWrappers, launchViewDirectory, launchViewFailure, launchViewNeed, prepareSteamOverlay, requireLaunchViewSpace, requireSupportedGameExecutable, steamCompatData, steamCompatMounts, steamLaunchCommand, steamProtonCommand, steamProtonLimits, steamShaderCacheEnvironment, writeSteamLauncher, writeSteamPrefixStop, writeWrappedLauncher } from './steam-compat.js';
+import { prepareShaderCache } from './shader-cache.js';
+import { shaderCacheLimits } from '../shared/shader-cache.js';
 import { resolvePackageFile } from './windows-path.js';
 import { profileIdOf } from '../shared/profile-id.js';
 
@@ -227,6 +229,7 @@ export class GameSession {
     let service: AcquiredService | undefined;
     let inviteBridge: InviteBridgeHandle | undefined;
     let launchWrapper: GameWrapper | undefined;
+    let launchViews: string | undefined;
     let releaseDisplay = () => {};
     let detachGame = () => {};
     try {
@@ -245,7 +248,14 @@ export class GameSession {
       const steamPrefix = steamProton ? (await steamCompatData(baseEnvironment)).prefix : undefined;
       const overlay = steamProton ? await prepareSteamOverlay(steamProton, protonRootOf(wine), baseEnvironment, addGameLog) : undefined;
       const viewDirectory = steamProton ? await launchViewDirectory(baseEnvironment, profileIdOf(deps.paths.userData)) : undefined;
-      const gameWine = steamProton ? await writeSteamLauncher(path.join(dataRoot, 'launch-wrappers', 'steam', game.id), steamProton) : wine;
+      launchViews = viewDirectory;
+      if (viewDirectory) {
+        const { need, free } = await requireLaunchViewSpace(viewDirectory, await launchViewNeed(game.path));
+        addGameLog(`Launch view: ${Math.ceil(need / 1024 ** 2)} MiB of encrypted executables to decrypt; ${Math.floor(free / 1024 ** 2)} MiB free in ${viewDirectory}.`);
+      }
+      const steamWrappers = path.join(dataRoot, 'launch-wrappers', 'steam', game.id);
+      const gameWine = steamProton ? await writeSteamLauncher(steamWrappers, steamProton) : wine;
+      const steamStop = steamProton && overlay && steamPrefix ? await writeSteamPrefixStop(steamWrappers, steamProton.protonRoot, overlay.layout, steamPrefix) : undefined;
       launchWrapper = await prepareGameWrapper(gameWine, game.launchTools, path.join(dataRoot, 'launch-wrappers'), baseEnvironment, game.path);
       const protonRunner = steamProton ? undefined : await prepareProtonRunner(wine, compatibilityDataPath, steamRoot, launchWrapper.command, store.settings.shaderCacheLimitGiB);
       const wineCommand = protonRunner?.command ?? wine;
@@ -281,6 +291,13 @@ export class GameSession {
       if (overlay && viewDirectory) {
         Object.assign(environment, overlay.environment);
         environment.STEAM_COMPAT_MOUNTS = steamCompatMounts(baseEnvironment, [await canonicalInstallPath(game.path), viewDirectory]);
+        // The Nexus runner's managed shader caches and size limit, kept beside
+        // Nexus's data for this game rather than in Steam's compatdata.
+        const cacheRoot = path.join(dataRoot, 'steam-compat', game.id);
+        await fs.mkdir(cacheRoot, { recursive: true, mode: 0o700 });
+        const caches = steamShaderCacheEnvironment(environment, await prepareShaderCache(cacheRoot), shaderCacheLimits(store.settings.shaderCacheLimitGiB));
+        Object.assign(environment, caches);
+        if (!caches.VKD3D_SHADER_CACHE_PATH || !caches.MESA_SHADER_CACHE_DIR || !caches.__GL_SHADER_DISK_CACHE_PATH) addGameLog('Keeping the shader cache paths Steam or the player already set.');
       }
       if (deps.windowIdentity) {
         try {
@@ -353,7 +370,10 @@ export class GameSession {
       // Names the account for the runtime's offline identity cache (an opaque key, never the username).
       const account = deps.account();
       if (account.stored === true && account.username) environment.XODUS_ACCOUNT_HASH = accountCacheKey(account.username);
-      if (steamPrefix) addGameLog(`Steam Proton prefix: ${steamPrefix}`);
+      if (steamPrefix) {
+        addGameLog(`Steam Proton prefix: ${steamPrefix}`);
+        for (const line of steamProtonLimits(steamPrefix)) addGameLog(line);
+      }
       else if (protonRunner) addGameLog(`Proton prefix: ${protonRunner.compatibilityDataPath}/pfx`);
       else await fs.mkdir(legacyPrefixRoot, { recursive: true });
       const tracked = await spawnGameProcess(binary, args, {
@@ -361,7 +381,7 @@ export class GameSession {
         env: environment,
         onLine: addGameLog,
         maxOutput: 8_000_000,
-      }, { stopPrefix: protonRunner?.stopPrefix });
+      }, { stopPrefix: protonRunner?.stopPrefix ?? steamStop });
       detachGame = deps.attachGame?.(game, tracked.child.pid) ?? detachGame;
       releaseDisplay = deps.displayGuard();
       operation.status = 'running';
@@ -370,6 +390,7 @@ export class GameSession {
       const wrapper = launchWrapper;
       const acquired = service;
       const invites = inviteBridge;
+      const views = launchViews;
       const finished = tracked.result.then((result) => {
         addGameLog(`The Xodus process exited with code ${result.code}.`);
         if (!owns()) return;
@@ -381,6 +402,7 @@ export class GameSession {
           const detail = result.output.split('\n').map((line) => line.trim()).filter(Boolean).slice(-6).join(' | ');
           operation.status = 'failed';
           operation.error = contentLicenseFailure(result.output.split('\n'))
+            ?? (views ? launchViewFailure(result.output) : undefined)
             ?? `Xodus run exited with code ${result.code}${detail ? `: ${detail.slice(0, 900)}` : '.'}`;
           operation.phase = operation.error;
         }
@@ -399,6 +421,7 @@ export class GameSession {
           if (acquired) await acquired.release().catch((error) => addGameLog(`Account service cleanup failed: ${(error as Error).message}`));
           await tracked.cleanup().catch((error) => console.error('Game service cleanup failed:', error));
           await wrapper?.cleanup().catch((error) => console.error('Game wrapper cleanup failed:', error));
+          if (views) await clearLaunchViews(views).catch((error) => addGameLog(`Launch view cleanup failed: ${(error as Error).message}`));
           gameLog.flush();
           launchLog.end();
         } finally { changed(true); }
@@ -410,6 +433,7 @@ export class GameSession {
       releaseDisplay(); detachGame();
       await inviteBridge?.stop().catch(() => undefined);
       await launchWrapper?.cleanup().catch(() => undefined);
+      if (launchViews) await clearLaunchViews(launchViews).catch(() => undefined);
       if (service) await service.release().catch(() => undefined);
       writeLaunchLog(`Preparation error: ${(error as Error).message}`);
       gameLog.flush();

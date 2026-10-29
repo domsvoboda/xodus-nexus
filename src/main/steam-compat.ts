@@ -319,11 +319,99 @@ export async function launchViewDirectory(env: NodeJS.ProcessEnv, profileId: str
   }
   // A force-stopped backend (SIGTERM/SIGKILL) cannot remove its view. One
   // game runs per profile, so views left here are stale before a launch.
+  await clearLaunchViews(directory);
+  return directory;
+}
+
+/** Removes every launch view the backend left in `directory`; run before a launch and after it ends. */
+export async function clearLaunchViews(directory: string): Promise<void> {
   for (const entry of await fs.readdir(directory, { withFileTypes: true })) {
     if (!entry.isDirectory() || !entry.name.startsWith('.xodus-chain-')) continue;
     await fs.rm(path.join(directory, entry.name), { recursive: true, force: true });
   }
-  return directory;
+}
+
+/**
+ * Bytes a full launch view will hold, as far as they can be known before the
+ * backend runs: the size of every package executable and DLL that is not a
+ * readable PE image (still encrypted). Encrypted data files cannot be told
+ * apart from plain ones here; `requireLaunchViewSpace` leaves room for them.
+ */
+export async function launchViewNeed(gameRoot: string): Promise<number> {
+  let bytes = 0;
+  const visit = async (directory: string): Promise<void> => {
+    for (const entry of await fs.readdir(directory, { withFileTypes: true })) {
+      const file = path.join(directory, entry.name);
+      if (entry.isDirectory()) { await visit(file); continue; }
+      if (!entry.isFile() || !/\.(exe|dll)$/i.test(entry.name)) continue;
+      let handle;
+      try {
+        handle = await fs.open(file, 'r');
+        const header = Buffer.alloc(2);
+        const { bytesRead } = await handle.read(header, 0, 2, 0);
+        if (bytesRead < 2 || header.toString('latin1') !== 'MZ') bytes += (await handle.stat()).size;
+      } catch { /* Unreadable here; the backend reports it if the launch needs it. */ }
+      finally { await handle?.close().catch(() => undefined); }
+    }
+  };
+  await visit(gameRoot);
+  return bytes;
+}
+
+/** Free space a launch view must leave: the runtime directory is usually a RAM-backed tmpfs. */
+export const LAUNCH_VIEW_MARGIN = 64 * 1024 ** 2;
+export const LAUNCH_VIEW_SPACE_MESSAGE = 'Not enough memory for the launch view in XDG_RUNTIME_DIR. Close other programs, or clear the compatibility tool for this game in Steam to use the Nexus runtime.';
+const mib = (bytes: number) => `${Math.ceil(bytes / 1024 ** 2)} MiB`;
+
+/**
+ * Refuses a launch whose known decrypted files would take more than half of
+ * the free space (less a margin) in the view directory: the rest stays for
+ * encrypted data files and, on a tmpfs, for the game's own memory.
+ */
+export async function requireLaunchViewSpace(directory: string, need: number,
+  statfs: (file: string) => Promise<{ bavail: number; bsize: number }> = fs.statfs): Promise<{ need: number; free: number }> {
+  const stat = await statfs(directory);
+  const free = stat.bavail * stat.bsize;
+  if (need + LAUNCH_VIEW_MARGIN > free / 2) throw new Error(`${LAUNCH_VIEW_SPACE_MESSAGE} (needs at least ${mib(need + LAUNCH_VIEW_MARGIN)} of ${mib(free)} free; at most half is used.)`);
+  return { need, free };
+}
+
+/** The launch view ran out of space while the backend created it. */
+export function launchViewFailure(output: string): string | undefined {
+  return output.split('\n').some(line => /launch (view|chain)/i.test(line) && /No space left on device|os error 28|ENOSPC/i.test(line))
+    ? LAUNCH_VIEW_SPACE_MESSAGE : undefined;
+}
+
+/**
+ * What a Steam-selected Proton does not get from the Nexus runtime, for the
+ * launch log: shown every launch, so a failure has its likely cause beside it.
+ */
+export function steamProtonLimits(prefix: string): string[] {
+  return [
+    'Package identity and ApplicationData from the Nexus runtime are not available with this Proton; games that need them may fail. Use the Xodus Nexus tool for full support.',
+    `This Proton uses Steam's prefix (${prefix}): local game settings and local saves from the Nexus prefix are not there, so the game may start as on a first run.`,
+  ];
+}
+
+/**
+ * The shader cache settings the Nexus runner applies, for a Steam Proton
+ * launch: only for variables neither the player nor Steam already set, and
+ * the size limits only with the managed driver directory.
+ */
+export function steamShaderCacheEnvironment(env: NodeJS.ProcessEnv, caches: { vkd3d: string; nvidia: string; mesa: string },
+  limits: { bytes: string; mesa: string }): Record<string, string> {
+  const result: Record<string, string> = {};
+  if (env.VKD3D_SHADER_CACHE_PATH === undefined) result.VKD3D_SHADER_CACHE_PATH = caches.vkd3d;
+  if (env.__GL_SHADER_DISK_CACHE_PATH === undefined) {
+    result.__GL_SHADER_DISK_CACHE_PATH = caches.nvidia;
+    if (env.__GL_SHADER_DISK_CACHE === undefined) result.__GL_SHADER_DISK_CACHE = '1';
+    if (env.__GL_SHADER_DISK_CACHE_SIZE === undefined) result.__GL_SHADER_DISK_CACHE_SIZE = limits.bytes;
+  }
+  if (env.MESA_SHADER_CACHE_DIR === undefined) {
+    result.MESA_SHADER_CACHE_DIR = caches.mesa;
+    if (env.MESA_SHADER_CACHE_MAX_SIZE === undefined) result.MESA_SHADER_CACHE_MAX_SIZE = limits.mesa;
+  }
+  return result;
 }
 
 const shellQuote = (value: string) => `'${value.replace(/'/g, `'"'"'`)}'`;
@@ -343,6 +431,23 @@ async function writeLauncher(directory: string, name: string, words: string[]): 
 export async function writeSteamLauncher(directory: string, command: SteamProtonCommand): Promise<string> {
   const parts = parseSteamCommand(command.prefix);
   return writeLauncher(directory, 'steam-proton', [...wrapperPrefix(parts.wrappers), ...parts.tool]);
+}
+
+/**
+ * Stop for a Steam Proton launch, like the Nexus runner's `--nexus-stop-prefix`:
+ * that Proton's own wineserver, for Steam's prefix only, never a global one.
+ * Proton's `waitforexitandrun` already waits for the prefix to empty.
+ */
+export async function writeSteamPrefixStop(directory: string, protonRoot: string, layout: ProtonLayout,
+  prefix: string): Promise<{ command: string; args: string[] }> {
+  await fs.mkdir(directory, { recursive: true, mode: 0o700 });
+  await ownedDirectory(directory, 'launch wrapper directory');
+  const file = path.join(directory, 'steam-proton-stop');
+  const temporary = `${file}.tmp-${process.pid}`;
+  const wineserver = path.join(protonRoot, 'files', layout.bin, 'wineserver');
+  await fs.writeFile(temporary, `#!/bin/sh\nexport WINEPREFIX=${shellQuote(prefix)}\nexec ${shellQuote(wineserver)} -k\n`, { mode: 0o700, flag: 'w' });
+  await fs.rename(temporary, file);
+  return { command: file, args: [] };
 }
 
 /** The Nexus runtime's "wine" run inside the shortcut's launch wrappers. */
