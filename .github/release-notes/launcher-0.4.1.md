@@ -2,6 +2,7 @@
 
 ## Launcher
 
+- Add experimental native ARM64 builds.
 - Redesign the Social panel with player profiles, friend management and separate chat windows.
 - Add a notification bell for unread messages and game updates.
 - Open conversations at the latest message and synchronize read state between chat windows.
@@ -23,10 +24,13 @@
 
 ## Nexus runtime
 
+- Add an experimental ARM64 runtime with FEX for x86 and x86_64 games.
 - Fix Age of Empires IV startup through Windows Store licensing support. Thanks @Anirudh09.
 - Add license-checked offline sign-in with the compatible backend and launcher.
 
-Update the Nexus backend to **0.2.13** and install the accompanying **x86_64 Nexus runtime** in Settings.
+Update the Nexus backend to **0.2.13** and install the matching Nexus runtime for your system architecture in Settings.
+
+ARM64 game compatibility has not yet been verified on physical hardware.
 
 Voice parties and the Overlay are experimental. In-game invitation support varies by game.
 

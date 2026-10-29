@@ -3,6 +3,24 @@
   "approvals": [
     {
       "kind": "launcher",
+      "repository": "domsvoboda/xodus-nexus",
+      "architecture": "arm64",
+      "publicationMode": "append-architecture",
+      "releaseTag": "v0.4.1",
+      "runId": "40928013238",
+      "commit": "96c652343d30ae16fe476818288edbed5dfac673",
+      "manifestSha256": "97d43fa10ef32089d1189f2c25251c4d98f40ed22d4d2ef89aaaf2aff9048bae",
+      "notesSha256": "ece5f0591a9e32489395020cf1947ad0f84c398888311c17df6404be4407d067",
+      "notesPath": ".github/release-notes/launcher-0.4.1.md",
+      "approved": true,
+      "approvedBy": "domsvoboda",
+      "realGameTest": false,
+      "physicalArmDeviceTest": false,
+      "exactCandidateGameTestWaived": true,
+      "evidence": "Human explicitly requests adding ARM64 to the existing yesterday release, not a new release, and separately authorizes the ARM64 exception without a real ARM game test on 2026-10-29. Main-only launcher40928013238 passed all source/build/runtime-tool/CI-tool checks. Exact candidate SHA256/SHA512, native ARM64 AppImage and actual Electron ELF, all368 packaged payload files, matching backend recipe/new runtime repository and deferred-language exclusions pass. Application code is identical to released0.4.1; candidate main differs from original release commit only in approval metadata. Publish only the original ARM64 AppImage and its checksum, preserve the complete CI manifest under candidate-arm64.json, and retain all original x64 assets/candidate.json, tag commit, release identity and publication date. Do not publish the rebuilt x64 AppImage from this candidate. Notes add experimental ARM availability and a physical-hardware game-compatibility limitation while preserving caution and handheld text. No real game, account, cloud or physical ARM device acceptance is claimed."
+    },
+    {
+      "kind": "launcher",
       "runId": "40778408677",
       "commit": "e0668a12f1da931aed13537ef04295599011317b",
       "manifestSha256": "786f1e5635377d56b3559d1209ea29dd4a2fcc6e52cf4a0468854f79a837ac96",
