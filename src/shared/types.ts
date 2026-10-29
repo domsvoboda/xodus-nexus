@@ -22,6 +22,10 @@ export interface BackendCapabilities {
   offlinePc?: boolean;
   /** `run --offline`: skip Microsoft entirely and launch on the stored offline license. */
   offlineLaunch?: boolean;
+  /** `run --materialize-all --view-dir`: a full private launch view that needs no Wine file maps. */
+  fullView?: boolean;
+  /** `run --playfab-adapter`: stages the PlayFab Game Saves adapter in a full launch view. */
+  playfabAdapter?: boolean;
   streamingControls?: boolean;
   streamingBandwidthLimit?: boolean;
   streamingUpdateRecovery?: boolean;

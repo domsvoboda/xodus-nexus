@@ -2,7 +2,9 @@ import { constants, createWriteStream, promises as fs } from 'node:fs';
 import path from 'node:path';
 import type { BackendStatus, ConnectivityStatus, DownloadTask, Game, GameOperation, RuntimeStatus } from '../shared/types.js';
 import { inspectGameDirectory } from './store.js';
-import { prepareProtonRunner, syncPrefixUserLocale, syncUnrealCultureGameIni } from './proton.js';
+import { prefixUserLocale, prepareProtonRunner, syncPrefixUserLocale, syncUnrealCultureGameIni } from './proton.js';
+import { isNexusTool } from './steam-tool.js';
+import { applyPrefixSettings } from './wine-registry.js';
 import { accountCacheKey } from './offline-identity.js';
 import { bindOfflineAccess, type OfflineRevocation } from './offline-access.js';
 import { cloudSaveRuntime, gameInviteRuntime, offlineIdentityRuntime, selectedWinePath, storeDiscoveryRuntime, unbridgedCloudSaveRuntime } from './xodus-service.js';
@@ -17,6 +19,10 @@ import { canonicalInstallPath, installPathsOverlap } from './install-queue.js';
 import { INCOMPLETE_UPDATE_MESSAGE } from './installation-state.js';
 import { contentLicenseFailure } from '../shared/content-license.js';
 import type { AcquiredService, ServiceSessions } from './service-sessions.js';
+import { protonRootOf } from './proton-layout.js';
+import { forwardedWrappers, launchViewDirectory, prepareSteamOverlay, requireSupportedGameExecutable, steamCompatData, steamCompatMounts, steamLaunchCommand, steamProtonCommand, writeSteamLauncher, writeWrappedLauncher } from './steam-compat.js';
+import { resolvePackageFile } from './windows-path.js';
+import { profileIdOf } from '../shared/profile-id.js';
 
 export async function gameLocales(game: Game): Promise<string[]> {
   return installedGameLocales(game.path);
@@ -102,6 +108,11 @@ export interface ActiveGame {
   finished: Promise<void>;
 }
 
+export interface LaunchOptions {
+  /** Steam's `%command%` from the shortcut: a Proton there runs the game instead of the Nexus runtime. */
+  steamCommand?: string[];
+}
+
 /** One game at a time: preparation, spawn and cleanup, independent of Electron. */
 export class GameSession {
   private active: ActiveGame | undefined;
@@ -115,7 +126,7 @@ export class GameSession {
   /** The game currently running, if any. */
   get running(): ActiveGame | undefined { return this.active; }
 
-  async launch(id: string): Promise<ActiveGame> {
+  async launch(id: string, options: LaunchOptions = {}): Promise<ActiveGame> {
     const { deps } = this;
     const { store } = deps;
     const game = store.games.find((entry) => entry.id === id);
@@ -163,6 +174,12 @@ export class GameSession {
       throw new Error('Offline play requires a compatible Nexus backend and runtime. Update them in Settings while online.');
     }
     const licenseCache = offlineRuntime ? await deps.licenseCache() : undefined;
+    const steamCommand = steamLaunchCommand(options.steamCommand);
+    const selectedProton = steamProtonCommand(steamCommand);
+    // The "Xodus Nexus" entry in Steam's dropdown is the Nexus runtime itself.
+    const nexusTool = Boolean(selectedProton && await isNexusTool(selectedProton.protonRoot));
+    const steamProton = nexusTool ? undefined : selectedProton;
+    if (steamProton && !backend.capabilities.fullView) throw new Error("Steam's compatibility tool needs a newer Xodus backend. Update the backend in Settings, or clear the compatibility tool for this game in Steam.");
     const args = gameLaunchArguments(inspected, wine, store.settings.market, backend.linuxRunPatch,
       licenseCache, offlineLaunch && Boolean(licenseCache && backend.capabilities.offlineLaunch));
     const operationId = `game-${id}`;
@@ -203,6 +220,8 @@ export class GameSession {
     writeLaunchLog(`Mode: package manifest; cloud saves: ${cloudRuntime ? 'enabled' : 'not available in active runtime'}; verbose logs: ${verboseLogs ? 'on' : 'off'}`);
     writeLaunchLog(`Backend: ${binary}`);
     writeLaunchLog(`Wine: ${wine}`);
+    if (steamProton) writeLaunchLog(`Compatibility tool: Steam's ${steamProton.protonRoot}`);
+    else if (nexusTool) writeLaunchLog('Compatibility tool: Xodus Nexus (the Nexus runtime)');
     writeLaunchLog(`Connectivity: ${reachability.state}${reachability.reason ? ` (${reachability.reason})` : ''}; offline launch: ${offlineLaunch ? 'yes' : 'no'}`);
     changed(true);
     let service: AcquiredService | undefined;
@@ -217,21 +236,52 @@ export class GameSession {
       const legacyPrefixRoot = path.join(dataRoot, 'prefixes', game.id);
       const compatibilityDataPath = path.join(dataRoot, 'compatdata', game.id);
       const steamRoot = path.join(deps.paths.home, '.steam', 'root');
-      launchWrapper = await prepareGameWrapper(wine, game.launchTools, path.join(dataRoot, 'launch-wrappers'), baseEnvironment, game.path);
-      const protonRunner = await prepareProtonRunner(wine, compatibilityDataPath, steamRoot, launchWrapper.command, store.settings.shaderCacheLimitGiB);
+      // Steam's Proton: Steam owns the prefix, Nexus adds its runtime overlay
+      // and runs the game from a full private launch view (no Wine file maps).
+      if (steamProton) {
+        const executable = await resolvePackageFile(game.path, inspected.executable ?? '');
+        if (executable) await requireSupportedGameExecutable(path.join(await fs.realpath(game.path), executable));
+      }
+      const steamPrefix = steamProton ? (await steamCompatData(baseEnvironment)).prefix : undefined;
+      const overlay = steamProton ? await prepareSteamOverlay(steamProton, protonRootOf(wine), baseEnvironment, addGameLog) : undefined;
+      const viewDirectory = steamProton ? await launchViewDirectory(baseEnvironment, profileIdOf(deps.paths.userData)) : undefined;
+      const gameWine = steamProton ? await writeSteamLauncher(path.join(dataRoot, 'launch-wrappers', 'steam', game.id), steamProton) : wine;
+      launchWrapper = await prepareGameWrapper(gameWine, game.launchTools, path.join(dataRoot, 'launch-wrappers'), baseEnvironment, game.path);
+      const protonRunner = steamProton ? undefined : await prepareProtonRunner(wine, compatibilityDataPath, steamRoot, launchWrapper.command, store.settings.shaderCacheLimitGiB);
       const wineCommand = protonRunner?.command ?? wine;
       args[2] = preparedGameWine(protonRunner, launchWrapper.command);
+      // The shortcut's launch wrappers (armada-game-launch, gamemoderun, …) run
+      // around the game itself, so per-game settings reach its real process.
+      // With Steam's Proton they are already part of the Steam launcher.
+      const wrappers = steamProton ? [] : forwardedWrappers(steamCommand ?? []);
+      if (wrappers.length) {
+        args[2] = await writeWrappedLauncher(path.join(dataRoot, 'launch-wrappers', 'steam', game.id), wrappers, args[2]);
+        addGameLog(`Running the game inside the shortcut's launch wrappers: ${wrappers.join(' ')}`);
+      }
+      if (viewDirectory) args.splice(args.indexOf('--materialize-chain') + 1, 0, '--materialize-all', '--view-dir', viewDirectory);
+      // The Nexus runtime's launcher puts its PlayFab Game Saves adapter in its
+      // own views; for another Proton the backend stages it in the full view.
+      if (overlay && baseEnvironment.NEXUS_PLAYFAB_ADAPTER !== '0') {
+        const adapter = await overlay.playfabAdapter();
+        if (adapter && backend.capabilities.playfabAdapter) args.splice(args.indexOf('--view-dir') + 2, 0, '--playfab-adapter', adapter);
+        else addGameLog('The PlayFab Game Saves adapter is unavailable for this compatibility tool; games that need it may not find their saves.');
+      }
+      const gamePrefix = steamPrefix ?? (protonRunner ? path.join(compatibilityDataPath, 'pfx') : legacyPrefixRoot);
       if (inspected.vcRedistEncrypted) {
-        if (!protonRunner) throw new Error('This encrypted VC++ prerequisite requires a Proton prefix. Select Xodus Runtime in Settings.');
-        const installed = await installedVcRuntimeVersion(path.join(compatibilityDataPath, 'pfx'));
+        if (!protonRunner && !steamPrefix) throw new Error('This encrypted VC++ prerequisite requires a Proton prefix. Select Xodus Runtime in Settings.');
+        const installed = await installedVcRuntimeVersion(gamePrefix);
         if (!installed || !versionAtLeast(installed, VC_REDIST_VERSION)) {
           throw new Error(`VC++ runtime ${installed ?? 'not found'} is too old for this encrypted installer. Right-click the game and choose Install / update VC++, then press Play.`);
         }
         addGameLog(`VC++ runtime ${installed} verified; launching the original package executable from a temporary decrypted launch view.`);
       }
-      const environment = antiCheatEnvironment(gameLocaleEnvironment(gameWindowEnvironment(gameLoggingEnvironment(protonRunner
+      const environment = antiCheatEnvironment(gameLocaleEnvironment(gameWindowEnvironment(gameLoggingEnvironment(protonRunner || steamProton
         ? { ...baseEnvironment }
         : { ...baseEnvironment, WINEPREFIX: legacyPrefixRoot, WINEARCH: 'win64' }, verboseLogs)), locale));
+      if (overlay && viewDirectory) {
+        Object.assign(environment, overlay.environment);
+        environment.STEAM_COMPAT_MOUNTS = steamCompatMounts(baseEnvironment, [await canonicalInstallPath(game.path), viewDirectory]);
+      }
       if (deps.windowIdentity) {
         try {
           const identity = await deps.windowIdentity({ ...game, installState: inspected.installState }, inspected.coverDataUrl ?? game.coverDataUrl);
@@ -271,8 +321,15 @@ export class GameSession {
       if (locale) {
         addGameLog(`Selected game language: ${locale}.`);
       }
-      await syncPrefixUserLocale(wineCommand, protonRunner ? path.join(compatibilityDataPath, 'pfx') : legacyPrefixRoot, locale, environment, addGameLog);
-      await syncUnrealCultureGameIni(protonRunner ? path.join(compatibilityDataPath, 'pfx') : legacyPrefixRoot, game.path, titleId, locale, addGameLog);
+      if (steamPrefix) {
+        // No Windows helper can run outside Steam's own launch here: the same
+        // settings go straight into the prefix's registry files.
+        await applyPrefixSettings(steamPrefix, {
+          gamingServices: baseEnvironment.NEXUS_GAMING_SERVICES_VERSION_OVERRIDE !== '0',
+          resetLocale: Boolean(locale?.includes('-')) && await prefixUserLocale(steamPrefix) !== locale,
+        }, addGameLog);
+      } else await syncPrefixUserLocale(wineCommand, gamePrefix, locale, environment, addGameLog);
+      await syncUnrealCultureGameIni(gamePrefix, game.path, titleId, locale, addGameLog);
       if (cloudRuntime) {
         service = await deps.services.acquire(binary, deps.paths.userData, addGameLog);
         environment.XODUS_SOCKET = service.socketPath;
@@ -296,7 +353,8 @@ export class GameSession {
       // Names the account for the runtime's offline identity cache (an opaque key, never the username).
       const account = deps.account();
       if (account.stored === true && account.username) environment.XODUS_ACCOUNT_HASH = accountCacheKey(account.username);
-      if (protonRunner) addGameLog(`Proton prefix: ${protonRunner.compatibilityDataPath}/pfx`);
+      if (steamPrefix) addGameLog(`Steam Proton prefix: ${steamPrefix}`);
+      else if (protonRunner) addGameLog(`Proton prefix: ${protonRunner.compatibilityDataPath}/pfx`);
       else await fs.mkdir(legacyPrefixRoot, { recursive: true });
       const tracked = await spawnGameProcess(binary, args, {
         cwd: game.path,

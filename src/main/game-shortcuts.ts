@@ -2,7 +2,8 @@ import { constants, promises as fs } from 'node:fs';
 import { createHash, randomUUID } from 'node:crypto';
 import path from 'node:path';
 import type { Game } from '../shared/types.js';
-import { steamArgument, type SteamLaunch } from './steam-shortcuts.js';
+import { ARMADA_LAUNCH_WRAPPER, steamArgument, steamCommandOptions, type SteamLaunch } from './steam-shortcuts.js';
+import { parseSteamCommand } from './steam-compat.js';
 
 export type ShortcutDestination = 'desktop' | 'applications';
 const validId = (id: string) => /^[a-f0-9]{16}$/.test(id);
@@ -22,8 +23,15 @@ export function shortcutTitleStem(title: string): string {
   return stem.trimEnd() || 'Xodus Nexus game';
 }
 
-export function shortcutArguments(argv: string[]): { gameId?: string; profile?: string } {
-  const result: { gameId?: string; profile?: string } = {};
+export interface ShortcutRequest {
+  gameId?: string;
+  profile?: string;
+  /** Steam's `%command%`: every word after the game id, from a shortcut whose options end in it. */
+  steamCommand?: string[];
+}
+
+export function shortcutArguments(argv: string[]): ShortcutRequest {
+  const result: ShortcutRequest = {};
   for (let index = 0; index < argv.length; index++) {
     const flag = argv[index];
     if (flag !== '--launch-game' && flag !== '--nexus-profile') continue;
@@ -31,6 +39,14 @@ export function shortcutArguments(argv: string[]): { gameId?: string; profile?: 
     if (flag === '--launch-game') {
       if (result.gameId || !value || !validId(value)) throw new Error('Invalid game shortcut ID.');
       result.gameId = value;
+      // The script passes its own arguments first; anything after the id is Steam's.
+      const steamCommand = argv.slice(index + 1);
+      if (steamCommand.length) {
+        if (steamCommand.includes('--launch-game') || steamCommand.includes('--nexus-profile')) throw new Error('Invalid Steam launch command.');
+        parseSteamCommand(steamCommand);
+        result.steamCommand = steamCommand;
+      }
+      break;
     } else {
       if (result.profile || !value || !path.isAbsolute(value) || /[\0\r\n]/.test(value)) throw new Error('Invalid Nexus profile path.');
       result.profile = value;
@@ -41,17 +57,17 @@ export function shortcutArguments(argv: string[]): { gameId?: string; profile?: 
 
 /** Chromium reorders switches in second-instance argv. Send the parsed request
  * through Electron's JSON handoff instead of parsing that transformed argv. */
-export function shortcutInstanceData(request: ReturnType<typeof shortcutArguments>, invalid = false): Record<string, unknown> {
+export function shortcutInstanceData(request: ShortcutRequest, invalid = false): Record<string, unknown> {
   return { nexusShortcut: invalid ? { schema: 1, invalid: true } : { schema: 1, request } };
 }
 
-export function shortcutInstanceRequest(data: unknown, currentProfile: string): ReturnType<typeof shortcutArguments> {
+export function shortcutInstanceRequest(data: unknown, currentProfile: string): ShortcutRequest {
   const object = (value: unknown): value is Record<string, unknown> => Boolean(value && typeof value === 'object' && !Array.isArray(value));
   if (!object(data) || !object(data.nexusShortcut)) throw Error('Missing Nexus shortcut handoff. Restart Nexus using the updated launcher.');
   const message = data.nexusShortcut;
   if (message.schema !== 1 || message.invalid !== undefined || !object(message.request)) throw Error('Invalid Nexus shortcut request.');
   const request = message.request;
-  if (Object.keys(request).some(key => key !== 'profile' && key !== 'gameId')) throw Error('Invalid Nexus shortcut request.');
+  if (Object.keys(request).some(key => key !== 'profile' && key !== 'gameId' && key !== 'steamCommand')) throw Error('Invalid Nexus shortcut request.');
   const argv: string[] = [];
   if (Object.hasOwn(request, 'profile')) {
     if (typeof request.profile !== 'string') throw Error('Invalid Nexus profile path.');
@@ -61,12 +77,17 @@ export function shortcutInstanceRequest(data: unknown, currentProfile: string): 
     if (typeof request.gameId !== 'string') throw Error('Invalid game shortcut ID.');
     argv.push('--launch-game', request.gameId);
   }
+  if (Object.hasOwn(request, 'steamCommand')) {
+    const words = request.steamCommand;
+    if (typeof request.gameId !== 'string' || !Array.isArray(words) || !words.length || words.some(word => typeof word !== 'string')) throw Error('Invalid Steam launch command.');
+    argv.push(...words as string[]);
+  }
   const result = shortcutArguments(argv);
   if (result.profile && path.resolve(result.profile) !== path.resolve(currentProfile)) throw Error('Shortcut belongs to a different Nexus profile.');
   return result;
 }
 
-interface Locations { userData: string; desktop: string; applications: string; launcher?: string; icon: string }
+interface Locations { userData: string; desktop: string; applications: string; launcher?: string; icon: string; armadaWrapper?: string }
 export async function shortcutLauncherPath(appImage:string,argv0?:string):Promise<string>{
   const resolved=await fs.realpath(appImage);
   const stable=path.join(path.dirname(appImage),'Xodus-Nexus.AppImage');
@@ -193,8 +214,10 @@ export class GameShortcuts {
     if (!this.entry || !this.icon || !this.nexusEntry) throw new Error(this.reason);
     if (game && (game.installState !== 'ready' || !validId(game.id))) throw Error('Only installed, ready games can be added to Steam.');
     const entry = game ? this.entry : this.nexusEntry;
+    // ArmadaOS applies per-game settings through its wrapper; keep it, after the Nexus script.
+    const armada = await fs.access(this.locations.armadaWrapper ?? ARMADA_LAUNCH_WRAPPER, constants.X_OK).then(() => true, () => false);
     return { title: game ? game.title.replace(/[\x00-\x1f\x7f]/g, ' ').trim().slice(0, 256) || 'Xodus Nexus game' : 'Xodus Nexus',
-      executable: steamArgument('/bin/sh'), options: steamArgument(entry) + (game ? ' ' + steamArgument(game.id) : ''),
+      executable: steamArgument('/bin/sh'), options: game ? steamCommandOptions(steamArgument(entry) + ' ' + steamArgument(game.id), armada) : steamArgument(entry),
       directory: path.dirname(entry), identity: this.profileId + ':' + (game?.id ?? 'launcher'),
       icon: game ? await this.gameIcon(game.id, png) : this.icon };
   }
