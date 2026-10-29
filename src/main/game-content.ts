@@ -106,10 +106,14 @@ export function contentOffers(base: Manifest, catalog: unknown, access: Access, 
 export class GameContent {
   private catalog: ContentCatalog;
   constructor(private dataRoot: string, fetcher: typeof fetch = fetch) { this.catalog = new ContentCatalog(fetcher); }
-  /** Public discovery hints only. Never reads credentials or grants runtime rights. */
-  async relatedProducts(game: Game, access: Access, market = 'US', signal = AbortSignal.timeout(5_000)): Promise<string[]> {
+  /**
+   * Public discovery hints only. Never reads credentials or grants runtime rights.
+   * An offline launch skips the catalog, which cannot answer, and lists only
+   * content installed on this device instead of waiting for the timeout.
+   */
+  async relatedProducts(game: Game, access: Access, market = 'US', signal = AbortSignal.timeout(5_000), offline = false): Promise<string[]> {
     const base = await baseManifest(game);
-    const catalog = await this.catalog.discover(base, access, market, game.offerProductId, signal);
+    const catalog = offline ? { related: [] } : await this.catalog.discover(base, access, market, game.offerProductId, signal);
     signal.throwIfAborted();
     const related = [...new Set([...catalog.related, ...await this.installedIds(game)])].filter(id => id !== base.storeId);
     if (related.length > 256 || related.some(id => !productId.test(id))) throw Error('Content discovery scope is too large.');

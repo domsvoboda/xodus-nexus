@@ -123,6 +123,16 @@ it('keeps catalog-only completed DLC across launcher restarts without editing or
   await fs.writeFile(path.join(directory,'MicrosoftGame.Config'),childXml().replace(OWN,PAID));
   expect(await offline.roots(f.game)).toEqual([]);
 });
+it('lists only installed related content for an offline launch, without asking the catalog', async () => {
+  const f = await installFixture();
+  await f.manager.complete(f.game, f.selected);
+  const calls = vi.mocked(f.fetcher).mock.calls.length;
+  expect(await f.manager.relatedProducts(f.game, {}, 'CZ', undefined, true)).toEqual([OWN]);
+  expect(vi.mocked(f.fetcher).mock.calls.length).toBe(calls);
+  const empty = await fixture();
+  expect(await empty.manager.relatedProducts(empty.game, {}, 'CZ', undefined, true)).toEqual([]);
+  expect(vi.mocked(empty.fetcher)).not.toHaveBeenCalled();
+});
 it('distinguishes license-only durables and content bundles from unsupported downloadable formats',()=>{
   const data=catalog();data.Products[1].DisplaySkuAvailabilities[0].Sku.Properties.Packages=[];
   expect(contentOffers(contentManifest(baseXml),data,{[OWN]:'other'}).items[0]).toMatchObject({status:'license-only',access:'other'});
