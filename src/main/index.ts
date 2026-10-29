@@ -187,6 +187,8 @@ const gameActivities = new GameActivities();
 const gameAchievements = new GameAchievementsReader();
 const recentPcGamePass = new RecentPcGamePass();
 const accountLibrary = new AccountLibrary((ids, market) => catalog.licensedProducts(ids, market), undefined, market => recentPcGamePass.get(market));
+/** The longest a launch waits for owned bundles (a library read takes about 2 s) before its DLC hints. */
+const OWNED_ACCESS_WAIT_MS = 2_500;
 const installPlans = new InstallPlans(readInstallPlan);
 const demoMode = process.env.XODUS_DEMO === '1';
 const walletUnlocker = new WalletUnlocker();
@@ -1032,6 +1034,10 @@ async function prepareGameLaunch(id: string): Promise<void> {
   // its cached identity, instead of each waiting for its own connect timeout.
   const reachability: ConnectivityStatus = connectivity ? await connectivity.check() : { state: 'unknown' };
   const offlineLaunch = reachability.state === 'offline';
+  // Owned bundles let DLC discovery find content the package does not list.
+  // Load them while the launch prepares instead of only using a library the
+  // Library page happened to load; offline there is nothing to fetch.
+  const ownedAccess = offlineLaunch ? undefined : accountLibrary.startLaunchAccess();
   if (authState.stored === true && authState.username && await bindOfflineAccess(dataRoot, authState.username)) {
     emitLog('offline', 'Removed stored offline licenses and identities (account-changed).');
   }
@@ -1114,7 +1120,8 @@ async function prepareGameLaunch(id: string): Promise<void> {
     delete environment.XODUS_FORCE_OFFLINE;
     delete environment.XODUS_ACCOUNT_HASH;
     if (await storeDiscoveryRuntime(wine)) {
-      const related = await contentManager().relatedProducts(game, accountLibrary.peekAccess(), currentMarket()).catch(() => {
+      const access = ownedAccess ? await ownedAccess(OWNED_ACCESS_WAIT_MS) : accountLibrary.peekAccess();
+      const related = await contentManager().relatedProducts(game, access, currentMarket()).catch(() => {
         addGameLog('Additional DLC discovery unavailable. Continuing with package-declared content.');
         return [] as string[];
       });

@@ -163,6 +163,22 @@ export class AccountLibrary {
     }
     return accessByProductId;
   }
+  /**
+   * Owned access for a launch's DLC hints. Starts loading the library now when
+   * no fresh copy is cached (the launch prepares meanwhile); the returned read
+   * waits at most `waitMs` for that load and otherwise answers from the cache,
+   * leaving the load to finish for the next launch. Never throws.
+   */
+  startLaunchAccess(): (waitMs: number) => Promise<AccountLibraryPage['accessByProductId']> {
+    if (!this.identity || (this.cached && this.cached.until > Date.now())) return async () => this.peekAccess();
+    const loaded = this.access().then(result => result.accessByProductId, () => undefined);
+    return async (waitMs) => {
+      let timer: NodeJS.Timeout | undefined;
+      const timeout = new Promise<undefined>(resolve => { timer = setTimeout(resolve, waitMs, undefined); });
+      try { return await Promise.race([loaded, timeout]) ?? this.peekAccess(); }
+      finally { clearTimeout(timer); }
+    };
+  }
   async access(refresh = false): Promise<{ checkedAt: string; accessByProductId: AccountLibraryPage['accessByProductId'] }> {
     const cached = await this.load(undefined, refresh);
     if (cached !== this.cached || !this.identity) throw Error('Account library changed. Refresh this page.');
