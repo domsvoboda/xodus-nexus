@@ -80,6 +80,7 @@ for (const name of ['account', 'login', 'logout', 'download', 'streaming', 'run'
 if (!command(cli, ['run', '--help'], true).includes('--materialize-chain')) throw Error('Launch-chain support missing');
 const launchHelp = command(cli, ['run', '--help'], true);
 for (const flag of ['--license-cache', '--offline']) if (!launchHelp.includes(flag)) throw Error('Offline launch capability missing: ' + flag);
+for (const flag of ['--materialize-all', '--view-dir', '--playfab-adapter']) if (!launchHelp.includes(flag)) throw Error('Full launch view capability missing: ' + flag);
 if (!command(cli, ['offline-pc', '--help'], true).includes('--license-cache')) throw Error('Offline revocation capability missing');
 if (!command(cli, ['resolve-package', '--help'], true).includes('--include-dlc')) throw Error('Managed DLC selection capability missing');
 const streamingHelp = command(cli, ['streaming', '--help'], true);
