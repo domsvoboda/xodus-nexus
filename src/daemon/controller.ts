@@ -18,7 +18,9 @@ import { GameContent } from '../main/game-content.js';
 import { hasIncompleteUpdate } from '../main/installation-state.js';
 import { assertOfflineAccessReady, licenseCacheDirectory, offlineAccessRevoked, revokeOfflineAccess } from '../main/offline-access.js';
 import { OutputTail } from '../main/output-tail.js';
-import { GameInviteBridge } from '../main/game-invite-bridge.js';
+import { GameInviteBridge, relatedProductsVerb } from '../main/game-invite-bridge.js';
+import { AccountLibrary } from '../main/account-library.js';
+import { ContentService } from '../main/content-service.js';
 import { XboxTitlePresence } from '../main/xbox-title-presence.js';
 import { closeGracefully, keepSteamFocus, type Closable } from '../main/graceful-close.js';
 import { AdoptedGame, adoptService, SessionStateFile, type SessionRecord } from './recovery.js';
@@ -85,6 +87,11 @@ export class GameController {
   readonly connectivity: ConnectivityMonitor;
   readonly services: WarmServiceSessions;
   private readonly session: GameSession;
+  /** Add-ons the game bridge answers when the game asks, from this service's own account library. */
+  readonly content: ContentService;
+  private gameContent: { root: string; content: GameContent } | undefined;
+  /** The last launched game, kept warm so its next launch and query are answered at once. */
+  private lastGame: Game | undefined;
   private readonly stateFile: SessionStateFile;
   private readonly walletUnlocker = new WalletUnlocker();
   private clientEnvironment: NodeJS.ProcessEnv = {};
@@ -122,6 +129,8 @@ export class GameController {
     this.backend = new BackendManager(options.userData, this.store.settings.externalXodusRoot, emitLog, () => this.busy);
     this.connectivity = new ConnectivityMonitor({ interfaceOnline, onChange: () => this.publish() });
     this.services = new WarmServiceSessions({ log: options.log });
+    // Access only: the library pages that need catalog artwork are the launcher's.
+    this.content = new ContentService(new AccountLibrary(async () => []), () => this.contentFor(path.dirname(this.store.settings.runtimeRoot)));
     const self = this;
     this.session = new GameSession({
       store: { get games() { return self.store.games; }, get downloads() { return self.store.downloads; }, get settings() { return self.store.settings; } },
@@ -139,13 +148,16 @@ export class GameController {
       // Check only: the launcher records the interrupted update in state.json when it next looks.
       incompleteUpdate: (game) => hasIncompleteUpdate(game.path),
       licenseCache: () => this.offlineLicenseCache(),
-      // Public catalog relations only; the account library (owned bundles) is
-      // the launcher's, as it is before its Library page has loaded.
       content: (dataRoot) => {
-        const content = new GameContent(dataRoot);
-        return { roots: (game) => content.roots(game), relatedProducts: (game) => content.relatedProducts(game, {}, daemonMarket(this.store.settings.market, { ...process.env, ...this.clientEnvironment })) };
+        const content = this.contentFor(dataRoot);
+        return {
+          roots: (game) => content.roots(game),
+          // Older runtimes: public catalog relations only, before launch.
+          relatedProducts: (game) => content.relatedProducts(game, {}, this.market()),
+          cachedRelated: (game) => this.content.cached(game, this.market()),
+        };
       },
-      inviteBridge: (operationId, game, titleId, log) => this.startInvites(operationId, game.title, titleId, log),
+      inviteBridge: (operationId, game, titleId, log, storeId) => this.startInvites(operationId, game, titleId, log, storeId),
       // Each state carries the last 250 log lines; publishing it per line of a noisy game floods the
       // clients' sockets until a write fails (ENOBUFS) and the game closes with its Steam client.
       onChange: (_operation, _operationId, immediate) => { if (immediate) this.publish(); else this.publishSoon(); },
@@ -219,12 +231,16 @@ export class GameController {
    * the account that started it is still the stored one. Asking for a friend
    * and a received invitation are announced to the launcher, which shows them.
    */
-  private async startInvites(operationId: string, game: string, titleId: string, log: (line: string) => void) {
-    const account = this.account.username;
+  private async startInvites(operationId: string, launched: Game, titleId: string | undefined, log: (line: string) => void, storeId?: string) {
+    const account = this.account.username, game = launched.title;
     const current = () => !this.stopped && Boolean(account) && this.account.stored === true && this.account.username === account;
     const announce = (notice: InviteNotice) => { for (const listener of this.inviteListeners) listener(notice); };
-    const bridge = new GameInviteBridge(operationId, game, titleId, current, () => this.publish(),
-      () => announce({ notice: 'choose', game }), Date.now, sender => announce({ notice: 'invitation', game, sender }), new XboxTitlePresence(current, log));
+    const bridge = new GameInviteBridge(operationId, game, titleId ?? '', current, () => this.publish(),
+      () => announce({ notice: 'choose', game }), Date.now, sender => announce({ notice: 'invitation', game, sender }), titleId ? new XboxTitlePresence(current, log) : undefined);
+    if (storeId) {
+      bridge.verb('related', relatedProductsVerb(storeId, () => this.content.poll(launched, this.market()), log));
+      this.content.warm(launched, this.market());
+    }
     try { await bridge.start(); }
     catch (error) { await bridge.stop().catch(() => {}); throw error; }
     this.inviteBridge = bridge;
@@ -263,6 +279,7 @@ export class GameController {
       this.inspected = undefined;
       const active = await this.session.launch(request.gameId);
       this.running = { kind: 'launched', active };
+      this.lastGame = this.store.games.find(game => game.id === request.gameId);
       this.inspected = this.captureInspection(active.gameId);
       await this.persist();
       const stopFocus = keepSteamFocus(this.options.closeHelper, active.operationId, this.clientEnvironment, this.options.log);
@@ -273,6 +290,7 @@ export class GameController {
         for (const listener of this.exitListeners) listener(active.operationId, code, active.operation.status === 'failed' ? 'failed' : 'complete', active.operation.status === 'failed' ? active.operation.error : undefined);
       });
       void active.finished.finally(() => this.finished(ownerId));
+      void active.finished.finally(() => { if (this.lastGame) this.content.warm(this.lastGame, this.market()); });
       if (this.cancelWhenStarted) { this.cancelWhenStarted = false; void this.close('its Steam client went away before it started'); }
       return { operationId: active.operationId };
     } finally { this.preparing = false; this.publish(); }
@@ -433,6 +451,7 @@ export class GameController {
   private async maintain(): Promise<void> {
     if (this.busy) return;
     if (!this.services.status.warm) return;
+    if (this.lastGame) this.content.warm(this.lastGame, this.market());
     if (!await this.services.healthy()) { await this.persist(); this.publish(); return; }
     if (await this.services.sweep()) { this.options.log('Stopped the idle account service.'); await this.persist(); this.publish(); return; }
     if (Date.now() - this.accountReadAt > (this.options.accountCheckMs ?? 15 * 60_000)) {
@@ -470,7 +489,20 @@ export class GameController {
       this.accountError = (error as Error).message;
       this.options.log(`Account read failed: ${this.accountError}`);
       this.account = { stored: null };
-    } finally { clearTimeout(timer); }
+    } finally {
+      clearTimeout(timer);
+      this.content.select(this.account.stored === true ? this.account.username : undefined,
+        this.backend.current.capabilities.library ? binary : undefined, this.market());
+    }
+  }
+
+  private market(): string {
+    return daemonMarket(this.store.settings.market, { ...process.env, ...this.clientEnvironment });
+  }
+
+  private contentFor(root: string): GameContent {
+    if (this.gameContent?.root !== root) this.gameContent = { root, content: new GameContent(root) };
+    return this.gameContent.content;
   }
 
   /** The license cache for the launch, after the same revocation checks the launcher makes. */
