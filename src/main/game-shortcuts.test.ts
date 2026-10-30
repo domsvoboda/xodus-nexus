@@ -7,6 +7,7 @@ import { createHash } from 'node:crypto';
 import { expect, it } from 'vitest';
 import { GameShortcuts, shortcutLauncherPath, desktopArgument, shortcutArguments, shortcutInstanceData, shortcutInstanceRequest, shortcutTitleStem } from './game-shortcuts.js';
 import { ShortcutLaunch } from './shortcut-launch.js';
+import { ARMADA_LAUNCH_WRAPPER, steamArgument } from './steam-shortcuts.js';
 
 const execute = promisify(execFile);
 const id = '0123456789abcdef';
@@ -78,13 +79,29 @@ it('creates Steam launch descriptions without unwanted desktop/menu entries and 
     await expect(f.shortcuts.steamLaunch({ ...game, id: '../bad' })).rejects.toThrow('ready');
   } finally { await fs.rm(f.root, { recursive: true, force: true }); }
 });
+it('puts Steam\'s command after the script and id, behind ArmadaOS\'s wrapper where it exists', async () => {
+  const f = await fixture();
+  try {
+    await f.shortcuts.initialize();
+    const plain = await f.shortcuts.steamLaunch({ ...game, title: 'A game' });
+    expect(plain.options).toBe(`${desktopShortcutWords(f)} "${id}" %command%`);
+    await fs.writeFile(f.locations.armadaWrapper, '#!/bin/sh\n', { mode: 0o755 });
+    const armada = await f.shortcuts.steamLaunch({ ...game, title: 'A game' });
+    expect(armada.options).toBe(`${desktopShortcutWords(f)} "${id}" ${ARMADA_LAUNCH_WRAPPER} %command%`);
+    // The launcher's own Steam entry takes no game command.
+    expect((await f.shortcuts.steamLaunch()).options).not.toContain('%command%');
+  } finally { await fs.rm(f.root, { recursive: true, force: true }); }
+});
+function desktopShortcutWords(f: Awaited<ReturnType<typeof fixture>>): string {
+  return steamArgument(path.join(f.locations.userData, 'shortcuts/launch-game'));
+}
 async function fixture() {
   const root = await fs.mkdtemp(path.join(os.tmpdir(), 'nexus-shortcuts-'));
   const launcher = path.join(root, 'Launcher $`%\' name.AppImage');
   await fs.copyFile('/bin/echo', launcher); await fs.chmod(launcher, 0o700);
   const icon = path.join(root, 'icon.png'); await fs.writeFile(icon, 'fixture icon');
   const locations = { userData: path.join(root, 'profile'), desktop: path.join(root, 'Desktop'),
-    applications: path.join(root, 'applications'), launcher, icon };
+    applications: path.join(root, 'applications'), launcher, icon, armadaWrapper: path.join(root, 'armada-game-launch') };
   return { root, locations, shortcuts: new GameShortcuts(locations) };
 }
 
@@ -228,6 +245,33 @@ it('hands off the original request independently of Chromium switch reordering',
   expect(shortcutInstanceRequest(shortcutInstanceData({}), profile)).toEqual({});
   expect(shortcutInstanceRequest(shortcutInstanceData({ gameId: id }), profile)).toEqual({ gameId: id });
   expect(() => shortcutInstanceRequest(data, '/tmp/another-profile')).toThrow('different Nexus profile');
+});
+
+const steamWords = ['/usr/libexec/armada/armada-game-launch', '/steam/reaper', 'SteamLaunch', 'AppId=3000000000', '--',
+  '/steam/SteamLinuxRuntime_sniper/_v2-entry-point', '--verb=waitforexitandrun', '--', '/steam/GE-Proton10/proton', 'waitforexitandrun', '/bin/sh'];
+
+it('takes Steam\'s command from the words after the game id', () => {
+  const profile = '/tmp/profile';
+  expect(shortcutArguments(['launcher', '--nexus-profile', profile, '--launch-game', id, ...steamWords]))
+    .toEqual({ profile, gameId: id, steamCommand: steamWords });
+  // Steam's words are never read as the launcher's own switches.
+  expect(shortcutArguments(['--launch-game', id, '--unrelated', '/bin/sh'])).toEqual({ gameId: id, steamCommand: ['--unrelated', '/bin/sh'] });
+  for (const words of [['a\nb'], Array(65).fill('/bin/sh'), ['/bin/sh', '--nexus-profile', '/other'], ['proton', 'waitforexitandrun', '/bin/sh']])
+    expect(() => shortcutArguments(['--launch-game', id, ...words])).toThrow();
+});
+
+it('hands Steam\'s command to the running instance and validates it there', () => {
+  const profile = '/tmp/profile';
+  const original = shortcutArguments(['--nexus-profile', profile, '--launch-game', id, ...steamWords]);
+  const data = JSON.parse(JSON.stringify(shortcutInstanceData(original)));
+  expect(data.nexusShortcut.schema).toBe(1);
+  expect(shortcutInstanceRequest(data, profile)).toEqual(original);
+  const request = (value: Record<string, unknown>) => ({ nexusShortcut: { schema: 1, request: value } });
+  for (const bad of [
+    request({ gameId: id, steamCommand: 'proton run' }), request({ gameId: id, steamCommand: [] }),
+    request({ gameId: id, steamCommand: [42] }), request({ gameId: id, steamCommand: ['a\nb'] }),
+    request({ steamCommand: steamWords }), request({ gameId: id, steamCommand: ['--launch-game', id] }),
+  ]) expect(() => shortcutInstanceRequest(bad, profile)).toThrow();
 });
 
 it('rejects malformed or failed handoffs instead of converting them into a normal launch', () => {

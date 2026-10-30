@@ -90,6 +90,11 @@ If you only downloaded an AppImage manually, delete that AppImage instead.
 - Removing a game can keep its files or permanently delete its installation folder without using Trash. Saves inside that folder are deleted too; saves elsewhere are not affected.
 - Game settings offer separate **DualSense** and **DualShock 4 compatibility modes** for controller detection. They apply only to the selected game. The DualSense fallback may disable advanced haptics and adaptive triggers.
 - Choose **Add to Steam** in the game menu, or **Add Nexus to Steam** in Settings, to create a Non-Steam shortcut with available artwork. Steam can stay running, including in Game Mode. Requires native Linux Steam; Flatpak Steam is not yet supported.
+- **Use the Proton selected in Steam (experimental, x86_64):** pick another Proton in a game shortcut's Compatibility setting in Steam and Nexus runs the game with it, adding only the Xbox runtime parts it needs. Leave the setting empty to use the Nexus runtime as before. Limitations:
+  - Package identity and ApplicationData from the Nexus runtime are not available; games that need them may fail.
+  - The game uses Steam's prefix for that shortcut, so local game settings and local saves from the Nexus prefix are not there (the game may start as on a first run).
+  - The decrypted launch view is kept in `XDG_RUNTIME_DIR`, usually RAM. Nexus refuses the launch when it would not fit, and removes the view when the game ends.
+  - 32-bit games are not supported.
 - Update the launcher, backend and runtime in **Settings**.
 - **Settings → Close Nexus to the system tray** keeps the launcher and downloads running after closing its window. Use the tray menu to reopen Nexus or quit. Requires a desktop system tray.
 - **Settings → Interface language** selects a bundled translation independently of game language and Store region. Missing translations fall back to English.

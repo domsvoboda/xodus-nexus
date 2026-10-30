@@ -11,9 +11,8 @@ import os from 'node:os';
 import { fileURLToPath } from 'node:url';
 import { randomUUID } from 'node:crypto';
 import type { ChildProcessWithoutNullStreams } from 'node:child_process';
-import type { AppSnapshot, AuthStatus, ConnectivityStatus, DownloadTask, Game, OfflinePermissions, GameLaunchOptions, GameOperation, GameUpdate, InstallRequest, Settings } from '../shared/types.js';
+import type { AppSnapshot, AuthStatus, DownloadTask, Game, OfflinePermissions, GameLaunchOptions, GameOperation, GameUpdate, InstallRequest, Settings } from '../shared/types.js';
 import { downloadFailure, safeProductId } from '../shared/utils.js';
-import { contentLicenseFailure } from '../shared/content-license.js';
 import { interfaceLanguagePreference } from '../shared/interface-language.js';
 import { nativeTranslator } from './interface-language.js';
 import { downloadLimitArgs, downloadLimitKiB } from '../shared/download-bandwidth.js';
@@ -30,22 +29,18 @@ import { run, spawnTracked } from './process.js';
 import { inspectGameDirectory, StateStore } from './store.js';
 import { hasIncompleteUpdate, INCOMPLETE_UPDATE_MESSAGE } from './installation-state.js';
 import { RuntimeManager } from './runtime.js';
-import { prepareProtonRunner, syncPrefixUserLocale, syncUnrealCultureGameIni } from './proton.js';
+import { prepareProtonRunner } from './proton.js';
 import { layoutOfWine } from './proton-layout.js';
-import { accountCacheKey } from './offline-identity.js';
 import { applyOfflinePermissions, assertOfflineAccessReady, bindOfflineAccess, licenseCacheDirectory, offlineAccessRevoked, revokeOfflineAccess, type OfflineRevocation } from './offline-access.js';
 import { CatalogService } from './catalog.js';
-import { cloudSaveRuntime, gameInviteRuntime, offlineIdentityRuntime, selectedWinePath, startXodusService, storeContentRuntime, storeDiscoveryRuntime, unbridgedCloudSaveRuntime, type XodusServiceSession } from './xodus-service.js';
-import { GameLogReducer, gameLoggingEnvironment, gameWindowEnvironment } from './game-log.js';
+import { cloudSaveRuntime, offlineIdentityRuntime, selectedWinePath, startXodusService, storeContentRuntime, type XodusServiceSession } from './xodus-service.js';
+import { gameLoggingEnvironment } from './game-log.js';
 import { downloadVerifiedVcRedist, installedVcRuntimeVersion, VC_REDIST_VERSION, versionAtLeast } from './vc-runtime.js';
 import { assertGameRemovalAvailable, validateGameDeleteTarget } from './game-removal.js';
 import { deleteGameDirectory } from './game-delete.js';
-import { spawnGameProcess, type GameProcess } from './game-process.js';
-import { gameLocaleEnvironment, installedGameLocales, installedGameTitleId, supportedGameLocale } from './game-locale.js';
-import { antiCheatEnvironment } from './anti-cheat.js';
-import { gameLaunchArguments, preparedGameWine } from './game-launch.js';
+import type { GameProcess } from './game-process.js';
+import { supportedGameLocale } from './game-locale.js';
 import { ConnectivityMonitor } from './connectivity.js';
-import { prepareGameWrapper, type GameWrapper } from './game-wrapper.js';
 import { normalizeLaunchTools } from '../shared/launch-tools.js';
 import { LauncherUpdater } from './launcher-update.js';
 import {XboxChatWindows} from './xbox-chat-windows.js';
@@ -56,9 +51,12 @@ import { createDiagnosticReport, reportSystemInfo, saveDiagnosticReport, validat
 import { queryGameUpdate } from './game-updates.js';
 import { DownloadProgress, PROGRESS_PREFIX } from './download-progress.js';
 import { DownloadCleanup } from './download-cleanup.js';
+import { GameSession, gameLocales, type ActiveGame, type LaunchOptions } from './game-session.js';
+import { EphemeralServiceSessions } from './service-sessions.js';
 import { InstallQueue, assertActivityCompatible, assertInstallDestination, canonicalInstallPath, installPathsOverlap } from './install-queue.js';
 import { GameDisplayBlocker } from './game-display.js';
-import { GameShortcuts, shortcutArguments, shortcutInstanceData, shortcutInstanceRequest, shortcutLauncherPath, type ShortcutDestination } from './game-shortcuts.js';
+import { runUnder, steamTrackingRerun } from './steam-tracking.js';
+import { GameShortcuts, shortcutArguments, shortcutInstanceData, shortcutInstanceRequest, shortcutLauncherPath, type ShortcutDestination, type ShortcutRequest } from './game-shortcuts.js';
 import { ShortcutLaunch } from './shortcut-launch.js';
 import { loadShortcutIcon } from './shortcut-icon.js';
 import { AccountProfile } from './account-profile.js';
@@ -252,9 +250,9 @@ let finalizingGame = false;
 let shortcutOnly = false;
 let launchReady = false;
 let windowOpening: Promise<void> | undefined;
-const pendingRequests: (string | undefined)[] = [];
+const pendingRequests: ShortcutRequest[] = [];
 const pendingShortcutErrors: unknown[] = [];
-let startupRequest: ReturnType<typeof shortcutArguments> = {};
+let startupRequest: ShortcutRequest = {};
 let startupError: Error | undefined;
 try {
   startupRequest = shortcutArguments(process.argv.slice(1));
@@ -266,11 +264,16 @@ if (process.platform === 'linux') {
     if (fonts) app.once('will-quit', () => fonts.dispose());
   } catch (error) { console.warn('Launcher fallback font unavailable:', (error as Error).message); }
 }
+// Steam's Exit reaches only a launch inside its tracking: start the shortcut again there and wait.
+const steamRerun = startupRequest.gameId && !startupError
+  ? steamTrackingRerun(startupRequest.steamCommand, process.env, path.join(app.getPath('userData'), 'shortcuts', 'launch-game'), startupRequest.gameId)
+  : undefined;
+if (steamRerun) runUnder(steamRerun.words, steamRerun.env).then(code => app.exit(code), () => app.exit(1));
 // Electron's lock is scoped to userData, so independent profiles stay isolated.
-const primaryInstance = demoMode || app.requestSingleInstanceLock(shortcutInstanceData(startupRequest, Boolean(startupError)));
-if (!primaryInstance) app.quit();
+const primaryInstance = !steamRerun && (demoMode || app.requestSingleInstanceLock(shortcutInstanceData(startupRequest, Boolean(startupError))));
+if (!primaryInstance && !steamRerun) app.quit();
 else if (!demoMode) app.on('second-instance', (_event, _argv, _workingDirectory, additionalData) => {
-  try { receiveLaunchRequest(shortcutInstanceRequest(additionalData, app.getPath('userData')).gameId); }
+  try { receiveLaunchRequest({ ...shortcutInstanceRequest(additionalData, app.getPath('userData')), handedOff: true }); }
   catch (error) {
     if (launchReady) void shortcutError(error);
     else pendingShortcutErrors.push(error);
@@ -278,7 +281,7 @@ else if (!demoMode) app.on('second-instance', (_event, _argv, _workingDirectory,
 });
 const shortcutLaunch = new ShortcutLaunch(
   () => gameOperation?.kind === 'launch' && ['preparing', 'running', 'stopping'].includes(gameOperation.status) ? gameOperation.gameId : undefined,
-  (id) => launchGame(id),
+  (id, options) => launchGame(id, options),
 );
 
 async function showLauncher(): Promise<void> {
@@ -299,10 +302,10 @@ function finishShortcutSession(): void {
   // Account service and game-process cleanup must finish before normal quit.
   if (launchReady && (shortcutOnly || !mainWindow || mainWindow.isDestroyed()) && !nativeSocialKeepAlive.some(active=>active()) && !shortcutLaunch.preparing && !preparingLaunch && !finalizingGame && downloadCancellations.size === 0 && installQueue.size === 0 && operations.size === 0 && serviceSessions.size === 0) app.quit();
 }
-function receiveLaunchRequest(id?: string): void {
-  if (!launchReady) { pendingRequests.push(id); return; }
-  if (!id) { void showLauncher(); return; }
-  void shortcutLaunch.request(id).catch(shortcutError).finally(finishShortcutSession);
+function receiveLaunchRequest(request: ShortcutRequest): void {
+  if (!launchReady) { pendingRequests.push(request); return; }
+  if (!request.gameId) { void showLauncher(); return; }
+  void shortcutLaunch.request(request.gameId, { steamCommand: request.steamCommand, handedOff: request.handedOff }).catch(shortcutError).finally(finishShortcutSession);
 }
 
 function snapshot(): AppSnapshot {
@@ -1023,276 +1026,90 @@ async function gameLaunchOptions(id: string): Promise<GameLaunchOptions> {
   };
 }
 
-async function gameLocales(game: Game): Promise<string[]> {
-  return installedGameLocales(game.path);
-}
+const ephemeralServices = new EphemeralServiceSessions();
+const gameSession = new GameSession({
+  store: { get games() { return store.games; }, get downloads() { return store.downloads; }, get settings() { return store.settings; } },
+  backend: () => backend.current,
+  runtime: () => runtime.current,
+  requireBackend: (command) => requireBackend(command),
+  get paths() { return { userData: app.getPath('userData'), home: app.getPath('home') }; },
+  environment: () => process.env,
+  get connectivity() { return connectivity; },
+  account: () => authState,
+  ensureWallet: () => prepareSystemWallet(),
+  displayGuard: () => gameDisplay.acquire(),
+  // Registered while acquired, so quitting waits for and stops a service a launch still prepares.
+  services: {
+    acquire: async (...args) => {
+      const session = await ephemeralServices.acquire(...args);
+      serviceSessions.set(session.socketPath, session);
+      return { ...session, release: async () => { try { await session.release(); } finally { serviceSessions.delete(session.socketPath); } } };
+    },
+  },
+  incompleteUpdate: async (game) => { if (await refreshIncompleteUpdate(game)) { emitSnapshot(); return true; } return false; },
+  persistGame: async (id, patch) => { await store.patchGame(id, patch); emitSnapshot(); },
+  licenseCache: () => offlineLicenseCache(),
+  content: (_dataRoot, offline) => {
+    // Owned bundles let DLC discovery find content the package does not list.
+    // Load them while the launch prepares instead of only using a library the
+    // Library page happened to load; offline there is nothing to fetch.
+    const ownedAccess = offline ? undefined : accountLibrary.startLaunchAccess();
+    return {
+      roots: (game) => contentManager().roots(game),
+      relatedProducts: async (game) => contentManager().relatedProducts(game,
+        ownedAccess ? await ownedAccess(OWNED_ACCESS_WAIT_MS) : accountLibrary.peekAccess(), currentMarket(), undefined, offline),
+    };
+  },
+  inviteBridge: async (operationId, game, titleId, log) => {
+    const account=authState.username,epoch=xboxSocial.epoch;
+    const current=()=>!shutdownStarted&&authState.stored===true&&authState.username===account&&xboxSocial.epoch===epoch;
+    const bridge=new GameInviteBridge(operationId,game.title,titleId,current,emitSnapshot,()=>{void showFriends().catch(()=>{});},Date.now,sender=>{
+      if(!Notification.isSupported())return;
+        try{const notice=new Notification({title:nativeText('Game invitation'),body:nativeText(`${sender} invited you to ${game.title}. Open Friends to accept.`),urgency:'normal'});notice.on('click',()=>{void showFriends().catch(()=>{});});notice.on('failed',()=>{});notice.show();}catch{/* The dock remains available without desktop notifications. */}
+    },new XboxTitlePresence(current,log));
+    try{await bridge.start();}
+    catch(error){await bridge.stop().catch(()=>{});throw error;}
+    gameInviteBridges.set(operationId,bridge);
+    return {port:bridge.port,key:bridge.key,stop:async()=>{try{await bridge.stop();}finally{gameInviteBridges.delete(operationId);}}};
+  },
+  onInviteAvailability: (reason) => { gameInviteUnavailableReason = reason; },
+  // Wayland/X11 docks match the game window to its installed artwork by this ID.
+  windowIdentity: async (game, coverDataUrl) => {
+    if (process.platform !== 'linux' || !shortcuts.available) return undefined;
+    const png = await loadShortcutIcon({ coverDataUrl }, bytes => {
+      const image = nativeImage.createFromBuffer(bytes);
+      return image.isEmpty() ? undefined : image.resize({ width: 256, height: 256 }).toPNG();
+    });
+    return shortcuts.windowIdentity(game, png);
+  },
+  attachGame: (game, pid) => { gameGuide?.bind(game.id, game.title, pid); return () => gameGuide?.unbind(game.id); },
+  onOfflineRevoked: (reason) => emitLog('offline', `Removed stored offline licenses and identities (${reason}).`),
+  onChange: (operation, operationId, immediate) => {
+    if (operation) gameOperation = operation;
+    else if (gameOperation?.id === operationId) gameOperation = undefined;
+    if (immediate) emitSnapshot(); else scheduleSnapshot();
+  },
+});
 
-async function gameTitleId(game: Game): Promise<string | undefined> {
-  return installedGameTitleId(game.path);
-}
-
-async function launchGame(id: string): Promise<void> {
+async function launchGame(id: string, options: LaunchOptions = {}): Promise<void> {
   await stopGameUpdateCheck();
   ensureIdle('launch');
   preparingLaunch = true;
-  try { await prepareGameLaunch(id); }
+  let active: ActiveGame;
+  try { active = await gameSession.launch(id, options); }
   finally { preparingLaunch = false; }
-}
-
-async function prepareGameLaunch(id: string): Promise<void> {
-  const game = store.games.find((entry) => entry.id === id);
-  if (!game) throw new Error('Game not found.');
-  const target = await canonicalInstallPath(game.path);
-  for (const task of store.downloads.filter(task => ['running', 'queued', 'paused'].includes(task.status))) {
-    if (task.gameId === id || installPathsOverlap(target, await canonicalInstallPath(task.destination))) throw Error('Finish or cancel this game\'s installation before playing it.');
-  }
-  if (await refreshIncompleteUpdate(game)) { emitSnapshot(); throw Error(INCOMPLETE_UPDATE_MESSAGE); }
-  const inspected = await inspectGameDirectory(game.path);
-  await store.patchGame(id, {
-    installState: inspected.installState,
-    installMessage: inspected.installMessage,
-    updateIncomplete: inspected.updateIncomplete,
-    executable: inspected.executable,
-    antiCheat: inspected.antiCheat,
-    vcRedistEncrypted: inspected.vcRedistEncrypted,
-    coverDataUrl: inspected.coverDataUrl,
-    storeId: inspected.storeId ?? game.storeId,
+  operations.set(active.operationId, active.process.child);
+  gameProcesses.set(active.operationId, active.process);
+  // The session's own cleanup is already queued on `result`; this runs after it starts.
+  void active.result.catch(() => undefined).finally(async () => {
+    finalizingGame = true;
+    try {
+      operations.delete(active.operationId);
+      gameProcesses.delete(active.operationId);
+      await active.finished;
+      if (gameOperation?.id === active.operationId && gameOperation.status === 'failed' && shortcutOnly) await shortcutError(new Error(gameOperation.error ?? 'The game exited with an error.'));
+    } finally { finalizingGame = false; finishShortcutSession(); }
   });
-  emitSnapshot();
-  const binary = requireBackend('run');
-  if (inspected.installState !== 'ready') throw new Error(inspected.installMessage ?? 'The installation is not ready for Xodus run.');
-  const locale = supportedGameLocale(game.locale ?? '');
-  const titleId = await gameTitleId(game).catch(() => undefined);
-  const wine = selectedWinePath(store.settings.winePath, store.settings.runtimeRoot, runtime.current.winePath);
-  if (!wine) throw new Error('Select a Wine / Proton binary in Settings.');
-  try { await fs.access(wine, constants.X_OK); }
-  catch { throw new Error(`The selected Wine runtime is unavailable: ${wine}. Select or reinstall Xodus Runtime in Settings.`); }
-  const cloudRuntime = await cloudSaveRuntime(wine);
-  if (await unbridgedCloudSaveRuntime(wine)) {
-    throw new Error('The active runtime has cloud saves without the required service bridge. Update the active runtime in Settings.');
-  }
-  const dataRoot = path.dirname(store.settings.runtimeRoot);
-  // Decide "offline" here, once, from a fresh probe: the backend then skips
-  // its ticket, license and PlayFab requests and the runtime signs in from
-  // its cached identity, instead of each waiting for its own connect timeout.
-  const reachability: ConnectivityStatus = connectivity ? await connectivity.check() : { state: 'unknown' };
-  const offlineLaunch = reachability.state === 'offline';
-  // Owned bundles let DLC discovery find content the package does not list.
-  // Load them while the launch prepares instead of only using a library the
-  // Library page happened to load; offline there is nothing to fetch.
-  const ownedAccess = offlineLaunch ? undefined : accountLibrary.startLaunchAccess();
-  if (authState.stored === true && authState.username && await bindOfflineAccess(dataRoot, authState.username)) {
-    emitLog('offline', 'Removed stored offline licenses and identities (account-changed).');
-  }
-  const offlineRuntime = await offlineIdentityRuntime(wine);
-  if (offlineLaunch && (!offlineRuntime || !backend.current.capabilities.offlineLaunch)) {
-    throw new Error('Offline play requires a compatible Nexus backend and runtime. Update them in Settings while online.');
-  }
-  const licenseCache = offlineRuntime ? await offlineLicenseCache() : undefined;
-  const args = gameLaunchArguments(inspected, wine, store.settings.market, backend.current.linuxRunPatch,
-    licenseCache, offlineLaunch && Boolean(licenseCache && backend.current.capabilities.offlineLaunch));
-  const operationId = `game-${id}`;
-  const logDirectory = path.join(dataRoot, 'logs');
-  const logPath = path.join(logDirectory, `${id}-latest.log`);
-  await fs.mkdir(logDirectory, { recursive: true });
-  const launchLog = createWriteStream(logPath, { flags: 'w', encoding: 'utf8' });
-  launchLog.on('error', (error) => console.error(`Unable to write launch log ${logPath}:`, error));
-  const writeLaunchLog = (line: string) => launchLog.write(`[${new Date().toISOString()}] ${line}\n`);
-  gameInviteUnavailableReason=undefined;
-  gameOperation = {
-    id: operationId,
-    gameId: id,
-    title: game.title,
-    kind: 'launch',
-    status: 'preparing',
-    phase: 'Preparing Proton and Xodus…',
-    log: [],
-    logPath,
-    startedAt: new Date().toISOString(),
-  };
-  const appendGameLog = (line: string) => {
-    writeLaunchLog(line);
-    if (!gameOperation || gameOperation.id !== operationId) return;
-    gameOperation.log.push(line);
-    if (gameOperation.log.length > 250) gameOperation.log.splice(0, gameOperation.log.length - 250);
-    gameOperation.phase = line.length > 180 ? `${line.slice(0, 177)}…` : line;
-    scheduleSnapshot();
-  };
-  const verboseLogs = process.env.XODUS_NEXUS_VERBOSE_LOGS === '1' || store.settings.verboseLogs;
-  const gameLog = new GameLogReducer(appendGameLog, verboseLogs);
-  const addGameLog = (line: string) => gameLog.push(line);
-  writeLaunchLog(`Game: ${game.title}`);
-  writeLaunchLog(`Mode: package manifest; cloud saves: ${cloudRuntime ? 'enabled' : 'not available in active runtime'}; verbose logs: ${verboseLogs ? 'on' : 'off'}`);
-  writeLaunchLog(`Backend: ${binary}`);
-  writeLaunchLog(`Wine: ${wine}`);
-  writeLaunchLog(`Connectivity: ${reachability.state}${reachability.reason ? ` (${reachability.reason})` : ''}; offline launch: ${offlineLaunch ? 'yes' : 'no'}`);
-  emitSnapshot();
-  let serviceSession: XodusServiceSession | undefined;
-  let inviteBridge: GameInviteBridge | undefined;
-  let launchWrapper: GameWrapper | undefined;
-  let releaseDisplay = () => {};
-  try {
-    if (game.launchTools?.dualSenseCompatibility) writeLaunchLog('DualSense compatibility mode enabled for this game (054c:0ce6).');
-    if (game.launchTools?.dualShock4Compatibility) writeLaunchLog('DualShock 4 compatibility mode enabled for this game (v1, v2 and wireless adapter).');
-    await prepareSystemWallet();
-    const legacyPrefixRoot = path.join(dataRoot, 'prefixes', game.id);
-    const compatibilityDataPath = path.join(dataRoot, 'compatdata', game.id);
-    const steamRoot = path.join(app.getPath('home'), '.steam', 'root');
-    launchWrapper = await prepareGameWrapper(wine, game.launchTools, path.join(dataRoot, 'launch-wrappers'), process.env, game.path);
-    const protonRunner = await prepareProtonRunner(wine, compatibilityDataPath, steamRoot, launchWrapper.command, store.settings.shaderCacheLimitGiB);
-    const wineCommand = protonRunner?.command ?? wine;
-    args[2] = preparedGameWine(protonRunner, launchWrapper.command);
-    if (inspected.vcRedistEncrypted) {
-      if (!protonRunner) throw new Error('This encrypted VC++ prerequisite requires a Proton prefix. Select Xodus Runtime in Settings.');
-      const installed = await installedVcRuntimeVersion(path.join(compatibilityDataPath, 'pfx'));
-      if (!installed || !versionAtLeast(installed, VC_REDIST_VERSION)) {
-        throw new Error(`VC++ runtime ${installed ?? 'not found'} is too old for this encrypted installer. Right-click the game and choose Install / update VC++, then press Play.`);
-      }
-      addGameLog(`VC++ runtime ${installed} verified; launching the original package executable from a temporary decrypted launch view.`);
-    }
-    const environment = antiCheatEnvironment(gameLocaleEnvironment(gameWindowEnvironment(gameLoggingEnvironment(protonRunner
-      ? { ...process.env }
-      : { ...process.env, WINEPREFIX: legacyPrefixRoot, WINEARCH: 'win64' }, verboseLogs)), locale));
-    if (process.platform === 'linux' && shortcuts.available) {
-      try {
-        const png = await loadShortcutIcon({ coverDataUrl: inspected.coverDataUrl ?? game.coverDataUrl }, bytes => {
-          const image = nativeImage.createFromBuffer(bytes);
-          return image.isEmpty() ? undefined : image.resize({ width: 256, height: 256 }).toPNG();
-        });
-        environment.WINE_APPLICATION_ID = await shortcuts.windowIdentity({ ...game, installState: inspected.installState }, png);
-      } catch { addGameLog('Game window icon unavailable.'); }
-    }
-    // Never inherit another title's discovery list. Hints are scoped public
-    // metadata, not licenses, and cannot make an optional lookup block Play.
-    delete environment.NEXUS_RELATED_PRODUCT_IDS;
-    delete environment.NEXUS_INVITE_PORT;
-    delete environment.NEXUS_INVITE_KEY;
-    // A shell's stale offline mode or another account must not influence this
-    // launch. The backend supplies identity mode only after license validation.
-    delete environment.XODUS_OFFLINE_IDENTITY;
-    delete environment.XODUS_FORCE_OFFLINE;
-    delete environment.XODUS_ACCOUNT_HASH;
-    if (await storeDiscoveryRuntime(wine)) {
-      const access = ownedAccess ? await ownedAccess(OWNED_ACCESS_WAIT_MS) : accountLibrary.peekAccess();
-      const related = await contentManager().relatedProducts(game, access, currentMarket(), undefined, offlineLaunch).catch(() => {
-        addGameLog('Additional DLC discovery unavailable. Continuing with package-declared content.');
-        return [] as string[];
-      });
-      if (related.length) environment.NEXUS_RELATED_PRODUCT_IDS = related.join(',');
-    }
-    const contentRoots = await contentManager().roots(game).catch(error => {
-      addGameLog(`Managed content discovery unavailable: ${(error as Error).message}`);
-      return [] as string[];
-    });
-    if (contentRoots.length) environment.XODUS_CONTENT_ROOTS = [environment.XODUS_CONTENT_ROOTS, ...contentRoots.map(root => 'Z:' + root.replaceAll('/', '\\'))].filter(Boolean).join(';');
-    if (offlineLaunch) {
-      // The runtime treats the network as unreachable at once instead of
-      // waiting for its own connect timeouts. Whether it may sign in from its
-      // cached identity is the backend's decision, made only after the stored
-      // license passed its lease checks.
-      environment.XODUS_FORCE_OFFLINE = '1';
-      addGameLog(`Microsoft is unreachable (${reachability.reason ?? 'no answer'}); launching offline with the stored license.`);
-    }
-    if (locale) {
-      addGameLog(`Selected game language: ${locale}.`);
-    }
-    await syncPrefixUserLocale(wineCommand, protonRunner ? path.join(compatibilityDataPath, 'pfx') : legacyPrefixRoot, locale, environment, addGameLog);
-    await syncUnrealCultureGameIni(protonRunner ? path.join(compatibilityDataPath, 'pfx') : legacyPrefixRoot, game.path, titleId, locale, addGameLog);
-    if (cloudRuntime) {
-      serviceSession = await startXodusService(binary, app.getPath('userData'), addGameLog);
-      serviceSessions.set(operationId, serviceSession);
-      environment.XODUS_SOCKET = serviceSession.socketPath;
-      environment.XODUS_BRIDGE_PORT = String(serviceSession.bridgePort);
-      environment.XODUS_BRIDGE_KEY = serviceSession.bridgeKey;
-      environment.XODUS_SAVE_SYNC = 'auto';
-      addGameLog('Xbox cloud save preview is enabled. Saves may download from and upload to the account cloud.');
-    }
-    const inviteRuntime=await gameInviteRuntime(wine);
-    gameInviteUnavailableReason=!inviteRuntime?'The selected runtime does not support game invitations. Update the runtime and restart the game.':!titleId?'The game has no Xbox title information for invitations.':undefined;
-    if(titleId&&/^[a-f0-9]{1,8}$/i.test(titleId)&&inviteRuntime){
-      const account=authState.username,epoch=xboxSocial.epoch;
-      const current=()=>!shutdownStarted&&authState.stored===true&&authState.username===account&&xboxSocial.epoch===epoch;
-      inviteBridge=new GameInviteBridge(operationId,game.title,String(parseInt(titleId,16)),current,emitSnapshot,()=>{void showFriends().catch(()=>{});},Date.now,sender=>{
-        if(!Notification.isSupported())return;
-        try{const notice=new Notification({title:nativeText('Game invitation'),body:nativeText(`${sender} invited you to ${game.title}. Open Friends to accept.`),urgency:'normal'});notice.on('click',()=>{void showFriends().catch(()=>{});});notice.on('failed',()=>{});notice.show();}catch{/* The dock remains available without desktop notifications. */}
-      },new XboxTitlePresence(current,addGameLog));
-      try{
-        await inviteBridge.start();gameInviteBridges.set(operationId,inviteBridge);
-        environment.NEXUS_INVITE_PORT=String(inviteBridge.port);environment.NEXUS_INVITE_KEY=inviteBridge.key;
-      }catch{await inviteBridge.stop().catch(()=>{});inviteBridge=undefined;gameInviteUnavailableReason='The game invitation connection could not be started. Restart the game to try again.';addGameLog('Optional game invitations are unavailable for this launch.');}
-    }
-    // Names the account for the runtime's offline identity cache (an opaque key, never the username).
-    if (authState.stored === true && authState.username) environment.XODUS_ACCOUNT_HASH = accountCacheKey(authState.username);
-    if (protonRunner) addGameLog(`Proton prefix: ${protonRunner.compatibilityDataPath}/pfx`);
-    else await fs.mkdir(legacyPrefixRoot, { recursive: true });
-    const tracked = await spawnGameProcess(binary, args, {
-      cwd: game.path,
-      env: environment,
-      onLine: addGameLog,
-      maxOutput: 8_000_000,
-    }, { stopPrefix: protonRunner?.stopPrefix });
-    operations.set(operationId, tracked.child);
-    gameProcesses.set(operationId, tracked);
-    gameGuide?.bind(id,game.title,tracked.child.pid);
-    releaseDisplay = gameDisplay.acquire();
-    gameOperation.status = 'running';
-    gameOperation.phase = 'Xodus is running; waiting for the game window…';
-    emitSnapshot();
-    void tracked.result.then((result) => {
-      addGameLog(`The Xodus process exited with code ${result.code}.`);
-      if (!gameOperation || gameOperation.id !== operationId) return;
-      gameOperation.finishedAt = new Date().toISOString();
-      if (result.code === 0 || gameOperation.status === 'stopping') {
-        gameOperation.status = 'complete';
-        gameOperation.phase = result.code === 0 ? 'The game has exited.' : 'The game was stopped. Forced shutdown may leave unsynchronized saves.';
-      } else {
-        const detail = result.output.split('\n').map((line) => line.trim()).filter(Boolean).slice(-6).join(' | ');
-        gameOperation.status = 'failed';
-        gameOperation.error = contentLicenseFailure(result.output.split('\n'))
-          ?? `Xodus run exited with code ${result.code}${detail ? `: ${detail.slice(0, 900)}` : '.'}`;
-        gameOperation.phase = gameOperation.error;
-      }
-    }).catch((error) => {
-      addGameLog(`Process error: ${(error as Error).message}`);
-      if (!gameOperation || gameOperation.id !== operationId) return;
-      gameOperation.status = 'failed';
-      gameOperation.error = (error as Error).message;
-      gameOperation.phase = gameOperation.error;
-      gameOperation.finishedAt = new Date().toISOString();
-    }).finally(async () => {
-      releaseDisplay();gameGuide?.unbind(id);
-      finalizingGame = true;
-      try {
-        operations.delete(operationId);
-        gameProcesses.delete(operationId);
-        await inviteBridge?.stop().catch(()=>{});gameInviteBridges.delete(operationId);
-        if (serviceSession) {
-          await serviceSession.stop().catch((error) => addGameLog(`Account service cleanup failed: ${(error as Error).message}`));
-          serviceSessions.delete(operationId);
-        }
-        await tracked.cleanup().catch((error) => console.error('Game service cleanup failed:', error));
-        await launchWrapper?.cleanup().catch((error) => console.error('Game wrapper cleanup failed:', error));
-        gameLog.flush();
-        launchLog.end();
-        emitSnapshot();
-        if (gameOperation?.status === 'failed' && shortcutOnly) await shortcutError(new Error(gameOperation.error ?? 'The game exited with an error.'));
-      } finally { finalizingGame = false; finishShortcutSession(); }
-    });
-  } catch (error) {
-    releaseDisplay();gameGuide?.unbind(id);
-    await inviteBridge?.stop().catch(()=>{});gameInviteBridges.delete(operationId);
-    await launchWrapper?.cleanup().catch(() => undefined);
-    if (serviceSession) {
-      await serviceSession.stop().catch(() => undefined);
-      serviceSessions.delete(operationId);
-    }
-    writeLaunchLog(`Preparation error: ${(error as Error).message}`);
-    gameLog.flush();
-    launchLog.end();
-    if (gameOperation?.id === operationId) gameOperation = undefined;
-    emitSnapshot();
-    throw error;
-  }
 }
 
 async function installGameVcRuntime(id: string): Promise<void> {
@@ -2390,7 +2207,7 @@ app.whenReady().then(async () => {
     // Only now: the account refresh resets the party, whose idle event would
     // otherwise end a shortcut session before its launch is registered.
     launchReady = true;
-    receiveLaunchRequest(startupRequest.gameId);
+    receiveLaunchRequest(startupRequest);
   } else {
     launchReady = true;
     await showBeforeAccountCheck(showLauncher, refreshInitialAccount, () => {
@@ -2399,7 +2216,7 @@ app.whenReady().then(async () => {
       emitSnapshot();
     });
   }
-  for (const id of pendingRequests.splice(0)) receiveLaunchRequest(id);
+  for (const request of pendingRequests.splice(0)) receiveLaunchRequest(request);
   for (const error of pendingShortcutErrors.splice(0)) void shortcutError(error);
   app.on('activate', () => { void showLauncher(); });
 }).catch((error) => {

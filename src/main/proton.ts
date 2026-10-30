@@ -389,6 +389,53 @@ export function fexEnvironment(configFile: string, i386XGameRuntime?: string): s
   ];
 }
 
+const DXVK_COMPONENTS = ['d3d8.dll', 'd3d9.dll', 'd3d10core.dll', 'd3d11.dll', 'dxgi.dll'];
+
+export interface RuntimeComponent { name: string; bytes: Buffer }
+
+/** The checksums the runtime's metadata records for one PE architecture. */
+export async function runtimeComponentChecksums(protonRoot: string, peArch: ProtonLayout['peArch']): Promise<Record<string, string> | undefined> {
+  // `components` are the x86_64 PE checksums; an arm64 assembly also records
+  // each PE directory's set under `componentsByArch`.
+  const metadata = JSON.parse(await fs.readFile(path.join(protonRoot, 'XODUS_NEXUS_PATCH.json'), 'utf8')) as {
+    components?: Record<string, string>; componentsByArch?: Record<string, Record<string, string>>;
+  };
+  // An arm64 assembly's `components` are its arm64 checksums: the x86_64
+  // fallback is only for older runtimes without `componentsByArch`.
+  if (metadata.componentsByArch) return metadata.componentsByArch[peArch];
+  return peArch === 'x86_64-windows' ? metadata.components : undefined;
+}
+
+/** Reads and checks every named runtime component before any prefix entry changes. */
+export async function verifiedRuntimeComponents(protonRoot: string, peArch: ProtonLayout['peArch'],
+  expected: Record<string, string> | undefined, names: string[]): Promise<RuntimeComponent[]> {
+  return Promise.all(names.map(async (name) => {
+    // WinHTTP loads nghttp2 with LOAD_LIBRARY_SEARCH_SYSTEM32. WINEDLLPATH
+    // alone is insufficient in existing prefixes. Validate before replacing
+    // a directory entry so symlinks cannot overwrite another runtime.
+    const library = name === 'libvkd3d-shader-1.dll' ? 'vkd3d' : DXVK_COMPONENTS.includes(name) ? 'wine/dxvk' : 'wine';
+    const bytes = await fs.readFile(path.join(protonRoot, 'files', 'lib', library, peArch, name));
+    if (!expected?.[name] || createHash('sha256').update(bytes).digest('hex') !== expected[name]) throw new Error(`The shared runtime has an invalid ${name} checksum.`);
+    return { name, bytes };
+  }));
+}
+
+/** Writes verified components into a prefix's system32, replacing entries atomically. */
+export async function installRuntimeComponents(prefix: string, components: RuntimeComponent[]): Promise<void> {
+  for (const { name, bytes } of components) {
+    const target = path.join(prefix, 'drive_c/windows/system32', name);
+    let current: Buffer | undefined;
+    try { current = await fs.readFile(target); } catch (error) { if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error; }
+    if (!current?.equals(bytes)) {
+      const temporary = `${target}.nexus-${process.pid}`;
+      try {
+        await fs.writeFile(temporary, bytes, { flag: 'wx', mode: 0o644 });
+        await fs.rename(temporary, target);
+      } finally { await fs.unlink(temporary).catch(() => undefined); }
+    }
+  }
+}
+
 export async function prepareProtonRunner(
   winePath: string,
   compatibilityDataPath: string,
@@ -454,35 +501,11 @@ export async function prepareProtonRunner(
     shaderRuntime = Array.isArray(metadata.features) && metadata.features.includes('hlsl-state-keywords-v1');
     appStateRuntime = Array.isArray(metadata.features) && metadata.features.includes('appstate-registration-v1');
     dxvkRuntime = Array.isArray(metadata.features) && metadata.features.includes('dxvk-constant-compare-v1');
-    const dxvkComponents = ['d3d8.dll', 'd3d9.dll', 'd3d10core.dll', 'd3d11.dll', 'dxgi.dll'];
     // `components` are the x86_64 checksums; other PE directories are listed
     // under `componentsByArch` and are never checked against x86_64 bytes.
     const expectedComponents = metadata.componentsByArch?.[layout.peArch] ?? (layout.peArch === 'x86_64-windows' ? metadata.components : undefined);
-    const components = [ ...(http2Runtime ? ['libnghttp2.dll'] : []), ...(jsonRuntime ? ['windows.web.dll'] : []), ...(shaderRuntime ? ['libvkd3d-shader-1.dll'] : []), ...(appStateRuntime ? ['twinapi.appcore.dll'] : []), ...(dxvkRuntime ? dxvkComponents : []) ];
-    // Validate every component before changing any prefix entry.
-    const verified = await Promise.all(components.map(async (name) => {
-      // WinHTTP loads nghttp2 with LOAD_LIBRARY_SEARCH_SYSTEM32. WINEDLLPATH
-      // alone is insufficient in existing prefixes. Validate before replacing
-      // a directory entry so symlinks cannot overwrite another runtime.
-      const library = name === 'libvkd3d-shader-1.dll' ? 'vkd3d' : dxvkComponents.includes(name) ? 'wine/dxvk' : 'wine';
-      const source = path.join(files, 'lib', library, layout.peArch, name);
-      const expected = expectedComponents?.[name];
-      const bytes = await fs.readFile(source);
-      if (!expected || createHash('sha256').update(bytes).digest('hex') !== expected) throw new Error(`The shared runtime has an invalid ${name} checksum.`);
-      return { name, bytes };
-    }));
-    for (const { name, bytes } of verified) {
-      const target = path.join(compatibilityDataPath, 'pfx/drive_c/windows/system32', name);
-      let current: Buffer | undefined;
-      try { current = await fs.readFile(target); } catch (error) { if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error; }
-      if (!current?.equals(bytes)) {
-        const temporary = `${target}.nexus-${process.pid}`;
-        try {
-          await fs.writeFile(temporary, bytes, { flag: 'wx', mode: 0o644 });
-          await fs.rename(temporary, target);
-        } finally { await fs.unlink(temporary).catch(() => undefined); }
-      }
-    }
+    const components = [ ...(http2Runtime ? ['libnghttp2.dll'] : []), ...(jsonRuntime ? ['windows.web.dll'] : []), ...(shaderRuntime ? ['libvkd3d-shader-1.dll'] : []), ...(appStateRuntime ? ['twinapi.appcore.dll'] : []), ...(dxvkRuntime ? DXVK_COMPONENTS : []) ];
+    await installRuntimeComponents(path.join(compatibilityDataPath, 'pfx'), await verifiedRuntimeComponents(protonRoot, layout.peArch, expectedComponents, components));
   } catch (error) {
     if (http2Runtime || jsonRuntime || shaderRuntime || appStateRuntime || dxvkRuntime) throw error;
     // Stock Proton keeps its bundled library environment.

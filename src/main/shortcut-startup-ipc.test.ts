@@ -8,13 +8,13 @@ const start=source.indexOf('  // No external toggle socket');
 const block=source.slice(start,source.indexOf("  app.on('activate'",start));
 const script=transpileModule('(async()=>{'+block+'})()',{compilerOptions:{target:ScriptTarget.ES2022}}).outputText;
 it('keeps startup alive through wallet and party-reset callbacks, then flushes queued shortcuts',async()=>{
-  const launches:string[]=[],quit=vi.fn();
-  const context:any={launchReady:false,startupRequest:{gameId:'first'},pendingRequests:['second'],pendingShortcutErrors:[],
+  const launches:unknown[]=[],quit=vi.fn();
+  const context:any={launchReady:false,startupRequest:{gameId:'first'},pendingRequests:[{gameId:'second'}],pendingShortcutErrors:[],
     prepareSystemWallet:async()=>{if(context.launchReady)quit();},
     refreshAccount:async()=>{if(context.launchReady)quit();},
-    receiveLaunchRequest:(id:string)=>{expect(context.launchReady).toBe(true);launches.push(id);},shortcutError:vi.fn()};
+    receiveLaunchRequest:(request:unknown)=>{expect(context.launchReady).toBe(true);launches.push(request);},shortcutError:vi.fn()};
   await runInNewContext(script,context);
-  expect(quit).not.toHaveBeenCalled();expect(launches).toEqual(['first','second']);
+  expect(quit).not.toHaveBeenCalled();expect(launches).toEqual([{gameId:'first'},{gameId:'second'}]);
 });
 it('makes a normal window ready before scheduling its visible account check',async()=>{
   const showLauncher=vi.fn(),context:any={launchReady:false,startupRequest:{},pendingRequests:[],pendingShortcutErrors:[],showLauncher,
