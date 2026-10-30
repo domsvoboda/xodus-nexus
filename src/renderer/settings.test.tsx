@@ -4,6 +4,15 @@ import { demoSnapshot } from '../shared/demo-data';
 import { SettingsPage } from './App';
 
 describe('Settings diagnostics', () => {
+  it('offers an interface scale for small screens outside the diagnostics disclosure', () => {
+    const data = demoSnapshot();
+    data.settings.uiScale = 1.5;
+    const html = renderToStaticMarkup(<SettingsPage data={data} toast={() => {}} />);
+    const main = html.replace(html.match(/<details class="settings-card settings-diagnostics"[\s\S]*?<\/details>/)![0], '');
+    expect(main).toContain('aria-label="Interface scale"');
+    expect(main).toContain('<option value="1.5" selected="">150%</option>');
+    expect(main).toContain('Automatic');
+  });
   it('uses a neutral Wine / Proton binary label and preserves a custom runtime path', () => {
     const data = demoSnapshot();
     data.settings.winePath = '/runtime/nexus-runtime-11.0-experimental/files/bin/wine';

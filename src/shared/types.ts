@@ -197,6 +197,8 @@ export interface Settings {
   overlayShortcut?:string;
   overlaySide?:'left'|'right';
   firstRunCompleted?: boolean;
+  /** Launcher zoom factor; 0 picks one for the display (larger on handheld Game Mode screens). */
+  uiScale?: number;
 }
 
 export interface LauncherUpdate {

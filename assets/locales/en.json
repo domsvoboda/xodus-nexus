@@ -271,6 +271,8 @@
   "offline.unreachable": "Microsoft is unreachable.",
   "package.estimate": "Estimated download: {{size}}",
   "settings.interface_language": "Interface language",
+  "settings.interface_scale": "Interface scale",
+  "settings.interface_scale_auto": "Automatic",
   "settings.language_help": "Changes the launcher interface only. Game languages and Store region are unchanged.",
   "settings.language_saved": "Interface language saved.",
   "settings.save_language": "Save language",

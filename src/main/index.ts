@@ -359,6 +359,17 @@ async function refreshIncompleteUpdate(game: Game): Promise<boolean> {
   return true;
 }
 
+/** Small 1080p handheld panels make the fixed-px UI unreadable, so Game Mode there defaults to 150%. */
+function uiZoomFactor(scale = store.settings.uiScale ?? 0): number {
+  if (scale >= 1 && scale <= 2) return scale;
+  const gameMode = Boolean(process.env.XDG_CURRENT_DESKTOP?.split(':').some(part => part.toLowerCase() === 'gamescope'));
+  return gameMode && screen.getPrimaryDisplay().workArea.width <= 1920 ? 1.5 : 1;
+}
+
+function applyUiScale(): void {
+  mainWindow?.webContents.setZoomFactor(uiZoomFactor());
+}
+
 function emitSnapshot(): void {
   syncNativeSocialBackend();
   if (snapshotTimer) clearTimeout(snapshotTimer);
@@ -1912,8 +1923,10 @@ function registerIpc(): void {
     if (typeof patch.runtimeRoot === 'string') allowed.runtimeRoot = path.resolve(patch.runtimeRoot);
     if (typeof patch.verboseLogs === 'boolean') allowed.verboseLogs = patch.verboseLogs;
     if (typeof patch.firstRunCompleted === 'boolean') allowed.firstRunCompleted = patch.firstRunCompleted;
+    if (typeof patch.uiScale === 'number') allowed.uiScale = patch.uiScale >= 1 ? Math.min(2, patch.uiScale) : 0;
     const previous = store.settings;
     const settings = await store.setSettings(allowed);
+    if (allowed.uiScale !== undefined) applyUiScale();
     if(Object.keys(xboxOverlayPatch(patch)).length){
       await overlayShortcut?.configure(settings);gameGuide?.publish('overlay',xboxOverlaySettings(settings));
       if(!xboxOverlaySettings(settings).overlayEnabled)gameGuide?.reset();
@@ -2061,6 +2074,7 @@ async function createWindow(): Promise<void> {
       offscreen: hiddenCapture,
     },
   });
+  mainWindow.webContents.on('did-finish-load', applyUiScale);
   mainWindow.webContents.on('did-fail-load', (_event, code, description) => console.error('Renderer load failed', code, description));
   mainWindow.webContents.on('render-process-gone', (_event, details) => console.error('Renderer process exited', details.reason));
   if (smokeScreenshot) mainWindow.webContents.on('console-message', (_event, level, message) => console.error(`Renderer console [${level}]`, message));
