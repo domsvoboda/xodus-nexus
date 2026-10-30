@@ -55,6 +55,7 @@ import { GameSession, gameLocales, type ActiveGame, type LaunchOptions } from '.
 import { EphemeralServiceSessions } from './service-sessions.js';
 import { InstallQueue, assertActivityCompatible, assertInstallDestination, canonicalInstallPath, installPathsOverlap } from './install-queue.js';
 import { GameDisplayBlocker } from './game-display.js';
+import { runUnder, steamTrackingRerun } from './steam-tracking.js';
 import { GameShortcuts, shortcutArguments, shortcutInstanceData, shortcutInstanceRequest, shortcutLauncherPath, type ShortcutDestination, type ShortcutRequest } from './game-shortcuts.js';
 import { ShortcutLaunch } from './shortcut-launch.js';
 import { loadShortcutIcon } from './shortcut-icon.js';
@@ -263,9 +264,14 @@ if (process.platform === 'linux') {
     if (fonts) app.once('will-quit', () => fonts.dispose());
   } catch (error) { console.warn('Launcher fallback font unavailable:', (error as Error).message); }
 }
+// Steam's Exit reaches only a launch inside its tracking: start the shortcut again there and wait.
+const steamRerun = startupRequest.gameId && !startupError
+  ? steamTrackingRerun(startupRequest.steamCommand, process.env, path.join(app.getPath('userData'), 'shortcuts', 'launch-game'), startupRequest.gameId)
+  : undefined;
+if (steamRerun) runUnder(steamRerun.words, steamRerun.env).then(code => app.exit(code), () => app.exit(1));
 // Electron's lock is scoped to userData, so independent profiles stay isolated.
-const primaryInstance = demoMode || app.requestSingleInstanceLock(shortcutInstanceData(startupRequest, Boolean(startupError)));
-if (!primaryInstance) app.quit();
+const primaryInstance = !steamRerun && (demoMode || app.requestSingleInstanceLock(shortcutInstanceData(startupRequest, Boolean(startupError))));
+if (!primaryInstance && !steamRerun) app.quit();
 else if (!demoMode) app.on('second-instance', (_event, _argv, _workingDirectory, additionalData) => {
   try { receiveLaunchRequest({ ...shortcutInstanceRequest(additionalData, app.getPath('userData')), handedOff: true }); }
   catch (error) {
