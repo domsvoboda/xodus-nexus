@@ -3,7 +3,8 @@ import {randomBytes,randomUUID,timingSafeEqual} from 'node:crypto';
 import {emptyGameInvites,inviteGuid,validateGameInviteUri,type GameInviteState} from '../shared/game-invites.js';
 import {xboxUserId} from '../shared/social.js';
 import type {XboxTitlePresence} from './xbox-title-presence.js';
-const INVALID=0x80070057,ABORT=0x80004004,PENDING=0x8000000a,DENIED=0x80070005;
+import type {RelatedPoll} from './content-service.js';
+const INVALID=0x80070057,ABORT=0x80004004,PENDING=0x8000000a,DENIED=0x80070005,FAILED=0x80004005;
 export function encodeInviteFields(fields:string[]):Buffer{
   const values=fields.map(value=>Buffer.from(value,'utf8'));const count=Buffer.alloc(4);count.writeUInt32LE(values.length);
   return Buffer.concat([count,...values.flatMap(value=>{const length=Buffer.alloc(4);length.writeUInt32LE(value.length);return [length,value];})]);
@@ -19,10 +20,30 @@ export function decodeInviteFields(body:Buffer):string[]{
   }
   if(offset!==body.length||fields.some(value=>value.includes('\0')))throw Error('Invalid invite frame.');return fields;
 }
+/** An extra bridge verb: arguments in, HRESULT and reply fields out. Synchronous; reply PENDING to be polled again. */
+export type GameBridgeVerb=(args:string[])=>[number,string[]];
+const STORE_ID=/^[A-Z0-9]{12}$/,MARKET=/^[A-Z]{2}$/;
+/** `related <storeId> <market>`: the launched game's add-on IDs, as one comma-separated field once discovered. */
+export function relatedProductsVerb(storeId:string,poll:()=>RelatedPoll,log:(line:string)=>void=()=>{}):GameBridgeVerb{
+  let asked=false,answered=false;
+  return args=>{
+    if(args.length!==2||!STORE_ID.test(args[0])||!MARKET.test(args[1]))return [INVALID,[]];
+    if(args[0]!==storeId)return [DENIED,[]];
+    const result=poll();
+    if(!asked){asked=true;log('The game asked for its add-ons.');}
+    if(result.state!=='pending'&&!answered){answered=true;log(result.state==='done'?`Answered the game's add-on query with ${result.ids.length} product IDs.`:'Add-on discovery failed; the game keeps its package-declared content.');}
+    return result.state==='pending'?[PENDING,[]]:result.state==='done'?[0,[result.ids.join(',')]]:[FAILED,[]];
+  };
+}
 type Outgoing={id:string;phase:GameInviteState['outgoing'][number]['phase'];recipient?:string;expires:number};
 type Incoming={id:string;uri:string;sender:string;expires:number};
-/** One random capability and one bound account/title per launch. Memory only. */
+/**
+ * One random capability and one bound account/title per launch. Memory only.
+ * The game bridge: invitations when `titleId` is set, plus any verbs added
+ * with `verb()` (the Store's related-product lookup).
+ */
 export class GameInviteBridge {
+  private verbs=new Map<string,GameBridgeVerb>();
   private user?:string;
   private requests=new Map<string,Outgoing>();
   private invitations=new Map<string,Incoming>();
@@ -36,6 +57,7 @@ export class GameInviteBridge {
   readonly key=randomBytes(32).toString('hex');
   port=0;
   constructor(readonly id:string,readonly game:string,readonly titleId:string,private current:()=>boolean,private changed:()=>void,private show:()=>void,private now=Date.now,private notified:(sender:string)=>void=()=>{},private presence?:XboxTitlePresence){}
+  verb(name:string,handler:GameBridgeVerb):this{this.verbs.set(name,handler);return this;}
   async start():Promise<void>{
     if(this.server)throw Error('Invite bridge already started.');
     const expected=Buffer.from(this.key,'ascii');
@@ -60,6 +82,8 @@ export class GameInviteBridge {
   state():GameInviteState{if(this.stopped||!this.current())return emptyGameInvites();this.prune();return {active:this.lastSeen&&this.now()-this.lastSeen<20000?[{id:this.id,game:this.game}]:[],outgoing:[...this.requests.values()].map(value=>({id:this.id+':'+value.id,game:this.game,phase:value.phase})),incoming:[...this.invitations.values()].map(value=>({id:this.id+':'+value.id,game:this.game,sender:value.sender,expires:value.expires}))};}
   exchange(fields:string[]):[number,string[]]{
     if(this.stopped||!this.current())return [DENIED,[]];this.prune();const [op,...args]=fields;
+    const verb=this.verbs.get(op);if(verb)return verb(args);
+    if(!this.titleId)return [INVALID,[]];
     if(op==='presence-ready'&&args.length===0)return [this.presence?0:0x80004001,[]];
     if(op==='presence'&&args.length===5&&xboxUserId(args[0])&&args[1]===this.titleId){
       if(this.user&&this.user!==args[0])return [DENIED,[]];

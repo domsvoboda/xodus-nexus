@@ -17,6 +17,7 @@ const h = vi.hoisted(() => ({
   offlineRuntime: true,
   inviteRuntime: false,
   discovery: false,
+  relatedBridge: false,
   proton: undefined as undefined | { command: string; compatibilityDataPath: string; stopPrefix: { command: string; args: string[] } },
   localeSync: vi.fn(async () => {}),
 }));
@@ -34,6 +35,7 @@ vi.mock('./xodus-service.js', () => ({
   offlineIdentityRuntime: async () => h.offlineRuntime,
   storeDiscoveryRuntime: async () => h.discovery,
   gameInviteRuntime: async () => h.inviteRuntime,
+  relatedBridgeRuntime: async () => h.relatedBridge,
 }));
 vi.mock('./game-locale.js', async (original) => ({ ...await original<typeof import('./game-locale.js')>(), installedGameTitleId: async () => '6a1b2c3d' }));
 vi.mock('./vc-runtime.js', () => ({ installedVcRuntimeVersion: async () => '14.40.0.0', VC_REDIST_VERSION: '14.40.0.0', versionAtLeast: () => true }));
@@ -90,7 +92,7 @@ beforeEach(async () => {
   await fs.mkdir(path.join(root, 'game'));
   await fs.writeFile(path.join(root, 'wine'), '#!/bin/sh\n', { mode: 0o755 });
   changes = []; released = 0; persisted = []; walletCalls = 0;
-  h.spawnCalls = []; h.inspected = {}; h.cloud = false; h.unbridged = false; h.offlineRuntime = true; h.inviteRuntime = false; h.discovery = false; h.proton = undefined;
+  h.spawnCalls = []; h.inspected = {}; h.cloud = false; h.unbridged = false; h.offlineRuntime = true; h.inviteRuntime = false; h.discovery = false; h.relatedBridge = false; h.proton = undefined;
   h.cleanup.mockClear(); h.wrapperCleanup.mockClear(); h.serviceRelease.mockClear(); h.localeSync.mockClear();
   h.acquire.mockReset();
   h.acquire.mockImplementation(async () => ({ socketPath: '/run/x/xodus.sock', bridgePort: 4321, bridgeKey: 'k'.repeat(64), stop: async () => {}, release: h.serviceRelease }));
@@ -206,7 +208,7 @@ describe('GameSession', () => {
       content: () => ({ roots: async () => ['/data/content/dlc'], relatedProducts: async () => ['9NBLGGH4R315', '9P1J8S7CCWWT'] }),
     }));
     const active = await session.launch('g');
-    expect(inviteBridge).toHaveBeenCalledWith('game-g', expect.objectContaining({ id: 'g' }), String(0x6a1b2c3d), expect.any(Function));
+    expect(inviteBridge).toHaveBeenCalledWith('game-g', expect.objectContaining({ id: 'g' }), String(0x6a1b2c3d), expect.any(Function), undefined);
     expect(h.spawnCalls[0].env).toMatchObject({ NEXUS_INVITE_PORT: '5150', NEXUS_INVITE_KEY: 'invite-key', NEXUS_RELATED_PRODUCT_IDS: '9NBLGGH4R315,9P1J8S7CCWWT', XODUS_CONTENT_ROOTS: 'Z:\\data\\content\\dlc' });
     expect(reasons).toEqual([undefined, undefined]);
     h.finish!({ code: 0, output: '' });
@@ -225,6 +227,39 @@ describe('GameSession', () => {
     expect(h.spawnCalls.at(-1)!.env.NEXUS_INVITE_PORT).toBeUndefined();
     h.finish!({ code: 0, output: '' });
     await failing.finished;
+  });
+
+  it('with a bridge-capable runtime, passes the cached hint and lets the game ask instead of waiting', async () => {
+    h.discovery = true; h.relatedBridge = true; h.inspected = { storeId: '9NBLGGH4R315' };
+    const stop = vi.fn(async () => {});
+    const inviteBridge = vi.fn(async () => ({ port: 5151, key: 'bridge-key', stop }));
+    const relatedProducts = vi.fn(async () => ['9NFKN8RD4HZ3']);
+    const cachedRelated = vi.fn(() => ['9P1J8S7CCWWT']);
+    const session = new GameSession(deps({
+      inviteBridge,
+      environment: () => ({ PATH: '/usr/bin', NEXUS_GAME_BRIDGE_PORT: '1', NEXUS_GAME_BRIDGE_KEY: 'stale' }),
+      content: () => ({ roots: async () => [], relatedProducts, cachedRelated }),
+    }));
+    const active = await session.launch('g');
+    expect(relatedProducts).not.toHaveBeenCalled();
+    expect(cachedRelated).toHaveBeenCalledWith(expect.objectContaining({ id: 'g' }));
+    // No invite runtime: the bridge starts for the Store lookup only.
+    expect(inviteBridge).toHaveBeenCalledWith('game-g', expect.objectContaining({ id: 'g' }), undefined, expect.any(Function), '9NBLGGH4R315');
+    expect(h.spawnCalls[0].env).toMatchObject({ NEXUS_GAME_BRIDGE_PORT: '5151', NEXUS_GAME_BRIDGE_KEY: 'bridge-key', NEXUS_RELATED_PRODUCT_IDS: '9P1J8S7CCWWT' });
+    expect(h.spawnCalls[0].env.NEXUS_INVITE_PORT).toBeUndefined();
+    h.finish!({ code: 0, output: '' });
+    await active.finished;
+    expect(stop).toHaveBeenCalledTimes(1);
+
+    // An older runtime keeps the pre-launch lookup and never gets the bridge variables.
+    h.relatedBridge = false;
+    const older = await new GameSession(deps({ inviteBridge, content: () => ({ roots: async () => [], relatedProducts, cachedRelated }) })).launch('g');
+    expect(relatedProducts).toHaveBeenCalledTimes(1);
+    expect(inviteBridge).toHaveBeenCalledTimes(1);
+    expect(h.spawnCalls[1].env).toMatchObject({ NEXUS_RELATED_PRODUCT_IDS: '9NFKN8RD4HZ3' });
+    expect(h.spawnCalls[1].env.NEXUS_GAME_BRIDGE_PORT).toBeUndefined();
+    h.finish!({ code: 0, output: '' });
+    await older.finished;
   });
 
   it('ties the game window to its artwork and still launches when the identity fails', async () => {

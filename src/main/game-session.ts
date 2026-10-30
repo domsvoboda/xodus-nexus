@@ -5,7 +5,7 @@ import { inspectGameDirectory } from './store.js';
 import { prepareProtonRunner, syncPrefixUserLocale, syncUnrealCultureGameIni } from './proton.js';
 import { accountCacheKey } from './offline-identity.js';
 import { bindOfflineAccess, type OfflineRevocation } from './offline-access.js';
-import { cloudSaveRuntime, gameInviteRuntime, offlineIdentityRuntime, selectedWinePath, storeDiscoveryRuntime, unbridgedCloudSaveRuntime } from './xodus-service.js';
+import { cloudSaveRuntime, gameInviteRuntime, offlineIdentityRuntime, relatedBridgeRuntime, selectedWinePath, storeDiscoveryRuntime, unbridgedCloudSaveRuntime } from './xodus-service.js';
 import { GameLogReducer, gameLoggingEnvironment, gameWindowEnvironment } from './game-log.js';
 import { installedVcRuntimeVersion, VC_REDIST_VERSION, versionAtLeast } from './vc-runtime.js';
 import { spawnGameProcess, type GameProcess } from './game-process.js';
@@ -33,7 +33,7 @@ export interface GameSessionStore {
   readonly settings: { winePath: string; runtimeRoot: string; market: string; verboseLogs?: boolean; shaderCacheLimitGiB?: number };
 }
 
-/** A started game invitation bridge (`GameInviteBridge`), as the runtime reaches it. */
+/** A started game bridge (`GameInviteBridge`), as the runtime reaches it. */
 export interface InviteBridgeHandle {
   port: number;
   key: string;
@@ -44,6 +44,8 @@ export interface InviteBridgeHandle {
 export interface LaunchContent {
   roots(game: Game): Promise<string[]>;
   relatedProducts?(game: Game): Promise<string[]>;
+  /** The last discovered list, instantly; set where the game bridge can discover on request. */
+  cachedRelated?(game: Game): string[];
 }
 
 /**
@@ -76,8 +78,11 @@ export interface GameSessionDeps {
   /** Managed DLC/content for the data root. */
   /** Called once the launch knows whether it is offline, early enough to load owned access meanwhile. */
   content(dataRoot: string, offline: boolean): LaunchContent;
-  /** Starts the game's invitation bridge; absent where there is no Friends UI to accept them. */
-  inviteBridge?(operationId: string, game: Game, titleId: string, log: (line: string) => void): Promise<InviteBridgeHandle>;
+  /**
+   * Starts the game bridge: invitations when `titleId` is set (absent where there
+   * is no Friends UI to accept them), the Store's `related` lookup for `storeId`.
+   */
+  inviteBridge?(operationId: string, game: Game, titleId: string | undefined, log: (line: string) => void, storeId?: string): Promise<InviteBridgeHandle>;
   /** Why invitations are unavailable for this launch, or undefined once they may work. */
   onInviteAvailability?(reason: string | undefined): void;
   /** The window identity (`WINE_APPLICATION_ID`) tying the game window to its installed artwork; undefined where there is none. */
@@ -254,6 +259,8 @@ export class GameSession {
       delete environment.NEXUS_RELATED_PRODUCT_IDS;
       delete environment.NEXUS_INVITE_PORT;
       delete environment.NEXUS_INVITE_KEY;
+      delete environment.NEXUS_GAME_BRIDGE_PORT;
+      delete environment.NEXUS_GAME_BRIDGE_KEY;
       // A shell's stale offline mode or another account must not influence this
       // launch. The backend supplies identity mode only after license validation.
       delete environment.XODUS_OFFLINE_IDENTITY;
@@ -261,7 +268,14 @@ export class GameSession {
       delete environment.XODUS_ACCOUNT_HASH;
       // Lets nexus-close-window find this launch's windows (and only these) to close them like a user would.
       environment.XODUS_NEXUS_LAUNCH_ID = operationId;
-      if (content.relatedProducts && await storeDiscoveryRuntime(wine)) {
+      // A runtime that can ask the game bridge gets add-ons when the game
+      // queries them, so the launch only passes what is already known.
+      const storeId = inspected.storeId ?? game.storeId;
+      const relatedBridge = Boolean(deps.inviteBridge && content.cachedRelated && storeId && await relatedBridgeRuntime(wine));
+      if (relatedBridge) {
+        const cached = content.cachedRelated!(game);
+        if (cached.length) environment.NEXUS_RELATED_PRODUCT_IDS = cached.join(',');
+      } else if (content.relatedProducts && await storeDiscoveryRuntime(wine)) {
         const related = await content.relatedProducts(game).catch(() => {
           addGameLog('Additional DLC discovery unavailable. Continuing with package-declared content.');
           return [] as string[];
@@ -296,14 +310,24 @@ export class GameSession {
       }
       const inviteRuntime = await gameInviteRuntime(wine);
       deps.onInviteAvailability?.(!inviteRuntime ? 'The selected runtime does not support game invitations. Update the runtime and restart the game.' : !titleId ? 'The game has no Xbox title information for invitations.' : undefined);
-      if (deps.inviteBridge && titleId && /^[a-f0-9]{1,8}$/i.test(titleId) && inviteRuntime) {
+      const inviteTitle = Boolean(titleId && /^[a-f0-9]{1,8}$/i.test(titleId) && inviteRuntime);
+      if (deps.inviteBridge && (inviteTitle || relatedBridge)) {
         try {
-          inviteBridge = await deps.inviteBridge(operationId, game, String(parseInt(titleId, 16)), addGameLog);
-          environment.NEXUS_INVITE_PORT = String(inviteBridge.port);
-          environment.NEXUS_INVITE_KEY = inviteBridge.key;
+          inviteBridge = await deps.inviteBridge(operationId, game, inviteTitle ? String(parseInt(titleId!, 16)) : undefined, addGameLog, relatedBridge ? storeId : undefined);
+          if (inviteTitle) {
+            environment.NEXUS_INVITE_PORT = String(inviteBridge.port);
+            environment.NEXUS_INVITE_KEY = inviteBridge.key;
+          }
+          if (relatedBridge) {
+            environment.NEXUS_GAME_BRIDGE_PORT = String(inviteBridge.port);
+            environment.NEXUS_GAME_BRIDGE_KEY = inviteBridge.key;
+          }
         } catch {
-          deps.onInviteAvailability?.('The game invitation connection could not be started. Restart the game to try again.');
-          addGameLog('Optional game invitations are unavailable for this launch.');
+          if (inviteTitle) {
+            deps.onInviteAvailability?.('The game invitation connection could not be started. Restart the game to try again.');
+            addGameLog('Optional game invitations are unavailable for this launch.');
+          }
+          if (relatedBridge) addGameLog('Additional DLC discovery unavailable. Continuing with package-declared content.');
         }
       }
       // Names the account for the runtime's offline identity cache (an opaque key, never the username).

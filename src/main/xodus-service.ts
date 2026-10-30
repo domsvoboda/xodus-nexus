@@ -123,6 +123,11 @@ export async function storeDiscoveryRuntime(winePath: string): Promise<boolean> 
     .every(feature => features.includes(feature));
 }
 
+/** The runtime asks the game bridge for related products when the game queries them. */
+export async function relatedBridgeRuntime(winePath: string): Promise<boolean> {
+  return await storeDiscoveryRuntime(winePath) && (await runtimeFeatures(winePath)).includes('xstore-related-bridge-v1');
+}
+
 export async function unbridgedCloudSaveRuntime(winePath: string): Promise<boolean> {
   const features = await runtimeFeatures(winePath);
   return features.includes('cloud-saves-pr28') && !features.includes('xodus-tcp-bridge-v1');
