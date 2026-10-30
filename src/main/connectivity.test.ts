@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { classifyConnectivity, ConnectivityMonitor, CONNECTIVITY_HOSTS, PROBE_TIMEOUT_MS, probeHost } from './connectivity.js';
+import { classifyConnectivity, ConnectivityMonitor, CONNECTIVITY_HOSTS, physicalInterfaceUp, PROBE_TIMEOUT_MS, probeHost } from './connectivity.js';
 
 describe('connectivity verdict', () => {
   it('is offline without a network interface, before any probe', () => {
@@ -24,6 +24,27 @@ describe('connectivity verdict', () => {
   it('reports an unreachable local port as offline without hanging', async () => {
     // Nothing listens on this port of the loopback interface; the connect is refused at once.
     expect(await probeHost('127.0.0.1', 9, 1_000)).toBe(false);
+  });
+});
+
+describe('physical network interfaces', () => {
+  const entry = (address: string, internal = false) => ({ address, netmask: '255.255.255.0', family: 'IPv4' as const, mac: '00:00:00:00:00:00', internal, cidr: `${address}/24` });
+
+  it('ignores loopback, VPN tunnels and container bridges that stay up without a network', () => {
+    expect(physicalInterfaceUp({
+      lo: [entry('127.0.0.1', true)], tailscale0: [entry('100.102.140.3')], wg0: [entry('10.0.0.2')], tun0: [entry('10.8.0.2')],
+      'docker0': [entry('172.17.0.1')], 'br-1a2b3c': [entry('172.18.0.1')], veth12ab: [entry('169.254.1.1')], virbr0: [entry('192.168.122.1')],
+    })).toBe(false);
+  });
+
+  it('counts Wi-Fi, Ethernet and USB tethering', () => {
+    for (const name of ['wlp1s0', 'wlan0', 'eth0', 'enp3s0', 'usb0', 'Wi-Fi', 'Ethernet', 'br0']) {
+      expect(physicalInterfaceUp({ lo: [entry('127.0.0.1', true)], tailscale0: [entry('100.64.0.1')], [name]: [entry('192.168.1.20')] })).toBe(true);
+    }
+  });
+
+  it('is false with no interfaces at all', () => {
+    expect(physicalInterfaceUp({})).toBe(false);
   });
 });
 

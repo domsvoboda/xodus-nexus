@@ -14,6 +14,8 @@
 - Open the running Steam client’s on-screen keyboard when a text field is tapped on a touchscreen.
 
 - Suggest DLC owned through a bundle when a game starts from a Steam shortcut or right after the launcher opens: the launch now loads the account's owned products while it prepares (waiting at most 2.5 s, skipped offline) instead of using them only when the Library page had loaded them recently.
+- Start offline launches about 3 seconds sooner on devices with a VPN or container network (such as Tailscale): only Wi-Fi, Ethernet and other real network links count as being connected. Thanks @indiesaudi.
+
 - Add native arm64 launcher and backend builds, with architecture-aware downloads and updates. Thanks @indiesaudi.
 
 - Overlap local data verification and staged writes during game updates without changing checkpoint recovery.

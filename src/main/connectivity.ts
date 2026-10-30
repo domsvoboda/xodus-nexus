@@ -1,4 +1,5 @@
 import { createConnection } from 'node:net';
+import os from 'node:os';
 import type { ConnectivityStatus } from '../shared/types.js';
 
 /** The first hosts a launch contacts: Microsoft account tickets and Xbox tokens. */
@@ -6,6 +7,19 @@ export const CONNECTIVITY_HOSTS = ['login.live.com', 'xsts.auth.xboxlive.com'];
 export const PROBE_TIMEOUT_MS = 3_000;
 const REFRESH_INTERVAL_MS = 30_000;
 const FRESH_FOR_MS = 10_000;
+
+/**
+ * Interfaces that ride on another link or only reach this machine: VPNs and
+ * tunnels (Tailscale, WireGuard, OpenVPN, ZeroTier), containers and VM bridges.
+ * They stay up with Wi-Fi and Ethernet off, which made an offline handheld wait
+ * for every probe to time out before it could launch.
+ */
+const VIRTUAL_INTERFACE = /^(?:lo|tailscale|tun|tap|wg|zt|utun|docker|br-|veth|virbr|vnet|podman|cni|flannel|cali|vxlan)/i;
+
+/** A network interface besides loopback, tunnels and container bridges is up. */
+export function physicalInterfaceUp(interfaces: NodeJS.Dict<os.NetworkInterfaceInfo[]> = os.networkInterfaces()): boolean {
+  return Object.entries(interfaces).some(([name, entries]) => !VIRTUAL_INTERFACE.test(name) && Boolean(entries?.some(entry => !entry.internal)));
+}
 
 export type HostProbe = (host: string, port: number, timeoutMs: number) => Promise<boolean>;
 
