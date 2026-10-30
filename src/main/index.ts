@@ -44,7 +44,7 @@ import { spawnGameProcess, type GameProcess } from './game-process.js';
 import { gameLocaleEnvironment, installedGameLocales, installedGameTitleId, supportedGameLocale } from './game-locale.js';
 import { antiCheatEnvironment } from './anti-cheat.js';
 import { gameLaunchArguments, preparedGameWine } from './game-launch.js';
-import { ConnectivityMonitor } from './connectivity.js';
+import { ConnectivityMonitor, physicalInterfaceUp } from './connectivity.js';
 import { prepareGameWrapper, type GameWrapper } from './game-wrapper.js';
 import { normalizeLaunchTools } from '../shared/launch-tools.js';
 import { LauncherUpdater } from './launcher-update.js';
@@ -2323,7 +2323,7 @@ app.whenReady().then(async () => {
     // and consulted before a launch so offline play starts without waiting
     // for the backend's and the runtime's own connect timeouts. Each return
     // to online re-checks the offline designation.
-    connectivity = new ConnectivityMonitor({ interfaceOnline: () => net.isOnline(), onChange: () => {
+    connectivity = new ConnectivityMonitor({ interfaceOnline: () => net.isOnline() && physicalInterfaceUp(), onChange: () => {
       scheduleSnapshot();
       if (connectivity?.current.state === 'online') verifyOfflineDesignation();
     } });
