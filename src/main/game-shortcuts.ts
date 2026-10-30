@@ -223,8 +223,21 @@ export class GameShortcuts {
     const body = `[Desktop Entry]\nType=Application\nVersion=1.0\nName=${desktopValue(title)}\nComment=Play with Xodus Nexus\nExec=/bin/sh ${desktopArgument(this.entry)} ${desktopArgument(game.id)}\nIcon=${desktopValue(icon)}\nTerminal=false\nCategories=Game;\nStartupNotify=false\n${this.marker}\n${this.gameMarker(game.id)}\n`;
     const target = await this.writeEntry(directory, shortcutTitleStem(title), game.id, body, destination === 'desktop' ? 0o755 : 0o644);
     // Migrate only this game's managed entries, after the replacement is safe.
-    for (const old of await this.ownedFiles(directory, game.id)) if (old !== target && await this.owns(old, game.id)) await fs.unlink(old);
+    const windowEntry = path.join(this.locations.applications, `xodus-nexus-game-${this.profileId}-${game.id}.desktop`);
+    for (const old of await this.ownedFiles(directory, game.id)) if (old !== target && old !== windowEntry && await this.owns(old, game.id)) await fs.unlink(old);
     return target;
+  }
+  async windowIdentity(game: Pick<Game, 'id' | 'title' | 'installState'>, png?: Buffer): Promise<string> {
+    if (!this.entry || !this.icon) throw new Error(this.reason);
+    if (game.installState !== 'ready' || !validId(game.id)) throw new Error('Invalid game window identity.');
+    const identity = `xodus-nexus-game-${this.profileId}-${game.id}`;
+    const icon = await this.gameIcon(game.id, png);
+    await this.directory(this.locations.applications);
+    const title = game.title.replace(/[\0\r\n\t]/g, ' ').trim() || 'Xodus Nexus game';
+    const body = `[Desktop Entry]\nType=Application\nName=${desktopValue(title)}\nExec=/bin/sh ${desktopArgument(this.entry)} ${desktopArgument(game.id)}\nIcon=${desktopValue(icon)}\nTerminal=false\nNoDisplay=true\nStartupNotify=false\nStartupWMClass=${identity}\nCategories=Game;\n${this.marker}\n${this.gameMarker(game.id)}\n`;
+    await this.write(path.join(this.locations.applications, `${identity}.desktop`), body, 0o644,
+      [this.marker, this.gameMarker(game.id)]);
+    return identity;
   }
   async remove(id: string): Promise<void> {
     if (!validId(id)) throw new Error('Invalid game shortcut ID.');

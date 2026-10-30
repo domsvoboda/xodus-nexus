@@ -144,7 +144,7 @@ describe('inspectGameDirectory anti-cheat support', () => {
     const root=await mkdtemp(path.join(tmpdir(),'nexus-game-tool-state-')); created.push(root);
     const store=new StateStore(root);
     const game={id:'test-tools',title:'Synthetic game',path:'/sample/game',installState:'ready' as const,addedAt:'2026-10-16T00:00:00Z'};
-    const launchTools={dualSenseCompatibility:true,mangoHud:true,gamescope:false,gamescopeArgs:'',launchOptions:'DXVK_HUD=fps %command% --launcher-skip'};
+    const launchTools={dualSenseCompatibility:true,dualShock4Compatibility:true,mangoHud:true,gamescope:false,gamescopeArgs:'',launchOptions:'DXVK_HUD=fps %command% --launcher-skip'};
     await store.upsertGame(game); await store.patchGame(game.id,{launchTools});
     const reopened=new StateStore(root); await reopened.load();
     expect(reopened.games[0].launchTools).toEqual(launchTools);
@@ -314,4 +314,26 @@ describe('inspectGameDirectory titles containing quotes', () => {
     const game = await inspectGameDirectory(directory);
     expect(game.title).toBe('A "quoted" Game');
   });
+});
+
+
+it.each(['IsDevOnly="false"', 'isdevonly="false"', ''])('selects a retail executable after development-only tools: %s',async(retail)=>{
+  const directory=await mkdtemp(path.join(tmpdir(),'nexus-retail-executable-'));created.push(directory);
+  await writeFile(path.join(directory,'MicrosoftGame.config'),`<Game><ExecutableList>
+    <Executable Name="Development.exe" IsDevOnly="true"/>
+    <Executable IsDevOnly="false"/>
+    <Executable Name="Game.exe" ${retail}/>
+    <Executable Name="Other.exe"/>
+  </ExecutableList></Game>`);
+  await writeFile(path.join(directory,'Game.exe'),'MZ retail');
+  expect((await inspectGameDirectory(directory)).executable).toBe('Game.exe');
+});
+
+it('defaults close-to-tray off, persists an explicit choice and rejects invalid preferences',async()=>{
+ const root=await mkdtemp(path.join(tmpdir(),'nexus-tray-state-'));created.push(root);
+ const store=new StateStore(root);await store.load();expect(store.settings.closeToTray).toBe(false);
+ await store.setSettings({closeToTray:true});const reopened=new StateStore(root);await reopened.load();expect(reopened.settings.closeToTray).toBe(true);
+ await expect(store.setSettings({closeToTray:'yes'} as any)).rejects.toThrow('close-to-tray');
+ await writeFile(path.join(root,'launcher-state.json'),JSON.stringify({settings:{closeToTray:'true'}}));
+ const legacy=new StateStore(root);await legacy.load();expect(legacy.settings.closeToTray).toBe(false);
 });

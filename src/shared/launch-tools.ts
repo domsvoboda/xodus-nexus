@@ -47,7 +47,8 @@ export function normalizeLaunchTools(value: unknown): GameLaunchTools {
   const tools = value as Record<string, unknown>;
   if (typeof tools.mangoHud !== 'boolean' || typeof tools.gamescope !== 'boolean' || typeof tools.gamescopeArgs !== 'string' || typeof tools.launchOptions !== 'string') throw Error('Invalid game launch tools.');
   if (tools.dualSenseCompatibility !== undefined && typeof tools.dualSenseCompatibility !== 'boolean') throw Error('Invalid DualSense compatibility setting.');
-  const result = { dualSenseCompatibility: tools.dualSenseCompatibility ?? false, mangoHud: tools.mangoHud, gamescope: tools.gamescope, gamescopeArgs: tools.gamescopeArgs.trim(), launchOptions: tools.launchOptions.trim() };
+  if (tools.dualShock4Compatibility !== undefined && typeof tools.dualShock4Compatibility !== 'boolean') throw Error('Invalid DualShock 4 compatibility setting.');
+  const result = { ...(tools.dualShock4Compatibility !== undefined ? {dualShock4Compatibility:tools.dualShock4Compatibility} : {}), dualSenseCompatibility: tools.dualSenseCompatibility ?? false, mangoHud: tools.mangoHud, gamescope: tools.gamescope, gamescopeArgs: tools.gamescopeArgs.trim(), launchOptions: tools.launchOptions.trim() };
   const args = commandWords(result.gamescopeArgs);
   if (args.includes('--') || args.some(arg => arg.includes('%command%'))) throw Error('Gamescope options must not include -- or %command%; Nexus adds the game command.');
   parseLaunchOptions(result.launchOptions);

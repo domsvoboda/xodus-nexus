@@ -83,3 +83,18 @@ it('fails clearly before starting a configured missing tool',async()=>{
   const {root,wine}=await setup();
   await expect(prepareGameWrapper(wine,{...defaultLaunchTools,mangoHud:true},path.join(root,'wrappers'),{PATH:root})).rejects.toThrow('mangohud');
 });
+
+
+it.each([false,true])('uses SDL fallback only for selected PlayStation controllers and retains Steam mappings (both: %s)',async(both)=>{
+  const {root,wine,env}=await setup();
+  await writeFile(wine,'#!/bin/sh\nprintf "%s\\n" "$PROTON_DISABLE_HIDRAW" "$SDL_GAMECONTROLLERCONFIG" "$SteamGameId"\n');
+  const source={...env,PROTON_DISABLE_HIDRAW:'0x045e/0x0b12,0x054C/0x09CC',SDL_GAMECONTROLLERCONFIG:'user mapping',SteamGameId:'123'};
+  const before={...source};
+  const wrapper=await prepareGameWrapper(wine,{...defaultLaunchTools,dualShock4Compatibility:true,dualSenseCompatibility:both},path.join(root,'wrappers'),source);
+  const result=await run(wrapper.command,[],{env:source});
+  expect(result.output.split('\n')).toEqual([
+    '0x045e/0x0b12,0x054C/0x09CC,'+(both?'0x054c/0x0ce6,':'')+'0x054c/0x05c4,0x054c/0x0ba0',
+    'user mapping','123','',
+  ]);
+  expect(source).toEqual(before);await wrapper.cleanup();
+});

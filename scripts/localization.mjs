@@ -37,8 +37,14 @@ export async function checkCatalogs(folder = directory) {
     if (canonicalLanguage(language) !== language) throw Error(`Invalid language filename: ${name}`);
     catalogs[language] = await readCatalog(path.join(folder, name), english);
   }
-  for (const key of Object.keys(english)) {
-    if (key.endsWith('_one') && !english[key.slice(0, -4) + '_other']) throw Error(`Missing English plural fallback: ${key}`);
+  const categories = ['zero', 'one', 'two', 'few', 'many', 'other'];
+  const families = new Set(Object.keys(english).filter(key => /_(?:one|other)$/.test(key)).map(key => key.replace(/_(?:one|other)$/, '')));
+  for (const family of families) {
+    const missing = categories.filter(category => !english[`${family}_${category}`]);
+    if (missing.length) throw Error(`Missing source plural forms for ${family}: ${missing.join(', ')}`);
+    const parameters = JSON.stringify(translationPlaceholders(english[`${family}_other`]));
+    for (const category of categories) if (JSON.stringify(translationPlaceholders(english[`${family}_${category}`])) !== parameters)
+      throw Error(`Source plural placeholders differ: ${family}_${category}`);
   }
   return catalogs;
 }

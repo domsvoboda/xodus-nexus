@@ -33,7 +33,7 @@ export function gameWindowEnvironment(source: NodeJS.ProcessEnv): NodeJS.Process
   for (const key of [
     'DESKTOP_STARTUP_ID', 'XDG_ACTIVATION_TOKEN', 'XDG_DESKTOP_FILE_NAME',
     'GIO_LAUNCHED_DESKTOP_FILE', 'GIO_LAUNCHED_DESKTOP_FILE_PID',
-    'BAMF_DESKTOP_FILE_HINT', 'CHROME_DESKTOP', 'APPDIR', 'APPIMAGE',
+    'BAMF_DESKTOP_FILE_HINT', 'CHROME_DESKTOP', 'APPDIR', 'APPIMAGE', 'WINE_APPLICATION_ID',
   ]) delete environment[key];
   return environment;
 }

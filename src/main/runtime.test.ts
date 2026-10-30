@@ -160,7 +160,7 @@ describe('previewBaseRelease', () => {
     expect(result.nexusAvailable).toBe(false); expect(result.nexusError).toContain('could not be read'); expect(calls).toBe(1);
   });
 
-  it.each(['valid', 'new-fork', 'stderr-warning', 'bad-digest', 'wrong-file', 'unsafe-root', 'mixed-root'])('verifies a downloaded Nexus runtime before activation: %s', async scenario => {
+  it.each(['valid', 'new-fork', 'stderr-warning', 'bad-digest', 'wrong-file', 'unsafe-root', 'mixed-root', 'system-glibc'])('verifies a downloaded Nexus runtime before activation: %s', async scenario => {
     // Build a real tar.xz runtime archive with a fake wine binary, publish it
     // through the mocked release API, and run the full install path:
     // download, SHA-512 verification, extraction, canonical naming, pointer.
@@ -171,6 +171,7 @@ describe('previewBaseRelease', () => {
     const wine = path.join(build, top, 'files', 'bin', 'wine');
     await fs.mkdir(path.dirname(wine), { recursive: true });
     await fs.writeFile(wine, '#!/bin/sh\necho wine-11.0-test\n', { mode: 0o755 });
+    if (scenario === 'system-glibc') await fs.writeFile(wine, "#!/bin/sh\necho \"wine: version 'GLIBC_2.38' not found\" >&2\nexit 1\n", {mode:0o755});
     if (scenario === 'mixed-root') await fs.mkdir(path.join(build, 'second-root'));
     const packed = await run('tar', ['-cJf', path.join(build, `${releaseName}-x86_64.tar.xz`), '-C', build, top, ...(scenario === 'mixed-root' ? ['second-root'] : [])]);
     if (packed.code !== 0) throw new Error('The tar fixture could not be created.');
@@ -198,7 +199,7 @@ describe('previewBaseRelease', () => {
       await fs.writeFile(path.join(root, 'current.json'), JSON.stringify(previous));
       await manager.refresh(); // detect tar and sha512sum prerequisites
       if (!['valid', 'new-fork', 'stderr-warning'].includes(scenario)) {
-        await expect(manager.installNexus(() => undefined)).rejects.toThrow(['unsafe-root', 'mixed-root'].includes(scenario) ? /runtime structure/ : /SHA-512/);
+        await expect(manager.installNexus(() => undefined)).rejects.toThrow(scenario === 'system-glibc' ? /glibc 2\.38 or newer/ : ['unsafe-root', 'mixed-root'].includes(scenario) ? /runtime structure/ : /SHA-512/);
         expect(JSON.parse(await fs.readFile(path.join(root, 'current.json'), 'utf8'))).toEqual(previous);
         expect(manager.current.name).toBe('previous');
         expect(manager.current.updating).toBe(false);

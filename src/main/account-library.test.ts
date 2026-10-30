@@ -394,3 +394,36 @@ it('binds pagination to snapshot and filter, rather than accepting arbitrary pro
   await expect(library.get('owned',first.cursor)).rejects.toThrow('Invalid');
   await library.get('all',undefined,true); await expect(library.get('all',first.cursor)).rejects.toThrow('expired');
 });
+
+it('loads owned access for a launch while it prepares, waits only briefly and never throws', async () => {
+  // Signed out: nothing to read.
+  const idle = new AccountLibrary(async ids => ids.map(product), vi.fn());
+  expect(await idle.startLaunchAccess()(10)).toEqual({});
+
+  // Not cached: the read starts at once and its result is used when it arrives in time.
+  let finish!: (text: string) => void;
+  const reader = vi.fn(() => new Promise<string>(resolve => { finish = resolve; }));
+  const library = new AccountLibrary(async ids => ids.map(product), reader);
+  library.select('one@example.test', '/backend', 'US');
+  const read = library.startLaunchAccess();
+  expect(reader).toHaveBeenCalledOnce();
+  setTimeout(() => finish(output([row(), row(B, { satisfiedByProductId: '9ZZZZZZZZZZZ' })])), 5);
+  expect(await read(1_000)).toEqual({ [A]: 'owned', [B]: 'other' });
+
+  // Fresh cache: answered from memory without another read.
+  expect(await library.startLaunchAccess()(0)).toEqual({ [A]: 'owned', [B]: 'other' });
+  expect(reader).toHaveBeenCalledOnce();
+
+  // A slow read: the launch goes on with what is cached (nothing) and the read keeps going for later.
+  const slowReader = vi.fn(() => new Promise<string>(resolve => { finish = resolve; }));
+  const slow = new AccountLibrary(async ids => ids.map(product), slowReader);
+  slow.select('one@example.test', '/backend', 'US');
+  expect(await slow.startLaunchAccess()(5)).toEqual({});
+  finish(output());
+  await vi.waitFor(() => expect(slow.peekAccess()).toEqual({ [A]: 'owned' }));
+
+  // A failed read is no launch error.
+  const failing = new AccountLibrary(async ids => ids.map(product), vi.fn(async () => { throw Error('offline'); }));
+  failing.select('one@example.test', '/backend', 'US');
+  expect(await failing.startLaunchAccess()(1_000)).toEqual({});
+});

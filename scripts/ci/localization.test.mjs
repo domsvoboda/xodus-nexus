@@ -7,7 +7,7 @@ import { parseCatalog, checkCatalogs, checkUiKeys, importCatalog, exportCatalogs
 
 const root = await fs.mkdtemp(path.join(os.tmpdir(), 'nexus-locales-'));
 after(() => fs.rm(root, { recursive: true, force: true }));
-const en = { save:'Save', 'hello.user':'Hello {{name}}', count_one:'{{count}} friend', count_other:'{{count}} friends' };
+const en = { save:'Save', 'hello.user':'Hello {{name}}', count_zero:'{{count}} friends', count_one:'{{count}} friend', count_two:'{{count}} friends', count_few:'{{count}} friends', count_many:'{{count}} friends', count_other:'{{count}} friends' };
 const folder = path.join(root, 'locales');
 await fs.mkdir(folder);
 await fs.writeFile(path.join(folder, 'en.json'), JSON.stringify(en));
@@ -55,4 +55,14 @@ test('rejects missing interpolation parameters and translated settings keys', as
   const source=path.join(root,'bad-parameters');await fs.mkdir(source);
   await fs.writeFile(path.join(source,'screen.tsx'), "ui('hello.user', { wrong: 'Example' }); const value = { [ui('save')]: true };");
   await assert.rejects(checkUiKeys(en,source), /missing interface parameters[\s\S]*protocol or settings key/);
+});
+
+test('every source plural family exposes all CLDR forms for translation synchronization (#425)', async () => {
+  const catalogs = await checkCatalogs();
+  for (const key of Object.keys(catalogs.en).filter(key => key.endsWith('_one'))) {
+    for (const category of ['zero','one','two','few','many','other']) assert.ok(catalogs.en[`${key.slice(0,-4)}_${category}`]);
+  }
+  const incomplete = path.join(root, 'incomplete-plurals');await fs.mkdir(incomplete);
+  await fs.writeFile(path.join(incomplete, 'en.json'), JSON.stringify({count_one:'{{count}} item',count_other:'{{count}} items'}));
+  await assert.rejects(checkCatalogs(incomplete), /Missing source plural forms.*zero, two, few, many/);
 });

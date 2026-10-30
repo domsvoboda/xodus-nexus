@@ -3,7 +3,10 @@ import { spawnTracked, type RunResult } from './process.js';
 /** Read-only account status, never an interactive sign-in or token renewal. */
 export async function readAccount(binary: string, signal: AbortSignal): Promise<RunResult> {
   signal.throwIfAborted();
-  const tracked = spawnTracked(binary, ['account', '--json'], { maxOutput: 20_000, stdoutOnly: true });
+  // Keyring helpers may outlive this read and inherit its output pipes.
+  // Drain only after the actual CLI exits, preserving its status and response.
+  const tracked = spawnTracked(binary, ['account', '--json'], { maxOutput: 20_000, stdoutOnly: true, outputDrainMs: 250 });
+  tracked.child.stdin.end();
   const stop = () => { tracked.child.kill('SIGKILL'); };
   signal.addEventListener('abort', stop, { once: true });
   if (signal.aborted) stop();

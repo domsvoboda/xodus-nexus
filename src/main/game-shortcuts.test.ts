@@ -12,6 +12,31 @@ const execute = promisify(execFile);
 const id = '0123456789abcdef';
 const game = { id, title: 'A game\nExec=unwanted', installState: 'ready' as const };
 
+it('matches game windows to a hidden profile-specific entry and preserves it when creating a shortcut', async () => {
+  const f = await fixture();
+  try {
+    await f.shortcuts.initialize();
+    const png = Buffer.from('89504e470d0a1a0a00010203', 'hex');
+    const identity = await f.shortcuts.windowIdentity(game, png);
+    expect(identity).toMatch(/^xodus-nexus-game-[a-f0-9]{12}-0123456789abcdef$/);
+    const target = path.join(f.locations.applications, identity + '.desktop');
+    const body = await fs.readFile(target, 'utf8');
+    expect(body).toContain('NoDisplay=true\n');
+    expect(body).toContain(`StartupWMClass=${identity}\n`);
+    expect(body.match(/^Exec=/gm)).toHaveLength(1);
+    const icon = path.join(f.locations.userData, 'shortcuts/icons', id + '.png');
+    expect(body).toContain(`Icon=${icon}\n`);
+    expect(await fs.readFile(icon)).toEqual(png);
+    await f.shortcuts.create(game, 'applications');
+    expect(await fs.readFile(target, 'utf8')).toBe(body);
+    expect(await f.shortcuts.windowIdentity(game)).toBe(identity);
+    await fs.writeFile(target, 'unrelated');
+    await expect(f.shortcuts.windowIdentity(game)).rejects.toThrow('unrelated');
+    expect(await fs.readFile(target, 'utf8')).toBe('unrelated');
+    await expect(f.shortcuts.windowIdentity({ ...game, id: '../bad' })).rejects.toThrow('identity');
+  } finally { await fs.rm(f.root, { recursive: true, force: true }); }
+});
+
 it('writes safe persistent desktop descriptors for live Steam imports without touching user application menus', async () => {
   const f = await fixture();
   try {
