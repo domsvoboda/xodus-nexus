@@ -54,7 +54,7 @@ export type DaemonFrame =
   | { schema: 1; type: 'error'; requestId?: string; code: DaemonErrorCode; message: string }
   | { schema: 1; type: 'state'; state: DaemonState }
   | { schema: 1; type: 'log'; operationId: string; line: string }
-  | { schema: 1; type: 'exit'; operationId: string; code: number | null; status: 'complete' | 'failed' }
+  | { schema: 1; type: 'exit'; operationId: string; code: number | null; status: 'complete' | 'failed'; message?: string }
   | { schema: 1; type: 'done'; requestId: string }
   /** The game asks for a friend to invite (`choose`) or received an invitation: the launcher shows it. */
   | { schema: 1; type: 'invite-notice'; notice: 'choose' | 'invitation'; game: string; sender?: string }
@@ -162,7 +162,8 @@ export function parseDaemonFrame(line: string): DaemonFrame {
       if (code !== null && (typeof code !== 'number' || !Number.isInteger(code))) throw new ProtocolError('Invalid code.');
       const status = text(frame, 'status');
       if (status !== 'complete' && status !== 'failed') throw new ProtocolError('Invalid status.');
-      return { schema: 1, type: 'exit', operationId: text(frame, 'operationId', ID), code: code as number | null, status };
+      const message = text(frame, 'message', undefined, true);
+      return { schema: 1, type: 'exit', operationId: text(frame, 'operationId', ID), code: code as number | null, status, ...(message ? { message } : {}) };
     }
     case 'done': return { schema: 1, type: 'done', requestId: text(frame, 'requestId', ID) };
     case 'invite-notice': {

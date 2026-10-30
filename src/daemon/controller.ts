@@ -107,7 +107,7 @@ export class GameController {
   private maintenance: ReturnType<typeof setInterval> | undefined;
   private readonly stateListeners = new Set<(state: DaemonState) => void>();
   private readonly logListeners = new Set<(operationId: string, line: string) => void>();
-  private readonly exitListeners = new Set<(operationId: string, code: number | null, status: 'complete' | 'failed') => void>();
+  private readonly exitListeners = new Set<(operationId: string, code: number | null, status: 'complete' | 'failed', message?: string) => void>();
   private readonly inviteListeners = new Set<(notice: InviteNotice) => void>();
 
   constructor(private readonly options: ControllerOptions) {
@@ -194,7 +194,7 @@ export class GameController {
 
   onState(listener: (state: DaemonState) => void): () => void { this.stateListeners.add(listener); return () => this.stateListeners.delete(listener); }
   onLog(listener: (operationId: string, line: string) => void): () => void { this.logListeners.add(listener); return () => this.logListeners.delete(listener); }
-  onExit(listener: (operationId: string, code: number | null, status: 'complete' | 'failed') => void): () => void { this.exitListeners.add(listener); return () => this.exitListeners.delete(listener); }
+  onExit(listener: (operationId: string, code: number | null, status: 'complete' | 'failed', message?: string) => void): () => void { this.exitListeners.add(listener); return () => this.exitListeners.delete(listener); }
   onInviteNotice(listener: (notice: InviteNotice) => void): () => void { this.inviteListeners.add(listener); return () => this.inviteListeners.delete(listener); }
 
   /** A Friends UI action on the running game's invitations. */
@@ -263,7 +263,7 @@ export class GameController {
       void active.result.catch(() => undefined).finally(stopFocus);
       void active.result.catch(() => undefined).then(async () => {
         const code = await active.result.then(result => result.code, () => null);
-        for (const listener of this.exitListeners) listener(active.operationId, code, active.operation.status === 'failed' ? 'failed' : 'complete');
+        for (const listener of this.exitListeners) listener(active.operationId, code, active.operation.status === 'failed' ? 'failed' : 'complete', active.operation.status === 'failed' ? active.operation.error : undefined);
       });
       void active.finished.finally(() => this.finished(ownerId));
       if (this.cancelWhenStarted) { this.cancelWhenStarted = false; void this.close('its Steam client went away before it started'); }

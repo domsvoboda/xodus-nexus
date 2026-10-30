@@ -4,7 +4,7 @@ import { promises as fs } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { encodeFrame, FrameReader, parseDaemonFrame, type ClientFrame, type DaemonFrame, type DaemonState } from '../shared/daemon-protocol.js';
-import { DaemonServer } from './server.js';
+import { DaemonServer, exitMessage } from './server.js';
 import { DaemonError, type GameController, type InviteNotice } from './controller.js';
 
 const linux = process.platform !== 'win32';
@@ -180,4 +180,11 @@ describe.skipIf(!linux)('DaemonServer', () => {
     expect(await garbage.until(frame => frame.type === 'error')).toMatchObject({ code: 'schema', message: 'Frame is not JSON.' });
     await garbage.closed;
   });
+});
+
+it('passes a failed launch reason to the thin client as one bounded line', () => {
+  expect(exitMessage(undefined)).toEqual({});
+  expect(exitMessage('  \n ')).toEqual({});
+  expect(exitMessage('Xodus run exited with code 1:\nMicrosoft device-ticket request failed.')).toEqual({ message: 'Xodus run exited with code 1: Microsoft device-ticket request failed.' });
+  expect(exitMessage('x'.repeat(9000)).message).toHaveLength(4000);
 });

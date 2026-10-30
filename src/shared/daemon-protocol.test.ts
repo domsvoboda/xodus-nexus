@@ -33,6 +33,7 @@ describe('daemon protocol frames', () => {
       { schema: 1, type: 'log', operationId: 'game-1', line: 'Proton prefix ready' },
       { schema: 1, type: 'exit', operationId: 'game-1', code: 0, status: 'complete' },
       { schema: 1, type: 'exit', operationId: 'game-1', code: null, status: 'failed' },
+      { schema: 1, type: 'exit', operationId: 'game-1', code: 1, status: 'failed', message: 'Microsoft device-ticket request failed. Check your connection and sign-in.' },
       { schema: 1, type: 'state', state: { ...state, invites: { active: [{ id: 'game-1', game: 'T' }], outgoing: [], incoming: [{ id: 'game-1:x', game: 'T', sender: 'Friend', expires: 1 }] } } },
       { schema: 1, type: 'done', requestId: 'i1' },
       { schema: 1, type: 'invite-notice', notice: 'choose', game: 'T' },

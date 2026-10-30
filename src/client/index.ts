@@ -13,6 +13,8 @@ import { bundledCloseHelper, keepSteamFocus } from '../main/graceful-close.js';
 
 const CONNECT_WINDOW_MS = 10_000;
 const REATTACH_WINDOW_MS = 60_000;
+/** A launch that fails this soon after it was accepted never reached play: the player sees why. */
+const STARTUP_FAILURE_MS = 60_000;
 const say = (line: string) => process.stdout.write(`[nexus] ${line}\n`);
 const warn = (line: string) => process.stderr.write(`[nexus] ${line}\n`);
 
@@ -105,12 +107,13 @@ export async function main(argv = process.argv.slice(2), env = process.env): Pro
   connection.send({ schema: 1, type: 'launch', requestId, gameId, env: filterClientEnvironment(env), cwd: process.cwd(), attach: true });
   return new Promise<number>((resolve, reject) => {
     let operationId: string | undefined;
+    let acceptedAt = 0;
     let exited = false;
     let link = connection;
     const listen = (active: DaemonConnection) => { active.on('frame', onFrame); active.on('close', onClose); };
     const onFrame = (frame: DaemonFrame) => {
       switch (frame.type) {
-        case 'accepted': if (frame.requestId === requestId) { operationId = frame.operationId; say('Launch accepted.'); } break;
+        case 'accepted': if (frame.requestId === requestId) { operationId = frame.operationId; acceptedAt = Date.now(); say('Launch accepted.'); } break;
         case 'log': if (!operationId || frame.operationId === operationId) say(frame.line); break;
         case 'error':
           if (frame.requestId !== requestId) break;
@@ -123,9 +126,13 @@ export async function main(argv = process.argv.slice(2), env = process.env): Pro
         case 'exit':
           if (operationId && frame.operationId !== operationId) break;
           exited = true;
-          say(frame.status === 'complete' ? 'The game has exited.' : 'The game exited with an error.');
+          say(frame.status === 'complete' ? 'The game has exited.' : `The game exited with an error.${frame.message ? ` ${frame.message}` : ''}`);
           link.close();
-          resolve(frame.code ?? (frame.status === 'complete' ? 0 : 1));
+          {
+            const code = frame.code ?? (frame.status === 'complete' ? 0 : 1);
+            if (frame.status === 'failed' && Date.now() - acceptedAt < STARTUP_FAILURE_MS) void showLaunchError(request.profile, frame.message ?? 'The game could not be started.', env).then(() => resolve(code));
+            else resolve(code);
+          }
           break;
       }
     };

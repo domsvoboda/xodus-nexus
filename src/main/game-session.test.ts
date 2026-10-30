@@ -181,6 +181,11 @@ describe('GameSession', () => {
     await active.finished;
     expect(active.operation.status).toBe('failed');
     expect(active.operation.error).toBe('Xodus run exited with code 3: line one | fatal: boom');
+    const noisy = await new GameSession(deps()).launch('g');
+    const preload = "ERROR: ld.so: object '/s/ubuntu12_64/gameoverlayrenderer.so' from LD_PRELOAD cannot be preloaded (cannot open shared object file): ignored.";
+    h.finish!({ code: 1, output: [preload, 'Microsoft device-ticket request failed. Check your connection and sign-in.', preload].join(String.fromCharCode(10)) });
+    await noisy.finished;
+    expect(noisy.operation.error).toBe('Xodus run exited with code 1: Microsoft device-ticket request failed. Check your connection and sign-in.');
 
     const stopped = await new GameSession(deps()).launch('g');
     stopped.operation.status = 'stopping';

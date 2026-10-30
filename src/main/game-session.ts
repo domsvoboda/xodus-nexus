@@ -111,6 +111,8 @@ export interface ActiveGame {
 }
 
 /** One game at a time: preparation, spawn and cleanup, independent of Electron. */
+const STEAM_PRELOAD_NOISE = /^ERROR: ld\.so: object '[^']*gameoverlayrenderer\.so' from LD_PRELOAD cannot be preloaded/;
+
 export class GameSession {
   private active: ActiveGame | undefined;
   private operation: GameOperation | undefined;
@@ -332,7 +334,8 @@ export class GameSession {
           operation.status = 'complete';
           operation.phase = result.code === 0 ? 'The game has exited.' : 'The game was stopped. Forced shutdown may leave unsynchronized saves.';
         } else {
-          const detail = result.output.split('\n').map((line) => line.trim()).filter(Boolean).slice(-6).join(' | ');
+          // Steam's overlay preload warnings are noise in every launch, never the reason.
+          const detail = result.output.split('\n').map((line) => line.trim()).filter((line) => line && !STEAM_PRELOAD_NOISE.test(line)).slice(-6).join(' | ');
           operation.status = 'failed';
           operation.error = contentLicenseFailure(result.output.split('\n'))
             ?? `Xodus run exited with code ${result.code}${detail ? `: ${detail.slice(0, 900)}` : '.'}`;
