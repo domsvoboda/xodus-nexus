@@ -584,6 +584,8 @@ export function GameLaunchToolFields({ value, change }: { value: GameLaunchTools
   return <fieldset className="game-launch-tools"><legend>{ui("ui.launch_tools_c1a69e7")}</legend>
     <label className="tool-checkbox"><input type="checkbox" checked={value.dualSenseCompatibility === true} onChange={event => update({ dualSenseCompatibility: event.target.checked })} /><span>{ui("ui.dualsense_compatibility_mode_666f577")}</span></label>
     <small>{ui("ui.try_this_if_a_standard_dualsense_controller_is_n_114e408")}</small>
+    <label className="tool-checkbox"><input type="checkbox" checked={value.dualShock4Compatibility === true} onChange={event => update({ dualShock4Compatibility: event.target.checked })} /><span>{ui("controllers.dualshock4_compatibility")}</span></label>
+    <small>{ui("controllers.dualshock4_help")}</small>
     <label className="tool-checkbox"><input type="checkbox" checked={value.mangoHud} onChange={event => update({ mangoHud: event.target.checked })} /><span>{ui("ui.enable_mangohud_dcae6c8")}</span></label>
     <label className="tool-checkbox"><input type="checkbox" checked={value.gamescope} onChange={event => update({ gamescope: event.target.checked })} /><span>{ui("ui.run_in_gamescope_58f2d35")}</span></label>
     {value.gamescope ? <label>{ui("ui.gamescope_options_cb81326")}<input value={value.gamescopeArgs} maxLength={2048} placeholder="-W 1920 -H 1080 -f" onChange={event => update({ gamescopeArgs: event.target.value })} /><small>{ui("ui.only_options_nexus_adds_the_game_command_mangohu_c4b6ad8")}</small></label> : null}
@@ -761,7 +763,7 @@ export function LibraryPage({ data, toast, filters, onFiltersChange, selection }
     },
     onUpdate: () => { setMenu(undefined); if (game.updateIncomplete || data.gameUpdates?.[game.id]?.available) void updateInstalledGame(game); else void checkUpdates(game.id); },
     updateLabel: game.updateIncomplete ? ui('downloads.resume_update') : data.gameUpdates?.[game.id]?.checking ? ui("ui.checking_ec963ff") : data.gameUpdates?.[game.id]?.available ? ui("ui.update_game_60a47ea") : ui("ui.check_for_updates_f26f327"),
-    updateDisabled: Boolean(data.gameUpdates?.[game.id]?.checking || !game.storeId || game.installState !== 'ready' && !game.updateIncomplete || !data.backend.capabilities.streaming || data.downloads.some(task => ['running', 'queued', 'paused'].includes(task.status) && (task.gameId === game.id || task.status === 'running'))),
+    updateDisabled: Boolean(data.gameUpdates?.[game.id]?.checking || !game.storeId || game.installState !== 'ready' && !game.updateIncomplete || !data.backend.capabilities.streaming || data.downloads.some(task => ['running', 'queued', 'paused'].includes(task.status) && (task.gameId === game.id))),
     onContent: () => { setMenu(undefined); setContentGameId(game.id); },
     contentDisabled: !game.storeId || data.auth.stored !== true || !data.backend.capabilities.library,
   });
@@ -775,7 +777,7 @@ export function LibraryPage({ data, toast, filters, onFiltersChange, selection }
     </>} /> : null;
   return <main ref={pageRef} className={`page library-page${detailVisible ? ' library-detail-open' : ''}`}>
     <div hidden={detailVisible}>
-    <header className="page-header" data-gamepad-library-header><div><h1>{ui("ui.my_library_d931dba")}</h1><p>{ui("ui.your_owned_games_game_pass_games_and_local_insta_ebb2bf4")}</p></div><div className="button-row"><button className="secondary" disabled={data.auth.stored !== true || gameBusy || Object.values(data.gameUpdates ?? {}).some(update => update.checking)} onClick={() => checkUpdates()}><RefreshCw />{ui("ui.check_game_updates_11270a1")}</button><button className="secondary" onClick={importGame}><Plus />{ui("ui.import_game_692bcb8")}</button></div></header>
+    <header className="page-header" data-gamepad-library-header><div><h1>{ui("ui.my_library_d931dba")}</h1><p>{ui("ui.your_owned_games_game_pass_games_and_local_insta_ebb2bf4")}</p></div><div className="button-row"><button className="secondary" disabled={data.auth.stored !== true || gameBusy || Object.values(data.gameUpdates ?? {}).some(update => update.checking)} onClick={() => checkUpdates()}><RefreshCw />{ui("ui.check_game_updates_11270a1")}</button>{Object.values(data.gameUpdates ?? {}).some(update => update.checking) ? <button className="secondary" onClick={() => void window.launcher.stopGameUpdateCheck().catch(error => toast({ kind: 'error', message: errorMessage(error) }))}><X />{ui('library.stop_update_check')}</button> : null}<button className="secondary" onClick={importGame}><Plus />{ui("ui.import_game_692bcb8")}</button></div></header>
     <div className="library-layout">
       <AccountGamesForUser data={data} toast={toast} filters={filters} onFiltersChange={onFiltersChange} selectedId={selected?.id} select={selectGame} menu={openMenu} openProduct={selectProductDetails} />
     </div>
@@ -922,6 +924,11 @@ export function SettingsPage({ data, toast }: { data: AppSnapshot; toast: (value
         {interfaceLanguages.map(language => <option key={language} value={language}>{new Intl.DisplayNames([language], { type: 'language' }).of(language) ?? language}</option>)}
       </select></label>
       <div className="save-row"><span>{ui('settings.language_help')}</span><button className="primary" disabled={Boolean(busy)} onClick={() => invoke('save-language', () => window.launcher.updateSettings({ interfaceLanguage: form.interfaceLanguage ?? 'system' }), ui('settings.language_saved'))}>{ui('settings.save_language')}</button></div>
+    </section>
+
+    <section className="settings-card compact tray-settings">
+      <label className="tray-toggle"><input type="checkbox" checked={form.closeToTray===true} disabled={Boolean(busy)} onChange={event=>{const closeToTray=event.target.checked;setForm({...form,closeToTray});void invoke('close-to-tray',()=>window.launcher.updateSettings({closeToTray}),ui('settings.tray_saved'));}}/><span>{ui('settings.close_to_tray')}</span></label>
+      <small>{ui('settings.close_to_tray_help')}</small>
     </section>
 
     <section className="settings-card compact launcher-card">
@@ -1115,6 +1122,7 @@ export default function App() {
   const [libraryFilters, setLibraryFilters] = useState<LibraryFilters>(() => loadLibraryFilters());
   const [librarySelection, setLibrarySelection] = useState<{ id: string }>();
   useEffect(() => window.launcher.onOpenFriends(() => {setSocialMounted(true);setSocialOpen(true);}), []);
+  useEffect(()=>window.launcher.onLauncherPage(next=>{if(['home','library','store','settings'].includes(next))go(next);}),[]);
 
   useEffect(() => {
     void window.launcher.getSnapshot().then((value) => { setData(value); setLoading(false); }).catch((error) => { setToast({ kind: 'error', message: errorMessage(error) }); setLoading(false); });

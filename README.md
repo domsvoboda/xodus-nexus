@@ -45,6 +45,8 @@ language? Request it in a [GitHub issue](https://github.com/domsvoboda/xodus-nex
 
 Download the latest Linux AppImage from [Releases](https://github.com/domsvoboda/xodus-nexus/releases), make it executable and open it. Stable releases currently ship for x86_64. Experimental ARM64 support requires matching native launcher, backend and runtime builds, compatible graphics drivers and FEX for x86 Windows games.
 
+The current x86_64 runtime requires glibc 2.38 or newer (for example Ubuntu 24.04 or a current SteamOS, Fedora or Arch installation). Ubuntu 22.04 does not meet this requirement.
+
 For an application-menu installation on supported distributions:
 
 ```sh
@@ -61,6 +63,19 @@ Flatpak version available through Discover. Other browsers are not supported.
 
 [Setup guide and SteamOS requirements](https://github.com/domsvoboda/xodus-nexus/wiki/Getting-started)
 
+## Uninstall
+
+Close Nexus and its games, then remove the application-menu installation without sudo:
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/domsvoboda/xodus-nexus/main/scripts/uninstall.sh | bash
+```
+
+Games, saves, settings, downloaded runtimes, wallet credentials and system packages are kept.
+For a custom installation, use the same `XODUS_NEXUS_PREFIX` and `XDG_DATA_HOME` as during installation.
+To preview the files, download the script and run `bash uninstall.sh --dry-run`.
+If you only downloaded an AppImage manually, delete that AppImage instead.
+
 ## Use
 
 - **My Library** combines owned, Game Pass and installed games, with Access, Play state and title filters.
@@ -73,9 +88,10 @@ Flatpak version available through Discover. Other browsers are not supported.
 - Cancelling a new installation can keep or delete its partial files. Existing games, updates and DLC keep their files.
 - Right-click an installed game for settings, VC++ prerequisites, shortcuts or removal.
 - Removing a game can keep its files or permanently delete its installation folder without using Trash. Saves inside that folder are deleted too; saves elsewhere are not affected.
-- Game settings offer an optional **DualSense compatibility mode** if a standard DualSense is not detected. It applies only to that game and may disable advanced haptics and adaptive triggers.
+- Game settings offer separate **DualSense** and **DualShock 4 compatibility modes** for controller detection. They apply only to the selected game. The DualSense fallback may disable advanced haptics and adaptive triggers.
 - Choose **Add to Steam** in the game menu, or **Add Nexus to Steam** in Settings, to create a Non-Steam shortcut with available artwork. Steam can stay running, including in Game Mode. Requires native Linux Steam; Flatpak Steam is not yet supported.
 - Update the launcher, backend and runtime in **Settings**.
+- **Settings → Close Nexus to the system tray** keeps the launcher and downloads running after closing its window. Use the tray menu to reopen Nexus or quit. Requires a desktop system tray.
 - **Settings → Interface language** selects a bundled translation independently of game language and Store region. Missing translations fall back to English.
 - **Settings → Downloads** sets a combined game download speed limit in MiB/s (0 means unlimited). A supporting Nexus backend is required; saving the limit also applies it to active downloads.
 - **Settings → Shader cache** sets the per-game Mesa/NVIDIA driver cache limit, 4 GiB by default. Changes apply on the next game launch; explicit environment overrides take precedence.
@@ -146,6 +162,11 @@ but have not been verified and may encounter compatibility issues.
 
 | Game | Playable | Status |
 | --- | --- | --- |
+| Persona 3 Reload | Yes | Gameplay, network features and cloud saves work; expansion pass not recognized. ([user report](https://github.com/domsvoboda/xodus-nexus/issues/317)) |
+| Forza Motorsport | Partial | Unreleased runtime: intro completed. Online play unverified. |
+| Age of Empires II: Definitive Edition | Yes | Unreleased runtime: single-player gameplay works. Online play unverified. |
+| Age of Empires III: Definitive Edition | Yes | Unreleased runtime: works. Online play unverified. |
+| Age of Empires: Definitive Edition | Partial | Unreleased runtime: menu and sign-in work; Multiplayer and LAN menus enabled. Gameplay unverified. |
 | Age of Empires IV | Startup verified | Unreleased runtime: starts successfully; online play unverified. |
 | Gears of War: E-Day | Yes | Playable online; Xbox playing status works. |
 | Deep Rock Galactic | Yes | Playable online. |
@@ -177,7 +198,7 @@ but have not been verified and may encounter compatibility issues.
 | Hogwarts Legacy | Yes | Playable. ([user report](https://github.com/domsvoboda/xodus-nexus/issues/110)) |
 | Halo Infinite | Partial | Unreleased Experimental runtime: main menu and campaign start; multiplayer unavailable (offline). |
 | Halo: Campaign Evolved | Yes | Playable; may remain running after quitting. ([user report](https://github.com/domsvoboda/xodus-nexus/issues/97)) |
-| Resonance: A Plague Tale Legacy | Yes | Playable; black screen reported when ending a game on Steam Deck. ([user report](https://docs.google.com/spreadsheets/d/1HD8fr8XotC2o0seA5TRaiZ3TeltdyUv5aWhxSPeD-6s/edit?usp=sharing)) |
+| Resonance: A Plague Tale Legacy | Yes | Desktop gameplay and Xbox cloud saves work. Steam Deck exit black screen also reported. ([desktop report](https://github.com/domsvoboda/xodus-nexus/issues/446), [Steam Deck report](https://docs.google.com/spreadsheets/d/1HD8fr8XotC2o0seA5TRaiZ3TeltdyUv5aWhxSPeD-6s/edit?usp=sharing)) |
 | Resident Evil 2 | Yes | Playable; may remain running after quitting. ([user report](https://github.com/domsvoboda/xodus-nexus/issues/110)) |
 | Wreckfest | Yes | Playable. ([user report](https://docs.google.com/spreadsheets/d/1HD8fr8XotC2o0seA5TRaiZ3TeltdyUv5aWhxSPeD-6s/edit?usp=sharing)) |
 | TUNIC | Yes | Playable. ([user report](https://docs.google.com/spreadsheets/d/1HD8fr8XotC2o0seA5TRaiZ3TeltdyUv5aWhxSPeD-6s/edit?usp=sharing)) |

@@ -16,7 +16,7 @@ export interface ContentPackage { productId: string; contentId: string; family: 
 type Access = Record<string, LibraryAccess>;
 type RecordValue = Record<string, any>;
 
-async function boundedFile(file: string): Promise<string> {
+async function boundedBytes(file: string): Promise<Buffer> {
   const handle = await fs.open(file, constants.O_RDONLY | constants.O_NOFOLLOW);
   try {
     const stat = await handle.stat();
@@ -24,13 +24,40 @@ async function boundedFile(file: string): Promise<string> {
     const bytes = Buffer.alloc(stat.size + 1);
     const { bytesRead } = await handle.read(bytes, 0, bytes.length, 0);
     if (bytesRead > stat.size) throw Error('Package metadata changed while reading.');
-    return bytes.subarray(0, bytesRead).toString('utf8');
+    return bytes.subarray(0, bytesRead);
   } finally { await handle.close(); }
+}
+async function boundedFile(file: string): Promise<string> {
+  return (await boundedBytes(file)).toString('utf8');
 }
 async function manifestFile(directory: string, filename: string): Promise<string> {
   const matches = (await fs.readdir(directory)).filter(name => name.toLowerCase() === filename.toLowerCase());
   if (matches.length !== 1) throw Error(`Missing or ambiguous ${filename}.`);
   return boundedFile(path.join(directory, matches[0]));
+}
+interface ContentConfiguration { xml: string; bytes: Buffer; source?: string; root?: string }
+async function contentConfiguration(directory: string): Promise<ContentConfiguration> {
+  const names = await fs.readdir(directory);
+  const roots = names.filter(name => name.toLowerCase() === 'microsoftgame.config');
+  const sources = names.filter(name => name.toLowerCase() === 'src');
+  if (roots.length > 1 || sources.length > 1) throw Error('Missing or ambiguous MicrosoftGame.config.');
+  const root = roots[0] && path.join(directory, roots[0]);
+  let source: string | undefined;
+  if (sources.length) {
+    const folder = path.join(directory, sources[0]);
+    const stat = await fs.lstat(folder);
+    if (!stat.isDirectory() || stat.isSymbolicLink()) throw Error('Content SRC path is not a real directory.');
+    const files = (await fs.readdir(folder)).filter(name => name.toLowerCase() === 'microsoftgame.config');
+    if (files.length > 1) throw Error('Missing or ambiguous MicrosoftGame.config.');
+    if (files.length) source = path.join(folder, files[0]);
+  }
+  if (!root && !source) throw Error('Missing or ambiguous MicrosoftGame.config.');
+  const bytes = await boundedBytes(source ?? root!);
+  if (source && root && !(await boundedBytes(root)).equals(bytes)) throw Error('Conflicting root and SRC MicrosoftGame.config.');
+  return { xml: bytes.toString('utf8'), bytes, source, root };
+}
+function contentPattern(pattern: string): RegExp {
+  return new RegExp('^' + pattern.replace(/[.+^${}()|[\]\\]/g, '\\$&').replaceAll('*', '.*').replaceAll('?', '.') + '$', 'i');
 }
 export function contentManifest(xml: string): Manifest {
   const root = parsePackageXml(xml);
@@ -106,10 +133,14 @@ export function contentOffers(base: Manifest, catalog: unknown, access: Access, 
 export class GameContent {
   private catalog: ContentCatalog;
   constructor(private dataRoot: string, fetcher: typeof fetch = fetch) { this.catalog = new ContentCatalog(fetcher); }
-  /** Public discovery hints only. Never reads credentials or grants runtime rights. */
-  async relatedProducts(game: Game, access: Access, market = 'US', signal = AbortSignal.timeout(5_000)): Promise<string[]> {
+  /**
+   * Public discovery hints only. Never reads credentials or grants runtime rights.
+   * An offline launch skips the catalog, which cannot answer, and lists only
+   * content installed on this device instead of waiting for the timeout.
+   */
+  async relatedProducts(game: Game, access: Access, market = 'US', signal = AbortSignal.timeout(5_000), offline = false): Promise<string[]> {
     const base = await baseManifest(game);
-    const catalog = await this.catalog.discover(base, access, market, game.offerProductId, signal);
+    const catalog = offline ? { related: [] } : await this.catalog.discover(base, access, market, game.offerProductId, signal);
     signal.throwIfAborted();
     const related = [...new Set([...catalog.related, ...await this.installedIds(game)])].filter(id => id !== base.storeId);
     if (related.length > 256 || related.some(id => !productId.test(id))) throw Error('Content discovery scope is too large.');
@@ -135,9 +166,10 @@ export class GameContent {
     if (/[;\r\n]/.test(current)) throw Error('Content paths cannot contain semicolons or line breaks.');
     return current;
   }
-  private async validate(game: Game, id: string, directory: string, family?: string): Promise<Manifest> {
+  private async validate(game: Game, id: string, directory: string, family?: string): Promise<Manifest & { configuration: ContentConfiguration }> {
     const base = await baseManifest(game);
-    const content = contentManifest(await manifestFile(directory, 'MicrosoftGame.config'));
+    const configuration = await contentConfiguration(directory);
+    const content = contentManifest(configuration.xml);
     const appx = parsePackageXml(await manifestFile(directory, 'appxmanifest.xml'));
     const identity = single(appx, 'Identity').attributes;
     const dependency = single(single(appx, 'Dependencies'), 'MainPackageDependency').attributes;
@@ -156,6 +188,17 @@ export class GameContent {
     }
     visit(layout, 0);
     if (!groups.length || groups.length > 256) throw Error('Content layout contains no supported file groups.');
+    if (configuration.source) {
+      const parts = (value: string) => value.split(/[/\\]/).filter(part => part && part !== '.');
+      const mappings = groups.filter(group => {
+        const source = parts(group.attributes.SourcePath ?? '').join('/').toLowerCase();
+        const include = parts(group.attributes.Include ?? '');
+        const destination = parts(group.attributes.DestinationPath ?? '');
+        return source === 'src' && include.length === 1 && !destination.length
+          && !group.attributes.Exclude && contentPattern(include[0]).test('MicrosoftGame.config');
+      });
+      if (mappings.length !== 1) throw Error('SRC MicrosoftGame.config must be mapped to the package root by its layout.');
+    }
     for (const group of groups) {
       const source = group.attributes.SourcePath, include = group.attributes.Include;
       const valid = (value: string | undefined) => value && !/^[/\\]/.test(value) && !/[:\x00-\x1f]/.test(value) && !value.split(/[/\\]/).includes('..');
@@ -170,14 +213,14 @@ export class GameContent {
         folder = path.join(folder, matches[0]);
         if (!(await fs.lstat(folder)).isDirectory()) throw Error('Invalid content payload directory.');
       }
-      const match = new RegExp('^' + pattern.replace(/[.+^${}()|[\]\\]/g, '\\$&').replaceAll('*', '.*').replaceAll('?', '.') + '$', 'i');
+      const match = contentPattern(pattern);
       const names = await fs.readdir(folder);
       if (names.length > 4096) throw Error('Content payload directory limit exceeded.');
       let found = false;
       for (const name of names.filter(name => match.test(name))) if ((await fs.lstat(path.join(folder, name))).isFile()) { found = true; break; }
       if (!found) throw Error('A file group declared by the content layout is missing.');
     }
-    return content;
+    return { ...content, configuration };
   }
   async plan(game: Game, readAccess: () => Promise<{ checkedAt: string; accessByProductId: Access }>, market = 'US'): Promise<{ plan: GameContentPlan; packages: ContentPackage[] }> {
     const base = await baseManifest(game);
@@ -207,6 +250,14 @@ export class GameContent {
   async complete(game: Game, pkg: ContentPackage): Promise<void> {
     const directory = await this.safeDirectory(game, pkg.productId);
     const content = await this.validate(game, pkg.productId, directory, pkg.family);
+    if (!content.configuration.root) {
+      // Runtime discovery expects root metadata. Materialize only the exact
+      // layout-declared, fully validated config, preserving its original copy.
+      if (!(await boundedBytes(content.configuration.source!)).equals(content.configuration.bytes))
+        throw Error('Content configuration changed during installation.');
+      await fs.writeFile(path.join(directory, 'MicrosoftGame.config'), content.configuration.bytes, { flag: 'wx', mode: 0o600 });
+      await this.validate(game, pkg.productId, directory, pkg.family);
+    }
     const temporary = path.join(directory, markerName + '.' + randomUUID() + '.tmp');
     await fs.writeFile(temporary, JSON.stringify({ schema: 1, productId: pkg.productId, contentId: pkg.contentId, parent: game.storeId, name: content.name, version: content.version }), { mode: 0o600, flag: 'wx' });
     await fs.rename(temporary, path.join(directory, markerName));

@@ -1,3 +1,4 @@
+import {runtimeWineFailure} from './runtime-prerequisites.js';
 import { constants, createWriteStream, promises as fs } from 'node:fs';
 import path from 'node:path';
 import { randomUUID } from 'node:crypto';
@@ -90,12 +91,16 @@ export class RuntimeManager {
     try { return JSON.parse(await fs.readFile(this.pointerFile(), 'utf8')) as RuntimePointer; } catch { return null; }
   }
 
-  private async validateWine(winePath: string): Promise<boolean> {
+  private async validateWine(winePath: string, failureMessage?: string): Promise<boolean> {
+    let problem: string;
     try {
       await fs.access(winePath, constants.X_OK);
       const result = await run(winePath, ['--version'], { maxOutput: 30_000 });
-      return result.code === 0 && /wine/i.test(result.output);
-    } catch { return false; }
+      if (result.code === 0 && /wine/i.test(result.output)) return true;
+      problem = runtimeWineFailure(result.output) ?? `Wine --version failed (exit code ${result.code}).`;
+    } catch { problem = 'The Wine executable could not be started. Check that the runtime matches this system and its installation allows execution.'; }
+    if (failureMessage) throw Error(failureMessage + ' ' + problem);
+    return false;
   }
 
   async refresh(): Promise<RuntimeStatus> {
@@ -249,7 +254,7 @@ export class RuntimeManager {
       if (result.code !== 0) throw new Error('Runtime extraction failed.');
       const candidateRoot = path.join(extracted, top);
       const candidateWine = await runtimeLoader(candidateRoot, this.hostArch, false);
-      if (!await this.validateWine(candidateWine)) throw new Error('The downloaded Wine failed --version validation.');
+      await this.validateWine(candidateWine, 'The downloaded Wine failed --version validation.');
       if (this.isOperationActive()) throw new Error('Another operation started during installation; the runtime was not activated.');
 
       const releases = path.join(this.status.runtimeRoot, 'releases');
@@ -384,7 +389,7 @@ export class RuntimeManager {
     const baseName = current ? previewBaseRelease(current.name) : null;
     if (!current || !baseName) throw new Error('No cloud-save preview is active.');
     const winePath = await runtimeLoader(path.join(this.status.runtimeRoot, 'releases', baseName), this.hostArch);
-    if (!await this.validateWine(winePath)) throw new Error('The previous runtime is missing or failed validation. The preview remains active.');
+    await this.validateWine(winePath, 'The previous runtime is missing or failed validation. The preview remains active.');
     this.status.updating = true;
     onStatus();
     try {

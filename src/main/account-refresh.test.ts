@@ -59,3 +59,22 @@ it('reads only account stdout and cancels an obsolete synthetic status subproces
     expect((await pending).code).not.toBe(0);
   } finally { await fs.rm(root, { recursive: true, force: true }); }
 });
+
+
+it('finishes a read-only account command when a detached keyring helper inherits its pipes', async () => {
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), 'nexus-account-helper-'));
+  const binary = path.join(root, 'cli');
+  try {
+    await fs.writeFile(binary, `#!${process.execPath}
+const {spawn}=require('node:child_process');
+spawn(process.execPath,['-e','setTimeout(()=>{},2000)'],{detached:true,stdio:['ignore',1,2]}).unref();
+process.stdout.write(JSON.stringify({stored:true,username:'sample@example.test'}));
+process.exit(23);
+`, {mode:0o700});
+    const start=performance.now();
+    const result=await readAccount(binary,new AbortController().signal);
+    expect(result.code).toBe(23);
+    expect(JSON.parse(result.output)).toEqual({stored:true,username:'sample@example.test'});
+    expect(performance.now()-start).toBeLessThan(1500);
+  } finally {await fs.rm(root,{recursive:true,force:true});}
+});

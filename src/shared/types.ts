@@ -96,6 +96,7 @@ export interface RuntimeStatus {
 
 export interface GameLaunchTools {
   dualSenseCompatibility?: boolean;
+  dualShock4Compatibility?: boolean;
   mangoHud: boolean;
   gamescope: boolean;
   gamescopeArgs: string;
@@ -183,6 +184,7 @@ export interface GameOperation {
 }
 
 export interface Settings {
+  closeToTray?: boolean;
   interfaceLanguage?: string;
   installRoot: string;
   market: string;
@@ -234,7 +236,9 @@ export interface KeyringStatus {
   message: string;
 }
 
-export interface LauncherApi {setXboxOverlayRecording(recording:boolean):Promise<void>;}
+export interface LauncherApi {
+  onLauncherPage(callback:(page: "home"|"library"|"store"|"settings")=>void):()=>void;
+  showTouchKeyboard(): Promise<boolean>;setXboxOverlayRecording(recording:boolean):Promise<void>;}
 /** The Xbox app's "Offline permissions" setting for this device, as Microsoft reports it. */
 export interface OfflinePermissions {
   /** Local launcher check, not a licensing grant or a Microsoft response field. */
@@ -527,6 +531,7 @@ export interface XboxMessageReceipt {id:string}
 export interface XboxGameInviteAvailability {canInvite:boolean;gameId?:string;title?:string;reason?:string}
 export interface XboxChatReadState {account:string;binary:string;keys:string[]}
 export interface LauncherApi {
+  showTouchKeyboard(): Promise<boolean>;
  closeXboxChat():Promise<void>;
  getXboxChatReads():Promise<XboxChatReadState|undefined>;
  onXboxChatReads(callback:(state:XboxChatReadState)=>void):()=>void;
@@ -565,6 +570,7 @@ export interface LauncherApi {
   restartLauncher(): Promise<void>;
   rollbackLauncherUpdate(): Promise<void>;
   checkGameUpdates(id?: string): Promise<void>;
+  stopGameUpdateCheck(): Promise<void>;
   readDiagnosticLog(operationId: string): Promise<DiagnosticLog>;
   copyDiagnosticLog(operationId: string): Promise<void>;
   revealDiagnosticLog(operationId: string): Promise<void>;

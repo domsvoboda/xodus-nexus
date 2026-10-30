@@ -22,11 +22,16 @@ export async function prepareGameWrapper(wine: string, value: GameLaunchTools | 
   root: string, env: NodeJS.ProcessEnv = process.env, cwd = process.cwd()): Promise<GameWrapper> {
   const tools = normalizeLaunchTools(value);
   const { prefix: custom, environment, gameArgs } = parseLaunchOptions(tools.launchOptions);
-  if (tools.dualSenseCompatibility) {
+  if (tools.dualSenseCompatibility || tools.dualShock4Compatibility) {
     const disabled = environment.PROTON_DISABLE_HIDRAW ?? env.PROTON_DISABLE_HIDRAW ?? '';
-    // Keep other device overrides and a deliberate all-device opt-out intact.
-    environment.PROTON_DISABLE_HIDRAW = disabled === '1' || /0x054c\/0x0ce6/i.test(disabled)
-      ? disabled : [disabled === '0' ? '' : disabled, '0x054c/0x0ce6'].filter(Boolean).join(',');
+    // Match Wine's DualShock 4 models (v1, v2 and wireless adapter), separately
+    // from the existing DualSense option. SDL remains responsible for mapping.
+    const required = [...(tools.dualSenseCompatibility ? ['0x054c/0x0ce6'] : []),
+      ...(tools.dualShock4Compatibility ? ['0x054c/0x05c4','0x054c/0x09cc','0x054c/0x0ba0'] : [])];
+    const current = disabled === '0' ? '' : disabled;
+    const existing = new Set(current.toLowerCase().split(/[,\s]+/));
+    environment.PROTON_DISABLE_HIDRAW = disabled === '1' ? disabled
+      : [current,...required.filter(device=>!existing.has(device))].filter(Boolean).join(',');
   }
   if (!tools.mangoHud && !tools.gamescope && custom.length === 0 && !Object.keys(environment).length && !gameArgs.length) return { command: wine, cleanup: async () => {} };
   const words: string[] = [];

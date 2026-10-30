@@ -5,7 +5,7 @@
   "commit": "53ea781dcd073e31d7ea68e894134e9c959bff04",
   "rust": "1.99.0",
   "cargoLockSha256": "2259b343e00dadc263018beb7664b12e9d58a0b73bff502ad566f5f8619ce28a",
-  "patchId": "linux-run-v72",
+  "patchId": "linux-run-v73",
   "compatibility": "linux-run-v25",
   "patches": [
     {
@@ -299,6 +299,10 @@
     {
       "file": "xodus-offline-current-stack.patch",
       "sha256": "961f54e99cb0b21418c8cf56bf1a45790e91b21331736131e42eda08b663acf8"
+    },
+    {
+      "file": "xodus-game-activity-locale.patch",
+      "sha256": "cc9e292af016b4df3cb49cfa8718bdc5b846745c38d1b3bc9615ffdbef1f6043"
     }
   ]
 }

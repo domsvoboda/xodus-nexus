@@ -119,7 +119,9 @@ describe('visible launcher before keyring/account access (#212)', () => {
     const source = readFileSync('src/main/index.ts', 'utf8');
     const tail = source.slice(source.indexOf('await syncManagedWinePath();', source.indexOf('app.whenReady()')));
     expect(tail).toContain('await showBeforeAccountCheck(');
-    expect(tail).toMatch(/if \(startupRequest.gameId\) \{\s*await prepareSystemWallet\(\);\s*await refreshAccount\(false\);\s*receiveLaunchRequest/);
+    // Ready (so a party reset cannot end the shortcut session) only once the launch is handed over.
+    expect(tail).toMatch(/if \(startupRequest.gameId\) \{\s*await prepareSystemWallet\(\);\s*await refreshAccount\(false\);(\s*\/\/[^\n]*)*\s*launchReady = true;\s*receiveLaunchRequest/);
+    expect(tail.indexOf('launchReady = true')).toBeGreaterThan(tail.indexOf('if (startupRequest.gameId)'));
     expect(tail.indexOf('registerIpc();')).toBeLessThan(tail.indexOf('await showBeforeAccountCheck('));
   });
 });

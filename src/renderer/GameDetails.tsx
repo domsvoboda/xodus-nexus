@@ -169,6 +169,7 @@ export function GameDetails(props: PageProps & { data: AppSnapshot }) {
     const id = ++request.current; setActivityLoading(true);
     void window.launcher.getGameActivity(target, refresh).then(value => { if (request.current === id) setActivity(value); }).catch(() => { if (request.current === id) setActivity({ status: 'error' }); }).finally(() => { if (request.current === id) setActivityLoading(false); });
   }, [target, data.auth.username, data.auth.stored, data.auth.running, data.backend.binaryPath, data.backend.capabilities.gameActivity, data.settings.market]);
-  useEffect(() => { setActivity(undefined); loadActivity(); return () => { request.current++; }; }, [loadActivity]);
+  const finishedSession = data.gameOperation?.gameId === game.id && data.gameOperation.kind !== 'prerequisite' ? data.gameOperation.finishedAt : undefined;
+  useEffect(() => { setActivity(undefined); loadActivity(Boolean(finishedSession)); return () => { request.current++; }; }, [loadActivity, finishedSession]);
   return <GameDetailsContent {...props} details={details} activity={activity} metadataLoading={metadataLoading} metadataError={metadataError} activityLoading={activityLoading} refresh={() => loadActivity(true)} achievements={<Achievements gameId={game.id} target={target} title={game.title} data={data} />} />;
 }

@@ -26,3 +26,11 @@ it('validates persisted launch tool settings at the IPC boundary', () => {
   expect(() => normalizeLaunchTools({ ...defaultLaunchTools, gamescopeArgs:'-f --' })).toThrow();
   expect(normalizeLaunchTools({ ...defaultLaunchTools, launchOptions:' PROTON_ENABLE_WAYLAND=1 %command% ' }).launchOptions).toBe('PROTON_ENABLE_WAYLAND=1 %command%');
 });
+
+
+it('keeps older controller settings intact and validates the optional DualShock 4 mode',()=>{
+  expect(normalizeLaunchTools({...defaultLaunchTools,dualShock4Compatibility:true}).dualShock4Compatibility).toBe(true);
+  expect(normalizeLaunchTools({...defaultLaunchTools,dualShock4Compatibility:false}).dualShock4Compatibility).toBe(false);
+  expect(normalizeLaunchTools(defaultLaunchTools).dualShock4Compatibility).toBeUndefined();
+  expect(()=>normalizeLaunchTools({...defaultLaunchTools,dualShock4Compatibility:'yes'})).toThrow('DualShock 4');
+});

@@ -8,7 +8,7 @@ import { demoSnapshot } from '../shared/demo-data';
 import { defaultLaunchTools } from '../shared/launch-tools';
 import { localizedTimeRemaining } from './localized-time';
 
-afterEach(async () => { await i18n.changeLanguage('en'); i18n.removeResourceBundle('cs', 'translation'); i18n.removeResourceBundle('ar', 'translation'); });
+afterEach(async () => { await i18n.changeLanguage('en'); i18n.removeResourceBundle('cs', 'translation'); i18n.removeResourceBundle('ar', 'translation'); i18n.removeResourceBundle('pl-PL', 'translation'); });
 function translate(language: string, translation: Record<string, string>) {
   i18n.addResourceBundle(language, 'translation', translation);
   return i18n.changeLanguage(language);
@@ -52,4 +52,19 @@ it('supports direction metadata and keeps elapsed-time parsing separate', async 
   expect(i18n.dir()).toBe('rtl'); expect(localizedTimeRemaining('~4m left')).toBe('باقي 4 د');
   expect(localizedTimeRemaining('unknown diagnostic')).toBe('unknown diagnostic');
   expect(localizedTimeRemaining(undefined)).toBeUndefined();
+});
+
+it('selects Polish few/many and all six Arabic invitation forms (#425)', async () => {
+  await translate('pl-PL', {
+    'friends.invitation_count_one':'{{count}} zaproszenie do gry',
+    'friends.invitation_count_few':'{{count}} zaproszenia do gry',
+    'friends.invitation_count_many':'{{count}} zaproszeń do gry',
+    'friends.invitation_count_other':'{{count}} zaproszenia do gry',
+  });
+  for (const count of [2,3,4,22]) expect(ui('friends.invitation_count',{count})).toBe(`${count} zaproszenia do gry`);
+  for (const count of [0,5,12,25]) expect(ui('friends.invitation_count',{count})).toBe(`${count} zaproszeń do gry`);
+  expect(ui('friends.invitation_count',{count:1})).toBe('1 zaproszenie do gry');
+  await translate('ar', Object.fromEntries(['zero','one','two','few','many','other'].map(category=>['friends.invitation_count_'+category,category+' {{count}}'])));
+  for (const [count,category] of [[0,'zero'],[1,'one'],[2,'two'],[3,'few'],[11,'many'],[100,'other']] as const)
+    expect(ui('friends.invitation_count',{count})).toBe(`${category} ${count}`);
 });

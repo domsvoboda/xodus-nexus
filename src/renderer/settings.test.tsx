@@ -78,3 +78,11 @@ describe('Settings diagnostics', () => {
     expect(main).toMatch(/<button[^>]*disabled=""[^>]*>[\s\S]*?Sign in again<\/button>/);
   });
 });
+
+
+it('shows close-to-tray as an optional desktop preference',()=>{
+ const data=demoSnapshot();data.settings.closeToTray=true;
+ const html=renderToStaticMarkup(<SettingsPage data={data} toast={()=>{}}/>);
+ expect(html).toContain('Close Nexus to the system tray');expect(html).toContain('Desktop sessions only.');
+ expect(html).toMatch(/type="checkbox"[^>]*checked=""/);
+});

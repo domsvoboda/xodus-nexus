@@ -8,7 +8,7 @@ import {defaultXboxOverlay,xboxOverlaySettings,xboxOverlayPatch} from '../shared
 import { DEFAULT_SHADER_CACHE_GIB, shaderCacheLimits } from '../shared/shader-cache.js';
 import { interfaceLanguagePreference } from '../shared/interface-language.js';
 import { resolvePackageFile } from './windows-path.js';
-import { parsePackageXml } from './package-xml.js';
+import { parsePackageXml, XmlNode } from './package-xml.js';
 import { hasIncompleteUpdate, INCOMPLETE_UPDATE_MESSAGE } from './installation-state.js';
 import { manifestAttr as attr, manifestText as text, manifestElements, manifestAttribute } from './manifest-xml.js';
 
@@ -20,6 +20,7 @@ interface PersistedState {
 
 const defaultDataRoot = path.join(os.homedir(), '.local', 'share', 'xodus-nexus');
 const defaultSettings: Settings = {
+  closeToTray: false,
   interfaceLanguage: 'system',
   installRoot: path.join(os.homedir(), 'Games', 'Xodus Nexus'),
   market: 'neutral',
@@ -62,7 +63,7 @@ export class StateStore {
             ...task, status: 'paused' as const, canPause: true, controlPending: false,
             transferRate: undefined, phase: 'Paused — resume to reconnect and restore saved download checkpoints',
           } : task) : [],
-        settings: Object.fromEntries(Object.entries({ ...defaultSettings, ...parsed.settings, ...xboxOverlaySettings(parsed.settings??{}), downloadLimitMiB, shaderCacheLimitGiB, interfaceLanguage: interfaceLanguagePreference(parsed.settings?.interfaceLanguage) }).filter(([key]) => key !== 'separateGameProcess')) as unknown as Settings,
+        settings: Object.fromEntries(Object.entries({ ...defaultSettings, ...parsed.settings, ...xboxOverlaySettings(parsed.settings??{}), downloadLimitMiB, shaderCacheLimitGiB, closeToTray: parsed.settings?.closeToTray === true, interfaceLanguage: interfaceLanguagePreference(parsed.settings?.interfaceLanguage) }).filter(([key]) => key !== 'separateGameProcess')) as unknown as Settings,
       };
     } catch (error) {
       if ((error as NodeJS.ErrnoException).code !== 'ENOENT') console.warn('State could not be loaded', error);
@@ -86,6 +87,7 @@ export class StateStore {
   }
 
   async setSettings(patch: Partial<Settings>): Promise<Settings> {
+    if (patch.closeToTray !== undefined && typeof patch.closeToTray !== 'boolean') throw Error('Invalid close-to-tray setting.');
     const overlay=xboxOverlayPatch(patch);patch={...patch,...overlay};
     if (patch.interfaceLanguage !== undefined && interfaceLanguagePreference(patch.interfaceLanguage) !== patch.interfaceLanguage) throw Error('Invalid interface language.');
     if (patch.downloadLimitMiB !== undefined) downloadLimitKiB(patch.downloadLimitMiB);
@@ -162,6 +164,24 @@ async function beginsWithMz(file: string): Promise<boolean> {
   }
 }
 
+function getFirstValidConfigExecutable(configXml: XmlNode | undefined): string | undefined {
+  if (!configXml) return;
+
+  const configExecutables = manifestElements(configXml, "Executable")
+  if (!configExecutables) return;
+
+  for (const executable of configExecutables) {
+    const isDevOnly = manifestAttribute(executable, "isDevOnly")
+    const name = manifestAttribute(executable, "Name")
+    if ( (isDevOnly !== undefined) && (isDevOnly === "false") && (name !== undefined)) {
+      return name
+    } else if ((isDevOnly === undefined) && (name !== undefined)) {
+      return name
+    }
+  }
+  return;
+}
+
 export async function inspectGameDirectory(directory: string): Promise<Game> {
   const canonical = await fs.realpath(directory);
   // GDK titles are authored on Windows, where the manifest name is
@@ -182,8 +202,9 @@ export async function inspectGameDirectory(directory: string): Promise<Game> {
   const title = attr(configXml, 'ShellVisuals', 'DefaultDisplayName')
     ?? text(appxXml, 'DisplayName')
     ?? path.basename(canonical);
-  const executable = attr(configXml, 'Executable', 'Name')
+  const executable = getFirstValidConfigExecutable(configXml)
     ?? attr(appxXml, 'Application', 'Executable');
+
   const storeId = text(configXml, 'StoreId');
   const publisher = attr(configXml, 'ShellVisuals', 'PublisherDisplayName')
     ?? text(appxXml, 'PublisherDisplayName');

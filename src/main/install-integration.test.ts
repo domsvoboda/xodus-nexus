@@ -13,6 +13,9 @@ import { DownloadCleanup } from './download-cleanup.js';
 const h = vi.hoisted(() => ({
   root: '', wine: '', backend: {} as any, runtime: {} as any,
   savedPausedId: '',
+  updateSignals: [] as AbortSignal[],
+  updateReplies: [] as any[],
+  updateStops: vi.fn(async () => {}),
   handlers: new Map<string, (...args: any[]) => any>(),
   events: new Map<string, (...args: any[]) => any>(),
   downloads: [] as { args: string[]; progress: (paused?: boolean, phase?: string) => void; finish: (code: number) => void }[],
@@ -36,12 +39,14 @@ const h = vi.hoisted(() => ({
   launchArguments: [] as string[][],
   backendRefreshes: 0, runtimeRefreshes: 0,
   accountRequests: 0,
+  trayCreated: vi.fn(), trayDestroyed: vi.fn(),
   prefixLocales: [] as (string | undefined)[],
   planOverrides: new Map<string, any>(),
   libraryRows: [] as any[],
   accountReads: [] as ((result: { code: number; output: string }) => void)[],
   posters: vi.fn(async (ids: string[]) => new Map(ids.map(id => [id, `https://store-images.s-microsoft.com/${id}`]))),
 }));
+vi.mock('./launcher-tray-desktop.js',()=>({desktopTrayAvailable:()=>true}));
 vi.mock('electron', () => ({
   Notification: class { static isSupported() { return true; } constructor(private options: { title: string; body: string }) {} on() {} show() { h.notifications.push(this.options); } },
   app: { requestSingleInstanceLock: () => true, getPath: (name: string) => path.join(h.root, name),
@@ -49,10 +54,10 @@ vi.mock('electron', () => ({
     whenReady: () => Promise.resolve(), getVersion: () => '0.0.0', isPackaged: false, emit:vi.fn(), quit: h.quit },
   ipcMain: { handle: (name: string, callback: (...args: any[]) => any) => h.handlers.set(name, callback),removeHandler:(name:string)=>h.handlers.delete(name) },
   BrowserWindow: class { webContents = { on: vi.fn(), send: vi.fn(), setWindowOpenHandler: vi.fn() };
-    on() {} once() {} show() {} focus() {} maximize = h.maximize; isDestroyed() { return false; } async loadFile() {} },
+    on() {} once() {} show() {} hide() {} isVisible() {return true;} focus() {} maximize = h.maximize; isDestroyed() { return false; } async loadFile() {} },
   screen: { getPrimaryDisplay: () => ({ workArea: { x: 0, y: 0, width: 1440, height: 900 } }) },
   globalShortcut:{register:vi.fn(()=>false),unregister:vi.fn()},
-  dialog: { showMessageBox: h.showMessage, showSaveDialog: h.showSave }, nativeImage: {}, shell: { trashItem: h.trash }, powerSaveBlocker: { start: h.blockDisplay, stop: h.releaseDisplay },
+  dialog: { showMessageBox: h.showMessage, showSaveDialog: h.showSave }, nativeImage: {createFromPath:()=>({isEmpty:()=>false})}, Menu:{buildFromTemplate:(items:unknown)=>items}, Tray:class {constructor(){h.trayCreated();}setToolTip(){}on(){}setContextMenu(){}destroy(){h.trayDestroyed();}}, shell: { trashItem: h.trash }, powerSaveBlocker: { start: h.blockDisplay, stop: h.releaseDisplay },
 }));
 vi.mock('./backend.js', () => ({ LINUX_RUN_PATCH: 'test-patch', BackendManager: class {
   get current() { return h.backend; } async refresh() {h.backendRefreshes++;} async checkUpdate() {} async externalDownloadRunning() { return false; }
@@ -92,7 +97,15 @@ vi.mock('./install-plan.js', async original => ({ ...await original<typeof impor
 vi.mock('./xodus-service.js', () => ({ cloudSaveRuntime: async () => false, unbridgedCloudSaveRuntime: async () => false,
   gameInviteRuntime: async () => false,
   offlineIdentityRuntime: async () => h.offlineRuntimeSupported,
-  selectedWinePath: () => h.wine, storeContentRuntime: async () => h.contentSupported, storeDiscoveryRuntime: async () => h.discoverySupported, startXodusService: vi.fn() }));
+  selectedWinePath: () => h.wine, storeContentRuntime: async () => h.contentSupported, storeDiscoveryRuntime: async () => h.discoverySupported, startXodusService: async () => ({ socketPath: '/synthetic-updates', stop: h.updateStops }) }));
+vi.mock('./game-updates.js', () => ({ queryGameUpdate: async (_socket: string, _id: string, _version: string, signal: AbortSignal) => {
+  h.updateSignals.push(signal);
+  if (h.updateReplies.length) return h.updateReplies.shift();
+  return new Promise((_resolve, reject) => {
+    const abort = () => reject(Error('Update check cancelled.'));
+    if (signal.aborted) abort(); else signal.addEventListener('abort', abort, { once: true });
+  });
+} }));
 // No public connectivity probes from an account-free launch integration fixture.
 vi.mock('./connectivity.js',()=>({ConnectivityMonitor:class {
   get current(){return {state:h.connectivityState};} start(){} stop(){}
@@ -108,7 +121,7 @@ vi.mock('./process.js', () => ({
       result: Promise.resolve({code:0,output:JSON.stringify({schema:1,account:'sample@example.test',market:'US',checkedAt:new Date().toISOString(),entitlements:h.libraryRows})}),
     }; }
     if (args[0] === 'account') { h.accountRequests++;return {
-      child: { kill: vi.fn(() => true) },
+      child: { kill: vi.fn(() => true), stdin: { end: vi.fn() } },
       result: h.holdAccountReads
         ? new Promise<{ code: number; output: string }>(resolve => { h.accountReads.push(resolve); })
         : Promise.resolve({ code: 0, output: JSON.stringify({ stored: true, username: 'sample@example.test' }) }),
@@ -639,6 +652,64 @@ it('keeps interrupted updates blocked after cancellation and queue removal, then
   h.downloads.splice(0); h.notifications.splice(notifications);
 });
 
+it('changes only the tray preference without restarting account/backend work',async()=>{
+ const accounts=h.accountRequests,backend=h.backendRefreshes;
+ await h.handlers.get('update-settings')!({}, {closeToTray:true});
+ expect(snapshot().settings.closeToTray).toBe(true);expect(h.trayCreated).toHaveBeenCalledOnce();
+ await h.handlers.get('update-settings')!({}, {closeToTray:false});
+ expect(snapshot().settings.closeToTray).toBe(false);expect(h.trayDestroyed).toHaveBeenCalledOnce();
+ expect(h.accountRequests).toBe(accounts);expect(h.backendRefreshes).toBe(backend);
+ await expect(h.handlers.get('update-settings')!({}, {closeToTray:'true'})).rejects.toThrow('close-to-tray');
+});
+
+it('cancels background update checks before play, install and removal, and supports an explicit stop (#480)', async () => {
+  const begin = async () => {
+    const count = h.updateSignals.length;
+    const job = ipc('check-game-updates');
+    await vi.waitFor(() => expect(h.updateSignals.length).toBe(count + 1));
+    return { job, signal: h.updateSignals.at(-1)! };
+  };
+  const prior = {checking: false, available: true, latestVersion: '2.0.0.0', checkedAt: new Date().toISOString()};
+  h.updateReplies.push(prior); await ipc('check-game-updates', 'sample');
+  let check = await begin();
+  await ipc('stop-game-update-check'); await check.job;
+  expect(check.signal.aborted).toBe(true);
+  expect(snapshot().gameUpdates.sample).toEqual(prior);
+  expect(Object.values(snapshot().gameUpdates).some((entry: any) => entry.checking)).toBe(false);
+  check = await begin();
+  await ipc('launch-game', 'sample'); await check.job;
+  expect(check.signal.aborted).toBe(true); expect(snapshot().gameOperation.status).toBe('running');
+  h.game!.finish(); await vi.waitFor(() => expect(snapshot().gameOperation.status).toBe('complete'));
+  await new Promise(resolve => setTimeout(resolve, 10));
+  check = await begin();
+  const id = await install('V'); await check.job;
+  expect(check.signal.aborted).toBe(true);
+  await vi.waitFor(() => expect(h.downloads.length).toBeGreaterThan(0));
+  await ipc('cancel-download', id, 'keep'); await h.installQueue!.settled(id);
+  await ipc('remove-download', id); h.downloads.splice(0);
+  const directory = path.join(h.root, 'remove-during-update-check');
+  await fs.mkdir(directory); await fs.writeFile(path.join(directory, 'Game.exe'), 'MZ fixture');
+  await fs.copyFile(path.join(h.root, 'installed-game', 'MicrosoftGame.config'), path.join(directory, 'MicrosoftGame.config'));
+  const game = await ipc('import-game', directory);
+  check = await begin(); await ipc('remove-game', game.id, 'library'); await check.job;
+  expect(check.signal.aborted).toBe(true); expect(snapshot().games.some((row: any) => row.id === game.id)).toBe(false);
+  expect(h.updateStops).toHaveBeenCalledTimes(5);
+  h.blockDisplay.mockClear(); h.releaseDisplay.mockClear();
+});
+
+it('queues an installed-game update behind another download and keeps duplicate destinations protected (#480)', async () => {
+  const first = await install('U');
+  await vi.waitFor(() => expect(h.downloads).toHaveLength(1));
+  const update = await ipc('update-installed-game', 'sample');
+  expect(snapshot().downloads.find((row: any) => row.id === update)).toMatchObject({kind: 'update', status: 'queued'});
+  expect(h.downloads).toHaveLength(1);
+  await expect(ipc('update-installed-game', 'sample')).rejects.toThrow('already in');
+  await expect(ipc('launch-game', 'sample')).rejects.toThrow('Finish or cancel');
+  await ipc('cancel-download', update, 'keep'); await h.installQueue!.settled(update);
+  await ipc('cancel-download', first, 'keep'); await h.installQueue!.settled(first);
+  await ipc('remove-download', update); await ipc('remove-download', first); h.downloads.splice(0);
+});
+
 it('runs real queue IPC, pause/cancel/failure/restart and simultaneous play/download safely', async () => {
   const first = await install('A'); await vi.waitFor(() => expect(h.downloads).toHaveLength(1));
   expect(h.blockDisplay).not.toHaveBeenCalled();
@@ -651,7 +722,7 @@ it('runs real queue IPC, pause/cancel/failure/restart and simultaneous play/down
   expect(h.downloads).toHaveLength(1); expect(snapshot().downloads.find((task: any) => task.id === next).status).toBe('queued');
   await expect(install('C')).rejects.toThrow('already in');
   await expect(install('D', path.join(h.root, 'installed-game', 'nested'))).rejects.toThrow('overlaps');
-  await expect(ipc('update-installed-game', 'sample')).rejects.toThrow('Another Xodus');
+  await expect(ipc('update-installed-game', 'sample')).rejects.toThrow('Close this game');
   await expect(ipc('update-settings', { market: 'GB' })).rejects.toThrow('Another Xodus');
   await ipc('cancel-download', cancel); h.downloads[0].finish(1);
   await vi.waitFor(() => expect(h.downloads).toHaveLength(2));

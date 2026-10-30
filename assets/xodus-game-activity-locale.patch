@@ -1,0 +1,69 @@
+diff --git a/crates/xodus-cli/src/commands/game_activity.rs b/crates/xodus-cli/src/commands/game_activity.rs
+--- a/crates/xodus-cli/src/commands/game_activity.rs
++++ b/crates/xodus-cli/src/commands/game_activity.rs
+@@ -58,6 +58,13 @@
+     Ok(date.filter(|s| (20..=40).contains(&s.len()) && s.is_ascii() && !s.chars().any(char::is_control)).map(str::to_owned))
+ }
+ 
++fn history_request(client: &reqwest::Client, authorization: &str, xuid: &str, title_id: u32) -> reqwest::RequestBuilder {
++    client.get(format!("https://titlehub.xboxlive.com/users/xuid({xuid})/titles/titleid({title_id})/decoration/TitleHistory"))
++        .header("Authorization", authorization).header("x-xbl-contract-version", "2")
++        // Title Hub rejects requests without a valid locale, including history reads.
++        .header("Accept-Language", "en-US")
++}
++
+ async fn lookup(tokens: &TokenManager, title_id: u32) -> Result<Value, &'static str> {
+     let (client, authorization, account) = xbox_session(tokens).await?;
+     let response = client.get("https://profile.xboxlive.com/users/me/profile/settings?settings=Gamertag")
+@@ -76,8 +83,7 @@
+         minutes(&serde_json::from_slice(&bytes).map_err(|_| "stats-json")?, &xuid, title_id)
+     };
+     let history = async {
+-        let response = client.get(format!("https://titlehub.xboxlive.com/users/xuid({xuid})/titles/titleid({title_id})/decoration/detail"))
+-            .header("Authorization", &authorization).header("x-xbl-contract-version", "2")
++        let response = history_request(&client, &authorization, &xuid, title_id)
+             .send().await.map_err(|_| "title-request")?;
+         let bytes = bounded(response, 256 * 1024).await?;
+         last_played(&serde_json::from_slice(&bytes).map_err(|_| "title-json")?, &xuid, title_id)
+@@ -139,4 +145,41 @@
+         assert!(last_played(&v,"456",42).is_err());
+         assert!(last_played(&v,"123",43).is_err());
+     }
++
++    #[tokio::test]
++    async fn activity_history_reads_date_from_locale_required_service() {
++        use std::{io::{Read, Write}, net::TcpListener};
++        let server = TcpListener::bind("127.0.0.1:0").unwrap();
++        let address = server.local_addr().unwrap();
++        let worker = std::thread::spawn(move || {
++            let (mut stream, _) = server.accept().unwrap();
++            stream.set_read_timeout(Some(Duration::from_secs(5))).unwrap();
++            let mut request = Vec::new();
++            while !request.ends_with(b"\r\n\r\n") && request.len() < 8192 {
++                let mut byte = [0];
++                if stream.read(&mut byte).unwrap() == 0 { break; }
++                request.push(byte[0]);
++            }
++            let request = String::from_utf8(request).unwrap().to_ascii_lowercase();
++            let valid = request.lines().any(|line| line == "accept-language: en-us");
++            let history = request.starts_with("get /users/xuid(123)/titles/titleid(42)/decoration/titlehistory ");
++            let (status, body) = if valid && history {
++                ("200 OK", r#"{"xuid":"123","titles":[{"titleId":"42","titleHistory":{"lastTimePlayed":"2026-10-19T10:00:00.123456700Z","visible":true}}]}"#)
++            } else if valid {
++                ("200 OK", r#"{"xuid":"123","titles":[{"titleId":"42","titleHistory":null}]}"#)
++            } else {
++                ("400 Bad Request", r#"["Request does not contain the Accept-Language header, with valid locale value"]"#)
++            };
++            write!(stream, "HTTP/1.1 {status}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}", body.len()).unwrap();
++        });
++        let client = reqwest::Client::builder().timeout(Duration::from_secs(5)).build().unwrap();
++        let mut request = history_request(&client, "synthetic-test-authorization", "123", 42).build().unwrap();
++        // Redirect only the test's transport, retaining the production request headers and path.
++        *request.url_mut() = reqwest::Url::parse(&format!("http://{address}{}", request.url().path())).unwrap();
++        let response = client.execute(request).await.unwrap();
++        let bytes = bounded(response, 256 * 1024).await;
++        worker.join().unwrap();
++        let value: Value = serde_json::from_slice(&bytes.expect("history service rejected the request")).unwrap();
++        assert_eq!(last_played(&value, "123", 42).unwrap().as_deref(), Some("2026-10-19T10:00:00.123456700Z"));
++    }
+ }

@@ -68,3 +68,21 @@ it('keeps incomplete imports identifiable even while their drawer is closed', ()
   expect(html).toContain('title="Sample incomplete installation"');
   expect(html).toContain('Incomplete</span>');
 });
+
+it('keeps Play available during a background update check and offers a way to stop the check (#480)', () => {
+  const data = demoSnapshot();
+  data.gameUpdates = { [data.games[0].id]: { checking: true } };
+  expect(render(data)).toContain('Stop checking updates');
+  expect(play(render(data, true))).not.toContain('disabled');
+});
+
+it('allows an available game update to queue behind a different game download (#480)', () => {
+  const data = demoSnapshot();
+  data.gameUpdates = { [data.games[0].id]: { checking: false, available: true, latestVersion: '2.0.0.0' } };
+  data.downloads = [{id:'other-download',gameId:'different-game',productId:'9AAAAAAAAAAA',title:'Other game',destination:'/other-game',status:'running',progress:0,phase:'',log:[],startedAt:''}];
+  const button = render(data, true).match(/<button\b[^>]*>(?:(?!<\/button>)[\s\S])*?Update game<\/button>/)?.[0];
+  expect(button).toBeDefined(); expect(button).not.toContain('disabled');
+  data.downloads[0].gameId = data.games[0].id;
+  const locked = render(data, true).match(/<button\b[^>]*>(?:(?!<\/button>)[\s\S])*?Update game<\/button>/)?.[0];
+  expect(locked).toContain('disabled');
+});

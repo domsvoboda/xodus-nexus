@@ -21,6 +21,8 @@ const nativeSocial:XboxSocialApi={
   sendXboxMessage: (account,xuid,text) => ipcRenderer.invoke('xbox-social-send',account,xuid,text),
 };
 const api: LauncherApi = {
+  onLauncherPage:callback=>{const listener=(_event:Electron.IpcRendererEvent,page:Parameters<typeof callback>[0])=>callback(page);ipcRenderer.on('launcher-page',listener);return()=>ipcRenderer.removeListener('launcher-page',listener);},
+  showTouchKeyboard:()=>ipcRenderer.invoke('show-touch-keyboard'),
   setXboxOverlayRecording:recording=>ipcRenderer.invoke('xbox-overlay-recording',recording),
  getXboxDesktopProfile:()=>ipcRenderer.invoke('xbox-desktop-profile'),
  onXboxDesktopProfile:callback=>{const listener=(_event:Electron.IpcRendererEvent,request:Parameters<typeof callback>[0])=>callback(request);ipcRenderer.on('xbox-desktop-profile',listener);return()=>ipcRenderer.removeListener('xbox-desktop-profile',listener);},
@@ -99,6 +101,7 @@ const api: LauncherApi = {
   installLauncherUpdate: () => ipcRenderer.invoke('install-launcher-update'),
   restartLauncher: () => ipcRenderer.invoke('restart-launcher'),
   rollbackLauncherUpdate: () => ipcRenderer.invoke('rollback-launcher-update'),
+  stopGameUpdateCheck: () => ipcRenderer.invoke('stop-game-update-check'),
   checkGameUpdates: (id?: string) => ipcRenderer.invoke('check-game-updates', id),
   readDiagnosticLog: (id: string) => ipcRenderer.invoke('read-diagnostic-log', id),
   copyDiagnosticLog: (id: string) => ipcRenderer.invoke('copy-diagnostic-log', id),
