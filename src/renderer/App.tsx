@@ -746,6 +746,8 @@ export function LibraryPage({ data, toast, filters, onFiltersChange, selection }
 
   const selectedOperation = selected && data.gameOperation?.gameId === selected.id ? data.gameOperation : undefined;
   const gameBusy = Boolean(selectedOperation && ['preparing', 'running', 'stopping'].includes(selectedOperation.status));
+  // A graceful close can take a while (the game uploads its saves on exit); a second Stop forces it.
+  const gameClosing = selectedOperation?.kind === 'launch' && selectedOperation.status === 'stopping';
   const launchOptions = useGameLaunchOptions(selected, data);
   const menuGame = data.games.find((game) => game.id === menu?.id);
   const modalGame = data.games.find((game) => game.id === dialogGame?.id);
@@ -768,8 +770,8 @@ export function LibraryPage({ data, toast, filters, onFiltersChange, selection }
     contentDisabled: !game.storeId || data.auth.stored !== true || !data.backend.capabilities.library,
   });
   const selectedPanel = catalogProduct&&detailVisible?<CatalogGameDetails key={catalogProduct.productId+catalogScope} product={catalogProduct} data={data} back={()=>setDetailOpen(false)} toast={toast}/>:!catalogSelection&&selected&&detailVisible ? <GameDetails key={`${selected.id}:${data.auth.username}:${data.auth.stored}:${data.auth.running}:${data.backend.binaryPath}:${data.settings.market}`} game={selected} data={data} back={() => setDetailOpen(false)} play={<>
-          <button className="primary" data-gamepad-play disabled={gameBusy || selected.installState !== 'ready' || !data.backend.capabilities.run || !(data.settings.winePath || data.runtime.winePath)} onClick={() => play()}>{gameBusy ? <LoaderCircle className="spin" /> : <Play fill="currentColor" />}{gameBusy ? ui("ui.working_5474eef") : ui("ui.play_436e610")}</button>
-          {gameBusy && !(selectedOperation?.kind === 'prerequisite' && selectedOperation.status === 'running') ? <button className="secondary danger" onClick={stopGame}><X />{ui("ui.stop_cae7d57")}</button> : null}
+          <button className="primary" data-gamepad-play disabled={gameBusy || selected.installState !== 'ready' || !data.backend.capabilities.run || !(data.settings.winePath || data.runtime.winePath)} onClick={() => play()}>{gameBusy ? <LoaderCircle className="spin" /> : <Play fill="currentColor" />}{gameClosing ? ui("ui.closing_abdb0cf") : gameBusy ? ui("ui.working_5474eef") : ui("ui.play_436e610")}</button>
+          {gameBusy && !(selectedOperation?.kind === 'prerequisite' && selectedOperation.status === 'running') ? <button className="secondary danger" onClick={stopGame} title={gameClosing ? ui("ui.ends_the_game_now_saves_it_has_not_uploaded_yet_ab13b6e") : undefined}><X />{gameClosing ? ui("ui.force_stop_3112cbb") : ui("ui.stop_cae7d57")}</button> : null}
         </>} manage={<GameMenuActions {...managementProps(selected)} />} technical={<dl><div><dt>{ui("ui.store_id_4a3eac6")}</dt><dd>{selected.storeId ?? ui("ui.not_found_e3ebaa1")}</dd></div><div><dt>{ui("ui.executable_72cd8a6")}</dt><dd>{selected.executable ?? ui("ui.not_found_e3ebaa1")}</dd></div><div><dt>{ui("ui.location_15b6197")}</dt><dd>{selected.path}</dd></div></dl>} notices={<>
       {selected.installMessage ? <div className="alert amber"><CircleAlert /><span>{uiText(selected.installMessage)}</span></div> : null}
       <div className="game-update-status">{data.gameUpdates?.[selected.id]?.available ? <p className="success-text">{ui("ui.update_available_0ed88ac")}{' '}{selected.installedVersion ?? ui('game.installed_version')} → {data.gameUpdates[selected.id].latestVersion}</p> : data.gameUpdates?.[selected.id]?.available === false ? <p>{ui("ui.up_to_date_0aa8a28")}{' '}{data.gameUpdates[selected.id].latestVersion}</p> : null}{data.gameUpdates?.[selected.id]?.error ? <p className="error-text">{uiText(data.gameUpdates[selected.id].error)}</p> : null}</div>

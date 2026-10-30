@@ -14,6 +14,7 @@
 - Open the running Steam client’s on-screen keyboard when a text field is tapped on a touchscreen.
 
 - Suggest DLC owned through a bundle when a game starts from a Steam shortcut or right after the launcher opens: the launch now loads the account's owned products while it prepares (waiting at most 2.5 s, skipped offline) instead of using them only when the Library page had loaded them recently.
+- Close games like a user when you press Stop, so their cloud saves can finish uploading; a second Stop forces the game to end. Builds without the close helper stop games as before. Thanks @indiesaudi.
 - Add native arm64 launcher and backend builds, with architecture-aware downloads and updates. Thanks @indiesaudi.
 
 - Overlap local data verification and staged writes during game updates without changing checkpoint recovery.
