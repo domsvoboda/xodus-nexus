@@ -5,7 +5,7 @@ import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 import { createHash } from 'node:crypto';
 import { expect, it } from 'vitest';
-import { GameShortcuts, shortcutLauncherPath, desktopArgument, shortcutArguments, shortcutInstanceData, shortcutInstanceRequest, shortcutTitleStem } from './game-shortcuts.js';
+import { GameShortcuts, shortcutLauncherPath, desktopArgument, launchErrorArgument, launchErrorMessage, shortcutArguments, shortcutInstanceData, shortcutInstanceRequest, shortcutTitleStem } from './game-shortcuts.js';
 import { ShortcutLaunch } from './shortcut-launch.js';
 
 const execute = promisify(execFile);
@@ -66,7 +66,7 @@ it('creates Steam launch descriptions without unwanted desktop/menu entries and 
     expect(steam.executable).toBe('"/bin/sh"');
     expect(steam.options).toContain('"' + id + '"');
     expect((await execute('/bin/sh', [path.join(f.locations.userData, 'shortcuts/launch-game'), id])).stdout.trim())
-      .toBe(`--nexus-profile ${f.locations.userData} --launch-game ${id}`);
+      .toBe(`--nexus-client --nexus-profile ${f.locations.userData} --launch-game ${id}`);
     const nexus = await f.shortcuts.steamLaunch();
     expect(nexus.title).toBe('Xodus Nexus');
     expect(nexus.identity).not.toBe(steam.identity);
@@ -101,7 +101,7 @@ it('creates profile-scoped desktop/menu entries and starts the launcher, not the
     expect((await fs.stat(menu)).mode & 0o777).toBe(0o644);
     const entry = path.join(f.locations.userData, 'shortcuts/launch-game');
     const result = await execute(entry, [id]);
-    expect(result.stdout.trim()).toBe(`--nexus-profile ${f.locations.userData} --launch-game ${id}`);
+    expect(result.stdout.trim()).toBe(`--nexus-client --nexus-profile ${f.locations.userData} --launch-game ${id}`);
     const before = await fs.readFile(target, 'utf8');
     // AppImage update replaces the file at the same path; shortcut stays valid.
     await fs.rename(f.locations.launcher, `${f.locations.launcher}.old`);
@@ -216,6 +216,17 @@ it('parses only validated shortcut requests and escapes desktop Exec separately 
   for (const argv of [['--launch-game'], ['--launch-game', '../game'], ['--launch-game', id, '--launch-game', id],
     ['--nexus-profile', 'relative'], ['--nexus-profile', '/x\nExec=evil']]) expect(() => shortcutArguments(argv)).toThrow();
   expect(desktopArgument('/a b/100%/"$`\\')).toBe('"/a b/100%%/\\\\"\\\\$\\\\`\\\\\\\\"');
+});
+
+it('carries a refused launch to the dialog-only mode as one sanitized switch', () => {
+  const message = 'Offline play requires a compatible Nexus backend and runtime.  --launch-game ' + id;
+  const argv = ['--nexus-profile', '/p', launchErrorArgument(message), '--ozone-platform=wayland'];
+  expect(launchErrorMessage(argv)).toBe('Offline play requires a compatible Nexus backend and runtime.  --launch-game ' + id);
+  // The dialog mode never launches a game, whatever the message contains.
+  expect(shortcutArguments(argv)).toEqual({});
+  expect(launchErrorMessage(['--launch-game', id])).toBeUndefined();
+  expect(launchErrorMessage([launchErrorArgument('')])).toBe('The game could not be launched.');
+  expect(launchErrorArgument('x'.repeat(5000)).length).toBeLessThan(2100);
 });
 
 it('hands off the original request independently of Chromium switch reordering', () => {

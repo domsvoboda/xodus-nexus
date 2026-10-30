@@ -1,6 +1,7 @@
 import {expect,it,vi} from 'vitest';
 import {createConnection} from 'node:net';
-import {GameInviteBridge,encodeInviteFields,decodeInviteFields,combinedInviteState} from './game-invite-bridge';
+import {GameInviteBridge,encodeInviteFields,decodeInviteFields,combinedInviteState,relatedProductsVerb} from './game-invite-bridge';
+import type {RelatedPoll} from './content-service';
 import {validateGameInviteUri} from '../shared/game-invites';
 const id='12345678-1234-1234-1234-123456789abc',scid='87654321-4321-4321-4321-cba987654321';
 const uri=`ms-xbl-multiplayer://inviteHandleAccept?handle=${id}&invitedXuid=42&senderXuid=43&context=`;
@@ -68,4 +69,28 @@ it('authenticates an actual loopback frame and tears down only its own listener'
     });expect(response.readUInt32LE(4)).toBe(0);expect(decodeInviteFields(response.subarray(8))).toEqual([]);
   }finally{await bridge.stop();}
   expect(bridge.exchange(['hello','42','123'])[0]).not.toBe(0);
+});
+it('answers the launched game\'s related-product lookup on its own key, and only for that game',async()=>{
+  let poll:RelatedPoll={state:'pending'};const asked=vi.fn(()=>poll);
+  const bridge=new GameInviteBridge('own','Synthetic Game','',()=>true,vi.fn(),vi.fn(),()=>1000).verb('related',relatedProductsVerb('9NBLGGH4R315',asked));
+  expect(bridge.exchange(['related','9NBLGGH4R315','US'])).toEqual([0x8000000a,[]]);
+  poll={state:'done',ids:['9P1J8S7CCWWT','9NFKN8RD4HZ3']};
+  expect(bridge.exchange(['related','9NBLGGH4R315','GB'])).toEqual([0,['9P1J8S7CCWWT,9NFKN8RD4HZ3']]);
+  expect(bridge.exchange(['related','9P1J8S7CCWWT','US'])[0]).toBe(0x80070005);
+  for(const args of [['9NBLGGH4R315'],['9nblggh4r315','US'],['9NBLGGH4R315','usa']])expect(bridge.exchange(['related',...args])[0]).toBe(0x80070057);
+  expect(asked).toHaveBeenCalledTimes(2);
+  poll={state:'failed'};expect(bridge.exchange(['related','9NBLGGH4R315','US'])[0]).toBe(0x80004005);
+  // Without a title the invite verbs stay closed.
+  expect(bridge.exchange(['hello','42',''])[0]).not.toBe(0);
+  await bridge.start();
+  try{
+    const ask=(key:string)=>new Promise<Buffer>(resolve=>{
+      const socket=createConnection(bridge.port,'127.0.0.1');const chunks:Buffer[]=[];socket.on('error',()=>resolve(Buffer.concat(chunks)));socket.on('data',b=>chunks.push(b));socket.on('close',()=>resolve(Buffer.concat(chunks)));
+      socket.on('connect',()=>{const body=encodeInviteFields(['related','9NBLGGH4R315','US']),header=Buffer.alloc(8);header.write('NXSI');header.writeUInt32LE(body.length,4);socket.write(Buffer.concat([Buffer.from(key),header,body]));});
+    });
+    expect((await ask('0'.repeat(64))).length).toBe(0);
+    poll={state:'done',ids:['9P1J8S7CCWWT']};const response=await ask(bridge.key);
+    expect(response.readUInt32LE(4)).toBe(0);expect(decodeInviteFields(response.subarray(8))).toEqual(['9P1J8S7CCWWT']);
+  }finally{await bridge.stop();}
+  expect(bridge.exchange(['related','9NBLGGH4R315','US'])[0]).toBe(0x80070005);
 });

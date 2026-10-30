@@ -22,6 +22,8 @@ function fixture(){
     shutdownStarted:false,keyringSupport:{busy:false},downloadCancellations:new Set(),preparingInstall:false,preparingContent:false,preparingLaunch:false,finalizingGame:false,
     launcherUpdater:{state:{updating:false}},checkingGameUpdates:false,gameRemovalInProgress:false,assertActivityCompatible:vi.fn(),operations:new Map(),gameOperation:undefined,installQueue:{size:0},runtime:{current:{updating:false}},
     accountRefresh:{invalidate:vi.fn()},prepareSystemWallet:wallet,offlineLaunchSupported:async()=>true,offlineLicenseCache:async()=>'/fixture/cache',backendRunner:(binary:string)=>binary,readOfflinePermissions:read,changeOfflinePermissions:change,settleOfflinePermissions:settle};
+  // ensureIdle guards against the shown game, which is the local one without a daemon.
+  context.visibleGameOperation=()=>context.gameOperation;
   runInNewContext(code,context);
   return {authState,backend,store,read,change,settle,wallet,status,checkIdle:()=>context.checkIdle(),call:(name:string,...args:unknown[])=>handlers.get(name)!(undefined,...args)};
 }
