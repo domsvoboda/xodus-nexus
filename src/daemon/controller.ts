@@ -66,6 +66,8 @@ export interface InviteNotice { notice: 'choose' | 'invitation'; game: string; s
 
 /** How long a launch waits for the previous game to finish closing; above graceful.ts's close and stop waits. */
 const CLOSE_QUEUE_MS = 45_000;
+/** At most this often a state publish from game output; status changes publish at once. */
+const PUBLISH_INTERVAL_MS = 250;
 
 type Running ={ kind: 'launched'; active: ActiveGame } | { kind: 'adopted'; game: AdoptedGame; finished: Promise<void> };
 
@@ -105,6 +107,8 @@ export class GameController {
   /** Ends the running game's STEAM_GAME marker, which also hands the screen back to Steam. */
   private stopFocus: (() => void) | undefined;
   private maintenance: ReturnType<typeof setInterval> | undefined;
+  /** A coalesced state publish: game output changes the state once per line. */
+  private publishTimer: ReturnType<typeof setTimeout> | undefined;
   private readonly stateListeners = new Set<(state: DaemonState) => void>();
   private readonly logListeners = new Set<(operationId: string, line: string) => void>();
   private readonly exitListeners = new Set<(operationId: string, code: number | null, status: 'complete' | 'failed', message?: string) => void>();
@@ -142,7 +146,9 @@ export class GameController {
         return { roots: (game) => content.roots(game), relatedProducts: (game) => content.relatedProducts(game, {}, daemonMarket(this.store.settings.market, { ...process.env, ...this.clientEnvironment })) };
       },
       inviteBridge: (operationId, game, titleId, log) => this.startInvites(operationId, game.title, titleId, log),
-      onChange: () => this.publish(),
+      // Each state carries the last 250 log lines; publishing it per line of a noisy game floods the
+      // clients' sockets until a write fails (ENOBUFS) and the game closes with its Steam client.
+      onChange: (_operation, _operationId, immediate) => { if (immediate) this.publish(); else this.publishSoon(); },
       onLog: (operationId, line) => { for (const listener of this.logListeners) listener(operationId, line); },
       outputToFile: true,
     });
@@ -163,6 +169,7 @@ export class GameController {
   async stop(): Promise<void> {
     this.stopped = true;
     if (this.maintenance) clearInterval(this.maintenance);
+    if (this.publishTimer) { clearTimeout(this.publishTimer); this.publishTimer = undefined; }
     if (this.orphanTimer) clearTimeout(this.orphanTimer);
     this.connectivity.stop();
     await this.walletUnlocker.stop();
@@ -435,7 +442,12 @@ export class GameController {
     }
   }
 
+  private publishSoon(): void {
+    this.publishTimer ??= setTimeout(() => this.publish(), PUBLISH_INTERVAL_MS);
+  }
+
   private publish(): void {
+    if (this.publishTimer) { clearTimeout(this.publishTimer); this.publishTimer = undefined; }
     const state = this.state();
     for (const listener of this.stateListeners) listener(state);
   }

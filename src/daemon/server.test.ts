@@ -82,6 +82,25 @@ describe.skipIf(!linux)('DaemonServer', () => {
   });
   afterEach(async () => { server.close(); await new Promise<void>(resolve => net.close(() => resolve())); await fs.rm(root, { recursive: true, force: true }); });
 
+  it('skips log lines for an owner that stops reading instead of dropping it', async () => {
+    const client = await TestClient.connect(socketPath);
+    client.send({ schema: 1, type: 'hello', client: 'steam', version: '1' });
+    await client.until(frame => frame.type === 'hello');
+    client.send({ schema: 1, type: 'launch', requestId: 'r1', gameId: '0123456789abcdef', env: {}, attach: true });
+    await client.until(frame => frame.type === 'accepted');
+    client.socket.pause();
+    const line = 'x'.repeat(4000);
+    for (let i = 0; i < 2000; i++) controller.emitLog('game-0123456789abcdef', line);
+    client.socket.resume();
+    await new Promise(resolve => setTimeout(resolve, 300));
+    controller.emitLog('game-0123456789abcdef', 'after');
+    controller.emitExit('game-0123456789abcdef', 0, 'complete');
+    await client.until(frame => frame.type === 'exit');
+    expect(client.frames.some(frame => frame.type === 'log' && /log lines skipped/.test(frame.line))).toBe(true);
+    expect(client.frames.filter(frame => frame.type === 'log').length).toBeLessThan(2000);
+    expect(controller.lost).toEqual([]);
+  });
+
   it('handshakes, launches for an owning client, streams logs and reports exit', async () => {
     const client = await TestClient.connect(socketPath);
     client.send({ schema: 1, type: 'hello', client: 'steam', version: '1' });
