@@ -923,6 +923,7 @@ export function SettingsPage({ data, toast }: { data: AppSnapshot; toast: (value
         <option value="system">{ui('settings.system_language')}</option>
         {interfaceLanguages.map(language => <option key={language} value={language}>{new Intl.DisplayNames([language], { type: 'language' }).of(language) ?? language}</option>)}
       </select></label>
+      <label>{ui('settings.interface_scale')}<select aria-label={ui('settings.interface_scale')} value={form.uiScale ?? 0} disabled={Boolean(busy)} onChange={(event) => { const uiScale = Number(event.target.value); setForm({ ...form, uiScale }); invoke('ui-scale', () => window.launcher.updateSettings({ uiScale })); }}><option value={0}>{ui('settings.interface_scale_auto')}</option>{[1, 1.25, 1.5, 1.75, 2].map((scale) => <option key={scale} value={scale}>{scale * 100}%</option>)}</select></label>
       <div className="save-row"><span>{ui('settings.language_help')}</span><button className="primary" disabled={Boolean(busy)} onClick={() => invoke('save-language', () => window.launcher.updateSettings({ interfaceLanguage: form.interfaceLanguage ?? 'system' }), ui('settings.language_saved'))}>{ui('settings.save_language')}</button></div>
     </section>
 
