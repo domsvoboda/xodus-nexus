@@ -11,6 +11,7 @@
 - Show unread conversations and game updates in a notification bell beside the account, and open chats at the latest message.
 - Reduce disk space and downloads for game updates by reusing verified local data, and support recovery of interrupted updates. Thanks @Rbanh.
 - Remove abandoned temporary game launch directories while preserving active sessions and directories without a usable session lock. Thanks @xerhab.
+- Start offline launches about 5 seconds sooner: additional DLC discovery no longer waits for the unreachable Store catalog and uses the content installed on the device. Thanks @indiesaudi.
 - Add **Settings → Offline permissions** and lease-checked offline launches with a compatible runtime. Each game needs an online launch after designating the device. Thanks @indiesaudi.
 - Remove stored offline licenses and offline sign-ins whenever offline play ends: turning it off, Microsoft reporting another device as the offline device, another account, sign-out, or a licensing refusal.
 - Fix Xbox sign-in, downloads and profiles failing with "Xbox authentication request failed" for accounts that receive compact JWE delegation tickets; other tickets are unchanged. Thanks @burghr.
