@@ -1,0 +1,334 @@
+diff --git a/crates/xodus-cli/src/commands/run.rs b/crates/xodus-cli/src/commands/run.rs
+index b5957bc..dd0e5b3 100644
+--- a/crates/xodus-cli/src/commands/run.rs
++++ b/crates/xodus-cli/src/commands/run.rs
+@@ -1,6 +1,6 @@
+ use std::collections::{HashMap, HashSet};
+ use std::os::fd::{AsFd, AsRawFd, FromRawFd, RawFd};
+-use std::os::unix::fs::{FileExt, PermissionsExt, symlink};
++use std::os::unix::fs::{FileExt, MetadataExt, PermissionsExt, symlink};
+ use std::os::unix::process::ExitStatusExt;
+ use std::path::{Path, PathBuf};
+ use std::process::ExitCode;
+@@ -472,11 +472,61 @@ fn create_launch_chain_mirror(
+     source_root: &Path,
+     entry_suffix: &str,
+     fds: &[(&String, RawFd)],
++) -> std::io::Result<(LaunchView, PathBuf, usize, u64)> {
++    create_launch_view(source_root, entry_suffix, fds, false, None)
++}
++
++// A full launch view must never be readable by other users: the directory that
++// holds it is an absolute, owner-only (0700), non-symlinked directory of ours.
++fn checked_view_directory(directory: &Path) -> std::io::Result<()> {
++    let denied = |message: &str| std::io::Error::new(std::io::ErrorKind::PermissionDenied, message.to_string());
++    if !directory.is_absolute() {
++        return Err(denied("the launch view directory must be an absolute path"));
++    }
++    let metadata = std::fs::symlink_metadata(directory)?;
++    if !metadata.file_type().is_dir() {
++        return Err(denied("the launch view directory is not a plain directory"));
++    }
++    // /proc/self belongs to this process's user; no extra nix/rustix features needed.
++    if metadata.uid() != std::fs::metadata("/proc/self")?.uid() || metadata.mode() & 0o077 != 0 {
++        return Err(denied("the launch view directory must be owned by this user with mode 0700"));
++    }
++    Ok(())
++}
++
++// Copies one decrypted image as is. Unlike the launch stub writer it accepts
++// encrypted files that are not PE images, which a full view must also contain.
++fn copy_decrypted_image(path: &Path, fd: RawFd) -> std::io::Result<u64> {
++    // Borrow the decrypted memfd without taking ownership; it is closed with the image.
++    let image = std::mem::ManuallyDrop::new(unsafe { std::fs::File::from_raw_fd(fd) });
++    let image_len = image.metadata()?.len();
++    let output = std::fs::OpenOptions::new().write(true).create_new(true).open(path)?;
++    let mut buffer = vec![0u8; 1024 * 1024];
++    let mut offset = 0u64;
++    while offset < image_len {
++        let bytes = (image_len - offset).min(buffer.len() as u64) as usize;
++        image.read_exact_at(&mut buffer[..bytes], offset)?;
++        output.write_all_at(&buffer[..bytes], offset)?;
++        offset += bytes as u64;
++    }
++    output.set_permissions(std::fs::Permissions::from_mode(0o700))?;
++    Ok(image_len)
++}
++
++// `all` materializes every decrypted file (not only executables), so the view
++// needs no WINE_DLL_FILE_MAP and runs on any Wine. It is then created only in
++// the checked `view_parent`, never next to the game on a shared filesystem.
++fn create_launch_view(
++    source_root: &Path,
++    entry_suffix: &str,
++    fds: &[(&String, RawFd)],
++    all: bool,
++    view_parent: Option<&Path>,
+ ) -> std::io::Result<(LaunchView, PathBuf, usize, u64)> {
+     let entry_path = checked_relative_path(entry_suffix)?;
+     let mut decrypted = HashMap::new();
+     for (name, fd) in fds {
+-        if name.to_ascii_lowercase().ends_with(".exe") || checked_relative_path(name)? == entry_path {
++        if all || name.to_ascii_lowercase().ends_with(".exe") || checked_relative_path(name)? == entry_path {
+             decrypted.insert(checked_relative_path(name)?, *fd);
+         }
+     }
+@@ -498,7 +548,25 @@ fn create_launch_chain_mirror(
+         }
+     }
+     let decrypted_files: HashSet<PathBuf> = decrypted.keys().cloned().collect();
+-    let mirror = launch_view_directory(source_root, ".xodus-chain-")?;
++    let mirror = match view_parent {
++        Some(view_parent) => {
++            checked_view_directory(view_parent)?;
++            // Views a killed session left in the private directory go first;
++            // live ones keep their lock and stay.
++            sweep_and_report(view_parent);
++            LaunchView::new(Builder::new().prefix(".xodus-chain-").tempdir_in(view_parent)?)
++        }
++        None if all => {
++            return Err(std::io::Error::new(
++                std::io::ErrorKind::InvalidInput,
++                "a full launch view requires a private view directory",
++            ));
++        }
++        None => launch_view_directory(source_root, ".xodus-chain-")?,
++    };
++    // tempfile creates the directory with the umask's mode (often 0755); the
++    // decrypted images inside must be readable by this user only.
++    std::fs::set_permissions(mirror.path(), std::fs::Permissions::from_mode(0o700))?;
+     populate_launch_view(
+         source_root,
+         mirror.path(),
+@@ -508,7 +576,12 @@ fn create_launch_chain_mirror(
+     )?;
+     let mut bytes = 0;
+     for (relative, fd) in &decrypted {
+-        bytes += write_launch_stub(&mirror.path().join(relative), *fd, true)?;
++        let executable = relative.to_string_lossy().to_ascii_lowercase().ends_with(".exe") || *relative == entry_path;
++        bytes += if executable {
++            write_launch_stub(&mirror.path().join(relative), *fd, true)?
++        } else {
++            copy_decrypted_image(&mirror.path().join(relative), *fd)?
++        };
+     }
+     let executable_count = decrypted.len();
+     let entry = mirror.path().join(entry_path);
+@@ -720,11 +793,21 @@ pub async fn run(
+     exe: Option<String>,
+     materialize_exe: bool,
+     materialize_chain: bool,
++    materialize_all: bool,
++    view_dir: Option<String>,
+     market: Option<String>,
+     license_cache: Option<String>,
+     offline: bool,
+ ) -> ExitCode {
+     let mut lfiles: HashMap<String, SegmentFile> = HashMap::new();
++    let materialize_chain = materialize_chain || materialize_all;
++    let view_dir = view_dir.map(PathBuf::from);
++    if let Some(view_dir) = &view_dir {
++        if let Err(err) = checked_view_directory(view_dir) {
++            eprintln!("refusing the launch view directory {}: {}", view_dir.display(), err);
++            return ExitCode::FAILURE;
++        }
++    }
+ 
+     let out: &Path = Path::new(&source);
+     let _installation_guard = match crate::installation_state::launch_guard(out) {
+@@ -859,11 +942,12 @@ pub async fn run(
+     let entry_suffix = entry_name.trim_start_matches('\\');
+ 
+     let (launch_mirror, stub_path, mirror_nt_prefix) = if materialize_chain {
+-        match create_launch_chain_mirror(&out_absolute, entry_suffix, &fds) {
++        match create_launch_view(&out_absolute, entry_suffix, &fds, materialize_all, view_dir.as_deref()) {
+             Ok((mirror, path, count, bytes)) => {
+                 eprintln!(
+-                    "created a temporary launch view with {} decrypted executables ({} bytes) at {}",
++                    "created a temporary launch view with {} decrypted {} ({} bytes) at {}",
+                     count,
++                    if materialize_all { "files" } else { "executables" },
+                     bytes,
+                     mirror.path().display()
+                 );
+@@ -927,10 +1011,27 @@ pub async fn run(
+     }
+ 
+     let mut command = Command::new(wine);
+-    command
+-        .arg(&stub_path)
+-        .env("WINE_DLL_FILE_MAP", env_value)
+-        .env("WINE_EXE_FILE_MAP", exe_env_value);
++    command.arg(&stub_path);
++    if materialize_all {
++        // Every image is a real file in the view: no file maps, and the
++        // decrypted memfds are not inherited by Wine, Proton or the game.
++        for (name, image) in &opened_images {
++            let closed = fcntl_getfd(image.as_fd()).and_then(|mut flags| {
++                flags.insert(FdFlags::CLOEXEC);
++                fcntl_setfd(image.as_fd(), flags)
++            });
++            if let Err(err) = closed {
++                eprintln!("failed to prepare launch: {}", launch_image_error(name, "could not close file descriptor on exec", err.into()));
++                drop(launch_mirror);
++                cleanup().await;
++                return ExitCode::FAILURE;
++            }
++        }
++    } else {
++        command
++            .env("WINE_DLL_FILE_MAP", env_value)
++            .env("WINE_EXE_FILE_MAP", exe_env_value);
++    }
+     if offline {
+         // The runtime treats the network as unreachable at once instead of
+         // waiting for its own connect timeouts.
+@@ -948,7 +1049,11 @@ pub async fn run(
+     ) {
+         command.env("XODUS_OFFLINE_IDENTITY", mode);
+     }
+-    if offline || crate::license::OFFLINE_LICENSE_USED.load(std::sync::atomic::Ordering::Relaxed) {
++    if materialize_all {
++        // A full view may run under another compatibility tool that logs its
++        // environment; the runtime signs in through its own service bridge.
++        eprintln!("full launch view: not passing a PlayFab token in the environment");
++    } else if offline || crate::license::OFFLINE_LICENSE_USED.load(std::sync::atomic::Ordering::Relaxed) {
+         eprintln!("Microsoft is unreachable; skipping PlayFab authorisation (the runtime signs in with its cached identity)");
+     } else {
+         match playfab_auth_header(client, tokens).await {
+@@ -1402,6 +1507,7 @@ mod tests {
+ 
+         let (mirror, entry, count, bytes) =
+             create_launch_chain_mirror(&source, &launcher_name, &files).unwrap();
++        assert_eq!(std::fs::metadata(mirror.path()).unwrap().mode() & 0o777, 0o700);
+         assert_eq!(entry, mirror.path().join("Dungeons.exe"));
+         assert_eq!(count, 2);
+         assert_eq!(bytes, 2048);
+@@ -1419,6 +1525,76 @@ mod tests {
+         assert_eq!(std::fs::read(nested.join("Shipping.exe")).unwrap(), b"encrypted child");
+     }
+ 
++    fn private_directory(path: &Path) {
++        std::fs::create_dir(path).unwrap();
++        std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o700)).unwrap();
++    }
++
++    #[test]
++    fn full_view_materializes_every_encrypted_file_in_the_private_view_directory() {
++        let root = tempfile::tempdir().unwrap();
++        let source = root.path().join("game");
++        std::fs::create_dir_all(source.join("Bin")).unwrap();
++        std::fs::write(source.join("Game.exe"), b"encrypted launcher").unwrap();
++        std::fs::write(source.join("Bin/Code.dll"), b"encrypted code").unwrap();
++        std::fs::write(source.join("Bin/data.pak"), b"encrypted data").unwrap();
++        std::fs::write(source.join("Bin/assets.bin"), b"plain assets").unwrap();
++        let views = root.path().join("views");
++        private_directory(&views);
++
++        let mut exe = tempfile::tempfile().unwrap();
++        let mut dll = tempfile::tempfile().unwrap();
++        let mut data = tempfile::tempfile().unwrap();
++        exe.write_all(&fake_pe()).unwrap();
++        dll.write_all(&fake_pe()).unwrap();
++        data.write_all(b"decrypted data").unwrap();
++        let (exe_name, dll_name, data_name) = (String::from("Game.exe"), String::from("Bin\\Code.dll"), String::from("Bin\\data.pak"));
++        let files = [(&exe_name, exe.as_raw_fd()), (&dll_name, dll.as_raw_fd()), (&data_name, data.as_raw_fd())];
++
++        let (mirror, entry, count, bytes) = create_launch_view(&source, &exe_name, &files, true, Some(&views)).unwrap();
++        assert!(mirror.path().starts_with(&views));
++        assert_eq!(std::fs::metadata(mirror.path()).unwrap().mode() & 0o077, 0);
++        assert_eq!(entry, mirror.path().join("Game.exe"));
++        assert_eq!((count, bytes), (3, 2048 + 14));
++        assert_eq!(std::fs::read(mirror.path().join("Bin/Code.dll")).unwrap(), fake_pe());
++        assert_eq!(std::fs::read(mirror.path().join("Bin/data.pak")).unwrap(), b"decrypted data");
++        for real in ["Game.exe", "Bin/Code.dll", "Bin/data.pak"] {
++            assert!(std::fs::symlink_metadata(mirror.path().join(real)).unwrap().file_type().is_file());
++        }
++        assert!(std::fs::symlink_metadata(mirror.path().join("Bin/assets.bin")).unwrap().file_type().is_symlink());
++        assert_eq!(std::fs::read(source.join("Bin/Code.dll")).unwrap(), b"encrypted code");
++        drop(mirror);
++        assert_eq!(std::fs::read_dir(&views).unwrap().count(), 0);
++    }
++
++    #[test]
++    fn full_view_requires_a_private_absolute_view_directory() {
++        let root = tempfile::tempdir().unwrap();
++        let source = root.path().join("game");
++        std::fs::create_dir(&source).unwrap();
++        std::fs::write(source.join("Game.exe"), b"encrypted").unwrap();
++        let mut exe = tempfile::tempfile().unwrap();
++        exe.write_all(&fake_pe()).unwrap();
++        let name = String::from("Game.exe");
++        let files = [(&name, exe.as_raw_fd())];
++        assert!(create_launch_view(&source, &name, &files, true, None).is_err());
++
++        let open = root.path().join("open");
++        std::fs::create_dir(&open).unwrap();
++        std::fs::set_permissions(&open, std::fs::Permissions::from_mode(0o755)).unwrap();
++        assert!(checked_view_directory(&open).is_err());
++        assert!(create_launch_view(&source, &name, &files, true, Some(&open)).is_err());
++        assert_eq!(std::fs::read_dir(&open).unwrap().count(), 0);
++
++        let private = root.path().join("private");
++        private_directory(&private);
++        assert!(checked_view_directory(&private).is_ok());
++        let link = root.path().join("link");
++        symlink(&private, &link).unwrap();
++        assert!(checked_view_directory(&link).is_err());
++        assert!(checked_view_directory(Path::new("relative/views")).is_err());
++    }
++
+     #[test]
+     fn launch_chain_rejects_parent_path_components() {
+         assert!(checked_relative_path("..\\outside.exe").is_err());
+diff --git a/crates/xodus-cli/src/installation_state.rs b/crates/xodus-cli/src/installation_state.rs
+index 79138b6..902bc96 100644
+--- a/crates/xodus-cli/src/installation_state.rs
++++ b/crates/xodus-cli/src/installation_state.rs
+@@ -184,7 +184,7 @@ mod tests {
+         let root = tempfile::tempdir().unwrap();
+         begin(root.path()).unwrap();
+         let result = crate::commands::run::run(&reqwest::Client::new(), &xodus::tokens::TokenManager::with_memory(),
+-            root.path().to_string_lossy().into_owned(), "/must-not-run".into(), None, false, false, None, None, false).await;
++            root.path().to_string_lossy().into_owned(), "/must-not-run".into(), None, false, false, false, None, None, None, false).await;
+         assert_eq!(result, std::process::ExitCode::FAILURE);
+     }
+ 
+diff --git a/crates/xodus-cli/src/main.rs b/crates/xodus-cli/src/main.rs
+index 80eea13..b4a0dc8 100644
+--- a/crates/xodus-cli/src/main.rs
++++ b/crates/xodus-cli/src/main.rs
+@@ -171,6 +171,15 @@ enum SubCommand {
+         materialize_exe: bool,
+         #[arg(long, default_value_t = false)]
+         materialize_chain: bool,
++        #[arg(
++            long,
++            default_value_t = false,
++            requires = "view_dir",
++            help = "Write every decrypted package file into a private launch view so any Wine or Proton can run it without file maps"
++        )]
++        materialize_all: bool,
++        #[arg(long = "view-dir", help = "Owner-only directory (mode 0700) that holds the --materialize-all launch view")]
++        view_dir: Option<String>,
+         #[arg(short, long)]
+         market: Option<String>,
+         #[arg(long = "license-cache", help = "Directory for device-bound offline licenses (--license-cache) used when Microsoft is unreachable")]
+@@ -474,6 +483,8 @@ async fn main() -> ExitCode {
+             exe,
+             materialize_exe,
+             materialize_chain,
++            materialize_all,
++            view_dir,
+             market,
+             license_cache,
+             offline,
+@@ -486,6 +497,8 @@ async fn main() -> ExitCode {
+                 exe,
+                 materialize_exe,
+                 materialize_chain,
++                materialize_all,
++                view_dir,
+                 market,
+                 license_cache,
+                 offline,

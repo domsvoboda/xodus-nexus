@@ -1,0 +1,359 @@
+diff --git a/crates/xodus-cli/src/commands/run.rs b/crates/xodus-cli/src/commands/run.rs
+index dd0e5b3..f10811d 100644
+--- a/crates/xodus-cli/src/commands/run.rs
++++ b/crates/xodus-cli/src/commands/run.rs
+@@ -494,6 +494,174 @@ fn checked_view_directory(directory: &Path) -> std::io::Result<()> {
+     Ok(())
+ }
+ 
++// The PlayFab Game Saves SDK exports the Nexus adapter forwards, in export
++// order (scripts/runtime-compat/playfab-save-folder.def in Xodus Nexus).
++const PLAYFAB_SDK_EXPORTS: [&str; 40] = [
++    "PFGameSaveFilesAddUserWithUiAsync",
++    "PFGameSaveFilesAddUserWithUiResult",
++    "PFGameSaveFilesGetFolder",
++    "PFGameSaveFilesGetFolderSize",
++    "PFGameSaveFilesGetRemainingQuota",
++    "PFGameSaveFilesGetSaveDescriptionForDebug",
++    "PFGameSaveFilesGetSaveDescriptionSizeForDebug",
++    "PFGameSaveFilesGetStatsJsonForDebug",
++    "PFGameSaveFilesGetStatsJsonSizeForDebug",
++    "PFGameSaveFilesInitialize",
++    "PFGameSaveFilesIsConnectedToCloud",
++    "PFGameSaveFilesPauseUploadForDebug",
++    "PFGameSaveFilesResetCloudAsync",
++    "PFGameSaveFilesResetCloudResult",
++    "PFGameSaveFilesResumeUploadForDebug",
++    "PFGameSaveFilesSetActiveDeviceChangedCallback",
++    "PFGameSaveFilesSetActiveDevicePollForceChangeForDebug",
++    "PFGameSaveFilesSetActiveDevicePollIntervalForDebug",
++    "PFGameSaveFilesSetForceNullPendingManifestForDebug",
++    "PFGameSaveFilesSetForceOutOfStorageErrorForDebug",
++    "PFGameSaveFilesSetForceSyncFailedErrorForDebug",
++    "PFGameSaveFilesSetMockDataFolderForDebug",
++    "PFGameSaveFilesSetMockDeviceIdForDebug",
++    "PFGameSaveFilesSetMockForceOfflineForDebug",
++    "PFGameSaveFilesSetMockManifestOffsetForDebug",
++    "PFGameSaveFilesSetMockRootFolderForDebug",
++    "PFGameSaveFilesSetSaveDescriptionAsync",
++    "PFGameSaveFilesSetSaveDescriptionResult",
++    "PFGameSaveFilesSetUiActiveDeviceContentionResponse",
++    "PFGameSaveFilesSetUiCallbacks",
++    "PFGameSaveFilesSetUiConflictResponse",
++    "PFGameSaveFilesSetUiOutOfStorageResponse",
++    "PFGameSaveFilesSetUiProgressResponse",
++    "PFGameSaveFilesSetUiSyncFailedResponse",
++    "PFGameSaveFilesSetWriteManifestsToDiskForDebug",
++    "PFGameSaveFilesUiProgressGetProgress",
++    "PFGameSaveFilesUninitializeAsync",
++    "PFGameSaveFilesUninitializeResult",
++    "PFGameSaveFilesUploadWithUiAsync",
++    "PFGameSaveFilesUploadWithUiResult",
++];
++
++fn le16(image: &[u8], at: usize) -> Option<u16> {
++    image.get(at..at.checked_add(2)?).map(|b| u16::from_le_bytes([b[0], b[1]]))
++}
++
++fn le32(image: &[u8], at: usize) -> Option<u32> {
++    image.get(at..at.checked_add(4)?).map(|b| u32::from_le_bytes([b[0], b[1], b[2], b[3]]))
++}
++
++// File offset of `length` bytes at `address`, inside one section's raw data.
++fn pe_offset(image: &[u8], sections: usize, count: usize, address: u32, length: usize) -> Option<usize> {
++    for index in 0..count {
++        let section = sections + index * 40;
++        let (start, raw, offset) = (le32(image, section + 12)?, le32(image, section + 16)? as usize, le32(image, section + 20)? as usize);
++        if address < start {
++            continue;
++        }
++        let within = (address - start) as usize;
++        if within <= raw && length <= raw - within && offset <= image.len() && raw <= image.len() - offset {
++            return Some(offset + within);
++        }
++    }
++    None
++}
++
++// Fail closed, like the runtime's launcher: only the exact x64 SDK export
++// contract the adapter forwards; unknown exports must not vanish behind it.
++fn playfab_sdk_contract(image: &[u8]) -> bool {
++    let check = || -> Option<bool> {
++        if image.len() < 256 || image.len() > 268_435_456 || le16(image, 0)? != 0x5a4d {
++            return Some(false);
++        }
++        let pe = le32(image, 60)? as usize;
++        if image.get(pe..pe.checked_add(4)?)? != b"PE\0\0" || le16(image, pe + 4)? != 0x8664 {
++            return Some(false);
++        }
++        let optional = pe + 24;
++        let (count, size) = (le16(image, pe + 6)? as usize, le16(image, pe + 20)? as usize);
++        let sections = optional + size;
++        if size < 120 || sections > image.len() || le16(image, optional)? != 0x20b || le32(image, optional + 108)? < 1
++            || sections + count * 40 > image.len() {
++            return Some(false);
++        }
++        let exports = pe_offset(image, sections, count, le32(image, optional + 112)?, 40)?;
++        let total = PLAYFAB_SDK_EXPORTS.len() as u32;
++        if le32(image, exports + 20)? != total || le32(image, exports + 24)? != total || le32(image, exports + 16)? != 1 {
++            return Some(false);
++        }
++        let names = pe_offset(image, sections, count, le32(image, exports + 32)?, PLAYFAB_SDK_EXPORTS.len() * 4)?;
++        let ordinals = pe_offset(image, sections, count, le32(image, exports + 36)?, PLAYFAB_SDK_EXPORTS.len() * 2)?;
++        let functions = pe_offset(image, sections, count, le32(image, exports + 28)?, PLAYFAB_SDK_EXPORTS.len() * 4)?;
++        for (index, expected) in PLAYFAB_SDK_EXPORTS.iter().enumerate() {
++            let name = pe_offset(image, sections, count, le32(image, names + index * 4)?, expected.len() + 1)?;
++            if &image[name..name + expected.len()] != expected.as_bytes() || image[name + expected.len()] != 0
++                || le16(image, ordinals + index * 2)? as usize != index || le32(image, functions + index * 4)? == 0 {
++                return Some(false);
++            }
++        }
++        Some(true)
++    };
++    check().unwrap_or(false)
++}
++
++// Writes `bytes` beside `name` and renames it over that entry, so a symlink
++// to a game file is replaced, never followed.
++fn replace_view_entry(directory: &Path, name: &str, bytes: &[u8]) -> std::io::Result<()> {
++    let temporary = directory.join(format!(".nexus-pgs-{}-{name}", std::process::id()));
++    let result = (|| {
++        let mut file = std::fs::OpenOptions::new().write(true).create_new(true).open(&temporary)?;
++        std::io::Write::write_all(&mut file, bytes)?;
++        file.set_permissions(std::fs::Permissions::from_mode(0o644))?;
++        file.sync_all()?;
++        std::fs::rename(&temporary, directory.join(name))
++    })();
++    if result.is_err() {
++        let _ = std::fs::remove_file(&temporary);
++    }
++    result
++}
++
++// The runtime launcher's PlayFab staging for a full launch view, which runs
++// under any Wine: each supported SDK in a real view directory is kept as
++// nexus_pgs_native.dll and the adapter takes its name. Symlinked directories
++// belong to the game installation and are left alone.
++fn stage_playfab_adapter(directory: &Path, adapter: &[u8], depth: usize) -> std::io::Result<usize> {
++    if depth > 64 {
++        return Err(std::io::Error::other("launch view is nested too deeply"));
++    }
++    let mut staged = 0;
++    for item in std::fs::read_dir(directory)? {
++        let item = item?;
++        let kind = item.file_type()?;
++        let name = item.file_name();
++        if kind.is_dir() {
++            staged += stage_playfab_adapter(&item.path(), adapter, depth + 1)?;
++            continue;
++        }
++        if !name.to_string_lossy().eq_ignore_ascii_case("PlayFabGameSave.dll") {
++            continue;
++        }
++        let original = std::fs::read(item.path())?;
++        if !playfab_sdk_contract(&original) {
++            eprintln!("Nexus runtime: unsupported PlayFab SDK export contract; left unchanged.");
++            continue;
++        }
++        let alias = directory.join("nexus_pgs_native.dll");
++        match std::fs::symlink_metadata(&alias) {
++            Ok(_) => {
++                // Only an earlier staging of this same adapter may be there already.
++                if !playfab_sdk_contract(&std::fs::read(&alias)?) || original != adapter {
++                    return Err(std::io::Error::other("nexus_pgs_native.dll already exists beside an unstaged PlayFab SDK"));
++                }
++            }
++            Err(err) if err.kind() == std::io::ErrorKind::NotFound => {
++                replace_view_entry(directory, "nexus_pgs_native.dll", &original)?;
++                replace_view_entry(directory, &name.to_string_lossy(), adapter)?;
++            }
++            Err(err) => return Err(err),
++        }
++        staged += 1;
++    }
++    Ok(staged)
++}
++
+ // Copies one decrypted image as is. Unlike the launch stub writer it accepts
+ // encrypted files that are not PE images, which a full view must also contain.
+ fn copy_decrypted_image(path: &Path, fd: RawFd) -> std::io::Result<u64> {
+@@ -795,6 +963,7 @@ pub async fn run(
+     materialize_chain: bool,
+     materialize_all: bool,
+     view_dir: Option<String>,
++    playfab_adapter: Option<String>,
+     market: Option<String>,
+     license_cache: Option<String>,
+     offline: bool,
+@@ -802,6 +971,13 @@ pub async fn run(
+     let mut lfiles: HashMap<String, SegmentFile> = HashMap::new();
+     let materialize_chain = materialize_chain || materialize_all;
+     let view_dir = view_dir.map(PathBuf::from);
++    let playfab_adapter = match playfab_adapter.map(std::fs::read).transpose() {
++        Ok(adapter) => adapter,
++        Err(err) => {
++            eprintln!("cannot read the PlayFab adapter: {}", err);
++            return ExitCode::FAILURE;
++        }
++    };
+     if let Some(view_dir) = &view_dir {
+         if let Err(err) = checked_view_directory(view_dir) {
+             eprintln!("refusing the launch view directory {}: {}", view_dir.display(), err);
+@@ -1012,6 +1188,23 @@ pub async fn run(
+ 
+     let mut command = Command::new(wine);
+     command.arg(&stub_path);
++    if let (Some(adapter), Some(mirror)) = (&playfab_adapter, &launch_mirror) {
++        match stage_playfab_adapter(mirror.path(), adapter, 0) {
++            Ok(0) => {}
++            Ok(staged) => {
++                eprintln!("staged the Nexus PlayFab Game Saves adapter for {} SDK(s) in the launch view", staged);
++                let overrides = std::env::var("WINEDLLOVERRIDES").unwrap_or_default();
++                let separator = if overrides.is_empty() { "" } else { ";" };
++                command.env("WINEDLLOVERRIDES", format!("{overrides}{separator}playfabgamesave=n;nexus_pgs_native=n"));
++            }
++            Err(err) => {
++                eprintln!("Nexus runtime: PlayFab staging failed ({}); refusing a partial launch.", err);
++                drop(launch_mirror);
++                cleanup().await;
++                return ExitCode::FAILURE;
++            }
++        }
++    }
+     if materialize_all {
+         // Every image is a real file in the view: no file maps, and the
+         // decrypted memfds are not inherited by Wine, Proton or the game.
+@@ -1595,6 +1788,87 @@ mod tests {
+         assert!(checked_view_directory(Path::new("relative/views")).is_err());
+     }
+ 
++    // A minimal x64 PE whose export directory lists `names` (ordinal i -> name i).
++    fn fake_sdk(names: &[&str]) -> Vec<u8> {
++        let mut image = vec![0u8; 0x2000];
++        image[..2].copy_from_slice(b"MZ");
++        image[0x3c..0x40].copy_from_slice(&0x80u32.to_le_bytes());
++        image[0x80..0x84].copy_from_slice(b"PE\0\0");
++        image[0x84..0x86].copy_from_slice(&0x8664u16.to_le_bytes());
++        image[0x86..0x88].copy_from_slice(&1u16.to_le_bytes());
++        image[0x94..0x96].copy_from_slice(&0xf0u16.to_le_bytes());
++        let optional = 0x98;
++        image[optional..optional + 2].copy_from_slice(&0x20bu16.to_le_bytes());
++        image[optional + 108..optional + 112].copy_from_slice(&16u32.to_le_bytes());
++        image[optional + 112..optional + 116].copy_from_slice(&0x1000u32.to_le_bytes());
++        let section = optional + 0xf0;
++        image[section + 12..section + 16].copy_from_slice(&0x1000u32.to_le_bytes());
++        image[section + 16..section + 20].copy_from_slice(&0x1c00u32.to_le_bytes());
++        image[section + 20..section + 24].copy_from_slice(&0x400u32.to_le_bytes());
++        let file = |rva: u32| (rva - 0x1000 + 0x400) as usize;
++        let put = |image: &mut Vec<u8>, at: usize, value: u32| image[at..at + 4].copy_from_slice(&value.to_le_bytes());
++        let exports = file(0x1000);
++        put(&mut image, exports + 16, 1);
++        put(&mut image, exports + 20, names.len() as u32);
++        put(&mut image, exports + 24, names.len() as u32);
++        put(&mut image, exports + 28, 0x1028);
++        put(&mut image, exports + 32, 0x10c8);
++        put(&mut image, exports + 36, 0x1168);
++        let mut text = 0x1200u32;
++        for (index, name) in names.iter().enumerate() {
++            put(&mut image, file(0x1028) + index * 4, 0x1000);
++            put(&mut image, file(0x10c8) + index * 4, text);
++            image[file(0x1168) + index * 2..file(0x1168) + index * 2 + 2].copy_from_slice(&(index as u16).to_le_bytes());
++            image[file(text)..file(text) + name.len()].copy_from_slice(name.as_bytes());
++            text += name.len() as u32 + 1;
++        }
++        image
++    }
++
++    #[test]
++    fn playfab_contract_accepts_only_the_exact_sdk_exports() {
++        assert!(playfab_sdk_contract(&fake_sdk(&PLAYFAB_SDK_EXPORTS)));
++        let mut renamed = PLAYFAB_SDK_EXPORTS;
++        renamed[39] = "PFGameSaveFilesUploadWithUiResulx";
++        assert!(!playfab_sdk_contract(&fake_sdk(&renamed)));
++        assert!(!playfab_sdk_contract(&fake_sdk(&PLAYFAB_SDK_EXPORTS[..39])));
++        assert!(!playfab_sdk_contract(&fake_pe()));
++        assert!(!playfab_sdk_contract(b"MZ"));
++    }
++
++    #[test]
++    fn playfab_adapter_is_staged_in_real_view_directories_without_touching_the_game() {
++        let root = tempfile::tempdir().unwrap();
++        let game = root.path().join("game");
++        std::fs::create_dir_all(game.join("Shared")).unwrap();
++        let sdk = fake_sdk(&PLAYFAB_SDK_EXPORTS);
++        std::fs::write(game.join("PlayFabGameSave.dll"), &sdk).unwrap();
++        std::fs::write(game.join("Shared/PlayFabGameSave.dll"), &sdk).unwrap();
++        let view = root.path().join("view");
++        std::fs::create_dir(&view).unwrap();
++        symlink(game.join("PlayFabGameSave.dll"), view.join("PlayFabGameSave.dll")).unwrap();
++        symlink(game.join("Shared"), view.join("Shared")).unwrap();
++        let adapter = b"nexus adapter".to_vec();
++
++        assert_eq!(stage_playfab_adapter(&view, &adapter, 0).unwrap(), 1);
++        assert_eq!(std::fs::read(view.join("PlayFabGameSave.dll")).unwrap(), adapter);
++        assert!(!std::fs::symlink_metadata(view.join("PlayFabGameSave.dll")).unwrap().file_type().is_symlink());
++        assert_eq!(std::fs::read(view.join("nexus_pgs_native.dll")).unwrap(), sdk);
++        assert_eq!(std::fs::read(game.join("PlayFabGameSave.dll")).unwrap(), sdk);
++        assert_eq!(std::fs::read(game.join("Shared/PlayFabGameSave.dll")).unwrap(), sdk);
++        assert!(std::fs::read_dir(&game).unwrap().all(|item| item.unwrap().file_name() != "nexus_pgs_native.dll"));
++
++        // An unknown SDK stays as it is; a stray alias beside a real SDK is refused.
++        let other = root.path().join("other");
++        std::fs::create_dir(&other).unwrap();
++        std::fs::write(other.join("playfabgamesave.dll"), fake_pe()).unwrap();
++        assert_eq!(stage_playfab_adapter(&other, &adapter, 0).unwrap(), 0);
++        std::fs::write(other.join("PlayFabGameSave.dll"), &sdk).unwrap();
++        std::fs::write(other.join("nexus_pgs_native.dll"), &sdk).unwrap();
++        std::fs::remove_file(other.join("playfabgamesave.dll")).unwrap();
++        assert!(stage_playfab_adapter(&other, &adapter, 0).is_err());
++    }
++
+     #[test]
+     fn launch_chain_rejects_parent_path_components() {
+         assert!(checked_relative_path("..\\outside.exe").is_err());
+diff --git a/crates/xodus-cli/src/installation_state.rs b/crates/xodus-cli/src/installation_state.rs
+index 902bc96..863be5b 100644
+--- a/crates/xodus-cli/src/installation_state.rs
++++ b/crates/xodus-cli/src/installation_state.rs
+@@ -184,7 +184,7 @@ mod tests {
+         let root = tempfile::tempdir().unwrap();
+         begin(root.path()).unwrap();
+         let result = crate::commands::run::run(&reqwest::Client::new(), &xodus::tokens::TokenManager::with_memory(),
+-            root.path().to_string_lossy().into_owned(), "/must-not-run".into(), None, false, false, false, None, None, None, false).await;
++            root.path().to_string_lossy().into_owned(), "/must-not-run".into(), None, false, false, false, None, None, None, None, false).await;
+         assert_eq!(result, std::process::ExitCode::FAILURE);
+     }
+ 
+diff --git a/crates/xodus-cli/src/main.rs b/crates/xodus-cli/src/main.rs
+index b4a0dc8..80dc876 100644
+--- a/crates/xodus-cli/src/main.rs
++++ b/crates/xodus-cli/src/main.rs
+@@ -180,6 +180,12 @@ enum SubCommand {
+         materialize_all: bool,
+         #[arg(long = "view-dir", help = "Owner-only directory (mode 0700) that holds the --materialize-all launch view")]
+         view_dir: Option<String>,
++        #[arg(
++            long = "playfab-adapter",
++            requires = "materialize_all",
++            help = "Nexus PlayFab Game Saves adapter DLL to stage in the full launch view in place of each supported SDK"
++        )]
++        playfab_adapter: Option<String>,
+         #[arg(short, long)]
+         market: Option<String>,
+         #[arg(long = "license-cache", help = "Directory for device-bound offline licenses (--license-cache) used when Microsoft is unreachable")]
+@@ -485,6 +491,7 @@ async fn main() -> ExitCode {
+             materialize_chain,
+             materialize_all,
+             view_dir,
++            playfab_adapter,
+             market,
+             license_cache,
+             offline,
+@@ -499,6 +506,7 @@ async fn main() -> ExitCode {
+                 materialize_chain,
+                 materialize_all,
+                 view_dir,
++                playfab_adapter,
+                 market,
+                 license_cache,
+                 offline,

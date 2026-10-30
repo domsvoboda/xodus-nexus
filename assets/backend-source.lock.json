@@ -1,11 +1,11 @@
 {
   "schema": 1,
-  "version": "0.2.13",
+  "version": "0.2.14",
   "repository": "https://github.com/xodus-gaming/xodus.git",
   "commit": "53ea781dcd073e31d7ea68e894134e9c959bff04",
   "rust": "1.99.0",
   "cargoLockSha256": "2259b343e00dadc263018beb7664b12e9d58a0b73bff502ad566f5f8619ce28a",
-  "patchId": "linux-run-v73",
+  "patchId": "linux-run-v74",
   "compatibility": "linux-run-v25",
   "patches": [
     {
@@ -303,6 +303,14 @@
     {
       "file": "xodus-game-activity-locale.patch",
       "sha256": "cc9e292af016b4df3cb49cfa8718bdc5b846745c38d1b3bc9615ffdbef1f6043"
+    },
+    {
+      "file": "xodus-full-view.patch",
+      "sha256": "5bbd3cc5d5ed235f15227c121f0da51cce6a2a157753d13ac9a6994509d56c26"
+    },
+    {
+      "file": "xodus-playfab-view-adapter.patch",
+      "sha256": "927b1625bbdbcd4ad0aa212a61b0425be64612608284de402d2854c8479dbe7c"
     }
   ]
 }
