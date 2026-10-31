@@ -13,6 +13,7 @@ import { WalletUnlocker } from '../main/keyring-unlock.js';
 import { GameSession, type ActiveGame } from '../main/game-session.js';
 import { WarmServiceSessions } from '../main/service-sessions.js';
 import { readAccount } from '../main/account-refresh.js';
+import { accountCacheKey } from '../main/offline-identity.js';
 import { GameLogReducer } from '../main/game-log.js';
 import { GameContent } from '../main/game-content.js';
 import { hasIncompleteUpdate } from '../main/installation-state.js';
@@ -97,9 +98,7 @@ export class GameController {
   private closing = false;
   private inspected: DaemonState['inspected'];
   private lastBackendRefresh = 0;
-  private account: { stored: boolean | null; username?: string } = { stored: null };
-  private accountReadAt = 0;
-  private accountError: string | undefined;
+  private readonly accountWatch: AccountWatch;
   private orphanTimer: ReturnType<typeof setTimeout> | undefined;
   /** The running game's invitation bridge; its UI is the launcher's Friends view. */
   private inviteBridge: GameInviteBridge | undefined;
@@ -122,6 +121,7 @@ export class GameController {
     this.backend = new BackendManager(options.userData, this.store.settings.externalXodusRoot, emitLog, () => this.busy);
     this.connectivity = new ConnectivityMonitor({ interfaceOnline, onChange: () => this.publish() });
     this.services = new WarmServiceSessions({ log: options.log });
+    this.accountWatch = new AccountWatch(signal => this.readStoredAccount(signal), () => this.accountChanged());
     const self = this;
     this.session = new GameSession({
       store: { get games() { return self.store.games; }, get downloads() { return self.store.downloads; }, get settings() { return self.store.settings; } },
@@ -132,7 +132,7 @@ export class GameController {
       paths: { userData: options.runtimeRoot, home: options.home },
       environment: () => this.clientEnvironment,
       connectivity: this.connectivity,
-      account: () => this.account,
+      account: () => this.accountWatch.current,
       ensureWallet: () => this.checkWallet(),
       displayGuard: () => () => {},
       services: this.services,
@@ -193,7 +193,7 @@ export class GameController {
     return {
       gameOperation: operation ? structuredClone(operation) : undefined,
       inspected: this.inspected,
-      session: { warm: service.warm, startedAt: service.startedAt, lastCheckAt: this.accountReadAt ? new Date(this.accountReadAt).toISOString() : undefined, error: this.accountError },
+      session: { warm: service.warm, startedAt: service.startedAt, lastCheckAt: this.accountWatch.readAt ? new Date(this.accountWatch.readAt).toISOString() : undefined, error: this.accountWatch.error },
       connectivity: this.connectivity.current as ConnectivityStatus,
       ...(this.inviteBridge ? { invites: this.inviteBridge.state() } : {}),
     };
@@ -220,8 +220,8 @@ export class GameController {
    * and a received invitation are announced to the launcher, which shows them.
    */
   private async startInvites(operationId: string, game: string, titleId: string, log: (line: string) => void) {
-    const account = this.account.username;
-    const current = () => !this.stopped && Boolean(account) && this.account.stored === true && this.account.username === account;
+    const account = this.accountWatch.current.username;
+    const current = () => !this.stopped && Boolean(account) && this.accountWatch.current.stored === true && this.accountWatch.current.username === account;
     const announce = (notice: InviteNotice) => { for (const listener of this.inviteListeners) listener(notice); };
     const bridge = new GameInviteBridge(operationId, game, titleId, current, () => this.publish(),
       () => announce({ notice: 'choose', game }), Date.now, sender => announce({ notice: 'invitation', game, sender }), new XboxTitlePresence(current, log));
@@ -257,7 +257,8 @@ export class GameController {
       if (!this.runtime.current.winePath) await this.runtime.refresh();
       // The close helper finds the game's windows by this id (see recovery.ts and graceful.ts).
       this.clientEnvironment = { ...request.env, XODUS_NEXUS_LAUNCH_ID: `game-${request.gameId}` };
-      // The account read needs the wallet, so bring it up first.
+      // The account read needs the wallet, so bring it up first. Read it on every
+      // launch: the wallet may have switched accounts since the last one.
       await this.checkWallet();
       await this.refreshAccount();
       this.inspected = undefined;
@@ -349,7 +350,11 @@ export class GameController {
     if (!record) return;
     if (record.service) {
       const session = await adoptService(record.service);
-      if (session) { this.services.adopt(session, record.service.binary, record.service.startedAt); this.options.log('Re-attached to the running Xodus account service.'); }
+      if (session) {
+        this.services.adopt(session, record.service.binary, record.service.startedAt);
+        this.accountWatch.restore(record.service.account);
+        this.options.log('Re-attached to the running Xodus account service.');
+      }
       else this.options.log('The previous account service is gone; a new one starts with the next launch.');
     }
     if (record.game) {
@@ -423,7 +428,7 @@ export class GameController {
     const live = this.services.current;
     const pid = live?.pid;
     if (service.warm && live && pid) {
-      record.service = { pid, socketPath: live.socketPath, bridgePort: live.bridgePort, bridgeKey: live.bridgeKey, runtimeDir: live.runtimeDir, binary: this.services.binary ?? '', startedAt: service.startedAt ?? new Date().toISOString() };
+      record.service = { pid, socketPath: live.socketPath, bridgePort: live.bridgePort, bridgeKey: live.bridgeKey, runtimeDir: live.runtimeDir, binary: this.services.binary ?? '', startedAt: service.startedAt ?? new Date().toISOString(), account: this.accountWatch.owner };
     }
     if (!record.game && !record.service) { await this.stateFile.remove().catch(() => undefined); return; }
     await this.stateFile.write(record).catch(error => this.options.log(`Could not save recovery state: ${(error as Error).message}`));
@@ -435,9 +440,8 @@ export class GameController {
     if (!this.services.status.warm) return;
     if (!await this.services.healthy()) { await this.persist(); this.publish(); return; }
     if (await this.services.sweep()) { this.options.log('Stopped the idle account service.'); await this.persist(); this.publish(); return; }
-    if (Date.now() - this.accountReadAt > (this.options.accountCheckMs ?? 15 * 60_000)) {
-      await this.refreshAccount(true);
-      if (this.account.stored === false) { this.options.log('No stored account any more; stopping the account service.'); await this.services.stopAll(); await this.persist(); }
+    if (Date.now() - this.accountWatch.readAt > (this.options.accountCheckMs ?? 15 * 60_000)) {
+      await this.refreshAccount();
       this.publish();
     }
   }
@@ -453,24 +457,25 @@ export class GameController {
   }
 
   /** The signed-in account names the runtime's offline identity cache; read-only, never a sign-in. */
-  private async refreshAccount(force = false): Promise<void> {
-    const binary = this.backend.current.binaryPath;
-    if (!binary || !this.backend.current.capabilities.account) { this.account = { stored: null }; return; }
-    if (!force && Date.now() - this.accountReadAt < (this.options.accountCheckMs ?? 15 * 60_000) && this.account.stored === true) return;
-    const controller = new AbortController();
-    const timer = setTimeout(() => controller.abort(), 20_000);
-    try {
-      const result = await readAccount(binary, controller.signal);
-      const line = result.output.split('\n').map(entry => entry.trim()).reverse().find(entry => entry.startsWith('{'));
-      const parsed = JSON.parse(line ?? '') as { stored?: unknown; username?: unknown };
-      this.account = parsed.stored === true && typeof parsed.username === 'string' && parsed.username.trim() ? { stored: true, username: parsed.username.trim() } : { stored: false };
-      this.accountReadAt = Date.now();
-      this.accountError = undefined;
-    } catch (error) {
-      this.accountError = (error as Error).message;
-      this.options.log(`Account read failed: ${this.accountError}`);
-      this.account = { stored: null };
-    } finally { clearTimeout(timer); }
+  private async refreshAccount(): Promise<void> {
+    if (!this.backend.current.binaryPath || !this.backend.current.capabilities.account) { this.accountWatch.clear(); return; }
+    await this.accountWatch.refresh();
+    if (this.accountWatch.error) this.options.log(`Account read failed: ${this.accountWatch.error}`);
+  }
+
+  private async readStoredAccount(signal: AbortSignal): Promise<StoredAccount> {
+    const result = await readAccount(this.backend.current.binaryPath!, signal);
+    const line = result.output.split('\n').map(entry => entry.trim()).reverse().find(entry => entry.startsWith('{'));
+    const parsed = JSON.parse(line ?? '') as { stored?: unknown; username?: unknown };
+    return parsed.stored === true && typeof parsed.username === 'string' && parsed.username.trim() ? { stored: true, username: parsed.username.trim() } : { stored: false };
+  }
+
+  /** The warm service holds the previous account's session: never hand it to the next one. */
+  private async accountChanged(): Promise<void> {
+    if (!this.services.status.warm) return;
+    this.options.log('The stored account changed; stopping the account service the previous account used.');
+    await this.services.stopAll().catch(error => this.options.log(`Could not stop the account service: ${(error as Error).message}`));
+    await this.persist();
   }
 
   /** The license cache for the launch, after the same revocation checks the launcher makes. */
@@ -525,3 +530,47 @@ export class GameController {
 }
 
 export type { GameOperation };
+
+export type StoredAccount = { stored: boolean | null; username?: string };
+
+/**
+ * The wallet's stored account as the daemon last read it. `owner` is the
+ * opaque key of the account the warm service and launches were scoped to;
+ * a read that names another account (or none) calls `onChange` first, so
+ * nothing the old account left running serves the new one. A failed read
+ * keeps the owner, so the next good read still sees a switch.
+ */
+export class AccountWatch {
+  current: StoredAccount = { stored: null };
+  readAt = 0;
+  error: string | undefined;
+  owner: string | undefined;
+
+  constructor(private readonly read: (signal: AbortSignal) => Promise<StoredAccount>, private readonly onChange: () => Promise<void>,
+    private readonly timeoutMs = 20_000) {}
+
+  /** The owner a restarted daemon finds in its recovery record. */
+  restore(owner: string | undefined): void { this.owner = owner; }
+
+  /** No account backend: nothing is known, nothing is scoped. */
+  clear(): void { this.current = { stored: null }; }
+
+  async refresh(): Promise<void> {
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), this.timeoutMs);
+    let next: StoredAccount;
+    try { next = await this.read(controller.signal); }
+    catch (error) {
+      this.error = (error as Error).message;
+      this.current = { stored: null };
+      return;
+    } finally { clearTimeout(timer); }
+    const owner = next.stored === true && next.username ? accountCacheKey(next.username) : undefined;
+    // Publish the new account only once the old one's state is gone.
+    if (owner !== this.owner) { this.current = { stored: null }; await this.onChange(); }
+    this.owner = owner;
+    this.current = next;
+    this.readAt = Date.now();
+    this.error = undefined;
+  }
+}

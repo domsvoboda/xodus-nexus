@@ -5,6 +5,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { encodeFrame, FrameReader, parseDaemonFrame, type ClientFrame, type DaemonFrame } from '../shared/daemon-protocol.js';
 import { LINUX_RUN_PATCH } from '../main/backend.js';
+import { accountCacheKey } from '../main/offline-identity.js';
 import { GameController } from './controller.js';
 import { DaemonServer } from './server.js';
 
@@ -18,7 +19,7 @@ const GAME_ID = '0123456789abcdef';
 const FAKE_CLI = `#!/bin/sh
 case "$1" in
   --help) printf 'xodus-cli 0.0.0-test\\n\\nCommands:\\n  login      Sign in\\n  account    Account\\n  streaming  Install\\n  run        Run a game\\n' ;;
-  account) printf '{"stored":false}\\n' ;;
+  account) cat "$(dirname "$0")/account.json" 2>/dev/null || printf '{"stored":false}\\n' ;;
   streaming) printf 'Usage: xodus-cli streaming\\n' ;;
   run)
     [ "$2" = --help ] && { printf 'Usage: xodus-cli run\\n  --license-cache <DIR>\\n  --offline\\n'; exit 0; }
@@ -26,6 +27,7 @@ case "$1" in
     trap 'echo "uploading saves"; sleep 2; echo uploaded > "$2/uploaded"; echo "saves uploaded"; exit 0' INT
     trap 'echo "killed"; exit 143' TERM
     echo "game started as $XODUS_NEXUS_LAUNCH_ID"
+    echo "account key \${XODUS_ACCOUNT_HASH:-none}"
     echo "$$" > "$2/pid"
     while :; do sleep 0.1; done ;;
   *) exit 2 ;;
@@ -80,6 +82,8 @@ async function steamClient(): Promise<{ client: Client; operationId: string }> {
   await client.until((frame): frame is DaemonFrame & { type: 'log' } => frame.type === 'log' && frame.line.includes('game started as game-' + GAME_ID));
   return { client, operationId: accepted.operationId };
 }
+
+const signIn = (username: string) => fs.writeFile(path.join(root, 'userData', 'xodus-backends', 'releases', 'test', 'account.json'), JSON.stringify({ stored: true, username }) + '\n');
 
 const exists = (file: string) => fs.access(file).then(() => true, () => false);
 
@@ -160,5 +164,19 @@ describe.skipIf(!linux)('background daemon end to end', { timeout: 60_000 }, () 
     second.client.socket.destroy();
     await expect.poll(() => controller.state().gameOperation?.status, { timeout: 20_000 }).toBe('complete');
     expect(await exists(path.join(gameDir, 'uploaded'))).toBe(true);
+  });
+
+  it('reads the stored account again for the launch right after a wallet switch', async () => {
+    await signIn('a@example.com');
+    const first = await steamClient();
+    await first.client.until((frame): frame is DaemonFrame & { type: 'log' } => frame.type === 'log' && frame.line.includes('account key ' + accountCacheKey('a@example.com')));
+    first.client.socket.destroy();
+    await expect.poll(() => controller.state().gameOperation?.status, { timeout: 20_000 }).toBe('complete');
+    await signIn('b@example.com');
+    const second = await steamClient();
+    await second.client.until((frame): frame is DaemonFrame & { type: 'log' } => frame.type === 'log' && frame.line.includes('account key ' + accountCacheKey('b@example.com')));
+    expect(second.client.frames.some(frame => frame.type === 'log' && frame.line.includes(accountCacheKey('a@example.com')))).toBe(false);
+    second.client.socket.destroy();
+    await expect.poll(() => controller.state().gameOperation?.status, { timeout: 20_000 }).toBe('complete');
   });
 });

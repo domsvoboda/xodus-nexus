@@ -31,6 +31,8 @@ export interface SessionRecord {
     runtimeDir?: string;
     binary: string;
     startedAt: string;
+    /** Opaque key of the account the service was started for; absent in older records. */
+    account?: string;
   };
 }
 
