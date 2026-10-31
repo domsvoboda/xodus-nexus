@@ -11,6 +11,6 @@
     "sourceMap": true,
     "types": ["node"]
   },
-  "include": ["src/main/**/*.ts", "src/preload/**/*.cts", "src/shared/**/*.ts"],
+  "include": ["src/main/**/*.ts", "src/preload/**/*.cts", "src/shared/**/*.ts", "src/daemon/**/*.ts", "src/client/**/*.ts"],
   "exclude": ["**/*.test.ts"]
 }

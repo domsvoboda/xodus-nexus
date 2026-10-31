@@ -23,6 +23,22 @@ describe('game process', () => {
     await game.cleanup();
   });
 
+  it('routes output through a followed file, which a late reader can still pick up', async () => {
+    const root = await mkdtemp(path.join(tmpdir(), 'nexus-game-output-'));
+    try {
+      const outputFile = path.join(root, 'game.output');
+      const lines: string[] = [];
+      const game = await spawnGameProcess(process.execPath, ['-e', "console.log('out line');console.error('err line');process.stdout.write('tail')"],
+        { onLine: (line) => lines.push(line) }, { outputFile });
+      const result = await game.result;
+      expect(result.code).toBe(0);
+      expect(lines).toEqual(['out line', 'err line', 'tail']);
+      expect(result.output).toContain('err line');
+      expect(await readFile(outputFile, 'utf8')).toBe('out line\nerr line\ntail');
+      await game.cleanup();
+    } finally { await rm(root, { recursive: true, force: true }); }
+  });
+
   it('stops the game process group without signalling unrelated processes', async () => {
     const other = spawn(process.execPath, ['-e', 'setInterval(()=>{},1000)'], { stdio: 'ignore' });
     const lines: string[] = [];
