@@ -444,3 +444,17 @@ test('workflow is main-only manual, serializes source sync, isolates review secr
   assert.doesNotMatch(secretSteps[0].run, /\$\{\{/);
   assert.doesNotMatch(JSON.stringify(workflow), /TOLGEE_SOURCE_API_KEY|npm run build|gh release|git push|pull_request|schedule/);
 });
+
+test('a timed-out write stays unknown, is not retried and does not expose request details', async () => {
+  let calls = 0;
+  const api = createApi('synthetic', async () => {
+    calls++;
+    throw new DOMException('private request details', 'TimeoutError');
+  });
+  await assert.rejects(api('/v2/projects/36162/translations/20/set-state/REVIEWED', 'PUT'), error => {
+    assert.match(error.message, /PUT timed out.*No automatic retry/);
+    assert.doesNotMatch(error.message, /private request details|synthetic/);
+    return true;
+  });
+  assert.equal(calls, 1);
+});
