@@ -82,10 +82,10 @@ function NavItem({ active, icon, label, badge, onClick, autoSelect = false }: {
   </button>;
 }
 
-export function Sidebar({ data, page, go, openGame, notifications, inert = false }: { data: AppSnapshot; page: Page; go: (page: Page) => void; openGame?: (id: string) => void; notifications?: React.ReactNode; inert?: boolean }) {
+export function Sidebar({ data, page, go, openGame, openProfile, notifications, inert = false }: { data: AppSnapshot; page: Page; go: (page: Page) => void; openGame?: (id: string) => void; openProfile?: () => void; notifications?: React.ReactNode; inert?: boolean }) {
   const account = data.auth.gamertag ?? data.auth.username ?? (data.auth.stored === true ? ui("ui.microsoft_account_6c2b1f2") : ui("ui.sign_in_bfd402b"));
   return <aside className="sidebar" ref={element => { if (element) element.inert = inert; }}>
-    <div className="account-header" data-gamepad-action-row><button className="account-summary" onClick={() => go('settings')}><AccountAvatar auth={data.auth} /><span><strong>{account}</strong><AccountMembership auth={data.auth} /></span></button>{notifications}</div>
+    <div className="account-header" data-gamepad-action-row><button className="account-summary" onClick={() => openProfile ? openProfile() : go('settings')}><AccountAvatar auth={data.auth} /><span><strong>{account}</strong><AccountMembership auth={data.auth} /></span></button>{notifications}</div>
     <nav><NavItem autoSelect active={page === 'home'} icon={<Home />} label={ui("ui.home_3a78695")} onClick={() => go('home')} /><NavItem autoSelect active={page === 'library'} icon={<Library />} label={ui("ui.my_library_d931dba")} onClick={() => go('library')} /><NavItem autoSelect active={page === 'store'} icon={<Store />} label={ui("ui.store_ee7da93")} onClick={() => go('store')} /></nav>
     {data.games.length > 0 ? <div className="recents"><span>{ui("ui.most_recent_7459b86")}</span>{data.games.slice(0, 5).map(game => <button key={game.id} onClick={() => openGame ? openGame(game.id) : go('library')}><Cover game={game} /><GameTitle title={game.title} /></button>)}</div> : null}
     <div className="sidebar-bottom"><NavItem active={page === 'settings'} icon={<Cog />} label={ui("ui.settings_74a883a")} onClick={() => go('settings')} /><InstallQueueShortcut downloads={data.downloads} games={data.games} active={page === 'downloads'} openQueue={() => go('downloads')} /></div>
@@ -1207,7 +1207,7 @@ export default function App() {
   if (loading) return <div className="boot"><div className="brand-mark">X</div><LoaderCircle className="spin" /><span>{ui("ui.loading_xodus_nexus_2e92cfd")}</span></div>;
   return <ConfirmationProvider><PackageInstallProvider><div className="app-shell">
     {!data.settings.firstRunCompleted ? <FirstRunWizard data={data} toast={(value) => setToast(value)} /> : null}
-    <Sidebar data={data} page={page} go={go} openGame={openLibraryGame} inert={socialOpen} notifications={<NotificationBell key={JSON.stringify([data.auth.username,data.backend.binaryPath])} notices={notifications.notices} failed={notifications.failed} unsupported={notifications.unsupported} onSelect={notice=>{
+    <Sidebar data={data} page={page} go={go} openGame={openLibraryGame} openProfile={() => data.auth.stored === true && data.backend.capabilities.nativeSocial ? action(() => window.launcher.nativeSocial.openXboxPlayerProfile('me')) : go('settings')} inert={socialOpen} notifications={<NotificationBell key={JSON.stringify([data.auth.username,data.backend.binaryPath])} notices={notifications.notices} failed={notifications.failed} unsupported={notifications.unsupported} onSelect={notice=>{
       notifications.acknowledge(notice);
       if(notice.kind==='update')openLibraryGame(notice.target);
       else{setSocialChat(previous=>({id:(previous?.id??0)+1,xuid:notice.target,identity:JSON.stringify([data.auth.username,data.backend.binaryPath])}));setSocialMounted(true);setSocialOpen(true);}

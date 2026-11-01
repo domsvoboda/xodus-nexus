@@ -175,3 +175,68 @@ it('navigates from the sidebar account card to notifications, opens it and retur
   expect(window.launcher.nativeSocial.openXboxPlayerProfile).not.toHaveBeenCalled();
   await press(15); expect(document.activeElement).toBe(get('[data-gamepad-home-primary]'));
 });
+
+it('bumper navigation changes Social tabs while leaving the launcher page alone', async () => {
+  await press(8);
+  expect(get('[data-gamepad-tab][aria-selected="true"]').getAttribute('aria-label')).toBe('People');
+  await press(5);
+  expect(get('[data-gamepad-tab][aria-selected="true"]').getAttribute('aria-label')).toBe('Chats');
+  await press(5);
+  expect(get('[data-gamepad-tab][aria-selected="true"]').getAttribute('aria-label')).toContain('Your Xbox profile');
+  expect(document.querySelector('.social-player-card')).not.toBeNull();
+  expect(document.querySelector('.social-player-card .social-back')).toBeNull();
+  expect(document.querySelector('.social-player-card .social-close')).toBeNull();
+  expect(document.querySelector('#nexus-social-shelf .social-profile-controls .social-close')).not.toBeNull();
+  await press(5);
+  expect(get('[data-gamepad-tab][aria-selected="true"]').getAttribute('aria-label')).toBe('Party');
+  expect(get('.social-party').hidden).toBe(false);
+  await press(4);
+  expect(get('[data-gamepad-tab][aria-selected="true"]').getAttribute('aria-label')).toContain('Your Xbox profile');
+  await press(4);
+  expect(get('[data-gamepad-tab][aria-selected="true"]').getAttribute('aria-label')).toBe('Chats');
+  expect(document.querySelector('.home-page')).not.toBeNull();
+});
+
+it('opens the expanded own profile from the account card and leaves Settings on its own button', async () => {
+  await click('.account-summary');
+  expect(window.launcher.nativeSocial.openXboxPlayerProfile).toHaveBeenCalledWith('me');
+  expect(document.querySelector('.nexus-social-page .social-expanded-view .social-player-card')).not.toBeNull();
+  expect(document.querySelector('.nexus-social-page [data-gamepad-tabs]')).toBeNull();
+  expect(document.querySelector('.nexus-social-page .social-back')).toBeNull();
+  expect(document.querySelector('.settings-page')).toBeNull();
+  await click('.sidebar-bottom .nav-item');
+  expect(document.querySelector('.nexus-social-page')).toBeNull();
+});
+
+it('opens the same large profile without Social tabs from the small profile shortcut', async () => {
+  await press(8); await press(5); await press(5);
+  await click('.social-player-card button[aria-label="Open full Xbox profile"]');
+  expect(document.querySelector('.nexus-social-page .social-expanded-view .social-player-card')).not.toBeNull();
+  expect(document.querySelector('.nexus-social-page .social-tabs')).toBeNull();
+  expect(get('#nexus-social-shelf').inert).toBe(true);
+});
+
+it('focuses and scrolls the large read-only profile with the right stick, including from Search', async () => {
+  await click('.account-summary');
+  const profile = get('.social-profile-scrollable');
+  profile.style.overflowY = 'auto';
+  Object.defineProperty(profile, 'scrollHeight', { value: 1800 }); Object.defineProperty(profile, 'clientHeight', { value: 500 });
+  await press(2);
+  expect(document.activeElement).toBe(profile);
+  await act(async () => { harness.step([], [0, 0, 0, 0.9]); });
+  expect(profile.scrollTop).toBeGreaterThan(0);
+  profile.scrollTop = 0; await act(async () => { get('.search-box input').focus(); });
+  await act(async () => { harness.step([], [0, 0, 0, 0.9]); });
+  expect(profile.scrollTop).toBeGreaterThan(0);
+});
+
+it('renders and operates the demo party invitation, connected controls and leave action', async () => {
+  await press(8); await press(4);
+  expect(get('.social-party').hidden).toBe(false);
+  await click('.social-party-invitations button');
+  expect(document.querySelectorAll('.social-party-member')).toHaveLength(3);
+  expect(get('.social-party-invite select')).toBeDefined();
+  const leave = [...document.querySelectorAll<HTMLButtonElement>('.social-party-controls button')].find(button => button.textContent?.includes('Leave party'))!;
+  await act(async () => { leave.click(); });
+  expect(document.querySelectorAll('.social-party-member')).toHaveLength(0);
+});

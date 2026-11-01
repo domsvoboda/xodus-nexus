@@ -22,6 +22,8 @@
 .xbox-guide .social-tabs button[aria-selected=true]:hover { background:var(--social-button); }
 .social-tabs button[aria-selected=true]::after { content:'';position:absolute;bottom:0;left:0;right:0;height:4px;background:#00cc6a;border-radius:4px; }
 .social-tabs .social-gamerpic { width:24px;height:24px;font-size:12px;box-shadow:none; }
+.xbox-guide > .social-profile-controls { position:absolute;top:0;right:0; }
+.xbox-guide.has-own-profile > .social-tabs { padding-right:56px;gap:8px; }
 .social-tabs button[aria-selected=false] .social-gamerpic { opacity:.65; }
 .social-tabs button:hover .social-gamerpic,.social-tabs button:focus .social-gamerpic { opacity:1; }
 .social-guide-content { display:flex;flex:1;flex-direction:column;min-height:0;overflow-y:auto;overflow-x:hidden;background:var(--social-surface);scrollbar-width:thin;scrollbar-color:rgba(255,255,255,.349) transparent; }
