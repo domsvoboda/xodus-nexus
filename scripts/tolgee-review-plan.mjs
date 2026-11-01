@@ -14,7 +14,7 @@ export const planDigest = plan => createHash('sha256').update(JSON.stringify(pla
 const toTolgee = text => text.replace(/'/g, "''").replace(/\{\{([a-zA-Z][a-zA-Z0-9_]*)\}\}/g, '{$1}');
 
 export function validatePlan(plan, english) {
-  if (!Array.isArray(plan) || !plan.length || plan.length > 500) throw Error('Expected 1 to 500 reviewed selections.');
+  if (!Array.isArray(plan) || !plan.length || plan.length > 1000) throw Error('Expected 1 to 1000 reviewed selections.');
   const seen = new Set();
   for (const entry of plan) {
     const { language, key, source, suggestion, translation, previous, previousState } = entry;

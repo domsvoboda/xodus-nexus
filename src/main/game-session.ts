@@ -25,6 +25,8 @@ import { prepareShaderCache } from './shader-cache.js';
 import { shaderCacheLimits } from '../shared/shader-cache.js';
 import { resolvePackageFile } from './windows-path.js';
 import { profileIdOf } from '../shared/profile-id.js';
+import { steamGameEnvironment, type SteamLaunchEnvironment } from './steam-launch-context.js';
+import { CloudSaveDiagnostics } from './cloud-save-diagnostics.js';
 
 export async function gameLocales(game: Game): Promise<string[]> {
   return installedGameLocales(game.path);
@@ -90,6 +92,8 @@ export interface GameSessionDeps {
   onInviteAvailability?(reason: string | undefined): void;
   /** The window identity (`WINE_APPLICATION_ID`) tying the game window to its installed artwork; undefined where there is none. */
   windowIdentity?(game: Game, coverDataUrl: string | undefined): Promise<string | undefined>;
+  /** A cloud-save problem first seen in this session's runtime output. */
+  onCloudSaveWarning?(game: Game, warning: string): void;
   /** The game process started; returns the matching detach for its exit. */
   attachGame?(game: Game, pid: number | undefined): () => void;
   /** `operation` is the live object (mutated in place) or undefined once a failed preparation is cleared. */
@@ -115,6 +119,8 @@ export interface LaunchOptions {
   steamCommand?: string[];
   /** The command came from a shortcut handed to this running launcher, without Steam's launch environment. */
   handedOff?: boolean;
+  /** Steam's controller and identity variables for this launch; aborting the signal stops the game (Steam's Stop). */
+  steam?: { environment: SteamLaunchEnvironment; signal: AbortSignal };
 }
 
 /** One game at a time: preparation, spawn and cleanup, independent of Electron. */
@@ -222,7 +228,20 @@ export class GameSession {
     const baseEnvironment = deps.environment();
     const verboseLogs = baseEnvironment.XODUS_NEXUS_VERBOSE_LOGS === '1' || Boolean(store.settings.verboseLogs);
     const gameLog = new GameLogReducer(appendGameLog, verboseLogs);
-    const addGameLog = (line: string) => gameLog.push(line);
+    const cloudDiagnostics = new CloudSaveDiagnostics();
+    let cloudNoticeShown = false;
+    const addGameLog = (line: string) => {
+      if (cloudRuntime && !offlineLaunch && cloudDiagnostics.observe(line) && owns()) {
+        operation.cloudSaveWarning = cloudDiagnostics.message!;
+        changed(false);
+        if (!cloudNoticeShown) { cloudNoticeShown = true; deps.onCloudSaveWarning?.(game, operation.cloudSaveWarning); }
+      }
+      gameLog.push(line);
+    };
+    // Steam's variables replace the launcher's own, including clearing stale filters.
+    const launchEnvironment = steamGameEnvironment(baseEnvironment, options.steam?.environment);
+    const steamSignal = options.steam?.signal;
+    let removeSteamStop = () => {};
     writeLaunchLog(`Game: ${game.title}`);
     writeLaunchLog(`Mode: package manifest; cloud saves: ${cloudRuntime ? 'enabled' : 'not available in active runtime'}; verbose logs: ${verboseLogs ? 'on' : 'off'}`);
     writeLaunchLog(`Backend: ${binary}`);
@@ -238,6 +257,8 @@ export class GameSession {
     let releaseDisplay = () => {};
     let detachGame = () => {};
     try {
+      if (options.steam) writeLaunchLog('Steam launch context forwarded from a shortcut.');
+      steamSignal?.throwIfAborted();
       if (game.launchTools?.dualSenseCompatibility) writeLaunchLog('DualSense compatibility mode enabled for this game (054c:0ce6).');
       if (game.launchTools?.dualShock4Compatibility) writeLaunchLog('DualShock 4 compatibility mode enabled for this game (v1, v2 and wireless adapter).');
       await deps.ensureWallet();
@@ -261,7 +282,7 @@ export class GameSession {
       const steamWrappers = path.join(dataRoot, 'launch-wrappers', 'steam', game.id);
       const gameWine = steamProton ? await writeSteamLauncher(steamWrappers, steamProton) : wine;
       const steamStop = steamProton && overlay && steamPrefix ? await writeSteamPrefixStop(steamWrappers, steamProton.protonRoot, overlay.layout, steamPrefix) : undefined;
-      launchWrapper = await prepareGameWrapper(gameWine, game.launchTools, path.join(dataRoot, 'launch-wrappers'), baseEnvironment, game.path);
+      launchWrapper = await prepareGameWrapper(gameWine, game.launchTools, path.join(dataRoot, 'launch-wrappers'), launchEnvironment, game.path);
       const protonRunner = steamProton ? undefined : await prepareProtonRunner(wine, compatibilityDataPath, steamRoot, launchWrapper.command, store.settings.shaderCacheLimitGiB);
       const wineCommand = protonRunner?.command ?? wine;
       args[2] = preparedGameWine(protonRunner, launchWrapper.command);
@@ -291,8 +312,8 @@ export class GameSession {
         addGameLog(`VC++ runtime ${installed} verified; launching the original package executable from a temporary decrypted launch view.`);
       }
       const environment = antiCheatEnvironment(gameLocaleEnvironment(gameWindowEnvironment(gameLoggingEnvironment(protonRunner || steamProton
-        ? { ...baseEnvironment }
-        : { ...baseEnvironment, WINEPREFIX: legacyPrefixRoot, WINEARCH: 'win64' }, verboseLogs)), locale));
+        ? { ...launchEnvironment }
+        : { ...launchEnvironment, WINEPREFIX: legacyPrefixRoot, WINEARCH: 'win64' }, verboseLogs)), locale));
       if (overlay && viewDirectory) {
         Object.assign(environment, overlay.environment);
         environment.STEAM_COMPAT_MOUNTS = steamCompatMounts(baseEnvironment, [await canonicalInstallPath(game.path), viewDirectory]);
@@ -381,6 +402,7 @@ export class GameSession {
       }
       else if (protonRunner) addGameLog(`Proton prefix: ${protonRunner.compatibilityDataPath}/pfx`);
       else await fs.mkdir(legacyPrefixRoot, { recursive: true });
+      steamSignal?.throwIfAborted();
       const tracked = await spawnGameProcess(binary, args, {
         cwd: game.path,
         env: environment,
@@ -391,6 +413,20 @@ export class GameSession {
       releaseDisplay = deps.displayGuard();
       operation.status = 'running';
       operation.phase = 'Xodus is running; waiting for the game window…';
+      if (steamSignal) {
+        let forceTimer: ReturnType<typeof setTimeout> | undefined;
+        const stop = () => {
+          if (owns()) { operation.status = 'stopping'; operation.phase = 'Stopping Xodus and Wine…'; changed(false); }
+          void tracked.stop().catch(error => console.error('Steam shortcut stop failed:', error));
+          forceTimer = setTimeout(() => {
+            if (this.active?.process === tracked) void tracked.forceStop().catch(error => console.error('Steam shortcut force-stop failed:', error));
+          }, 8000);
+          forceTimer.unref();
+        };
+        steamSignal.addEventListener('abort', stop, { once: true });
+        removeSteamStop = () => { steamSignal.removeEventListener('abort', stop); clearTimeout(forceTimer); };
+        if (steamSignal.aborted) stop();
+      }
       changed(true);
       const wrapper = launchWrapper;
       const acquired = service;
@@ -419,6 +455,7 @@ export class GameSession {
         operation.phase = operation.error;
         operation.finishedAt = new Date().toISOString();
       }).finally(async () => {
+        removeSteamStop();
         releaseDisplay(); detachGame();
         if (this.active?.operationId === operationId) this.active = undefined;
         try {
@@ -435,6 +472,7 @@ export class GameSession {
       this.active = active;
       return active;
     } catch (error) {
+      removeSteamStop();
       releaseDisplay(); detachGame();
       await inviteBridge?.stop().catch(() => undefined);
       await launchWrapper?.cleanup().catch(() => undefined);

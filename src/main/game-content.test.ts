@@ -245,3 +245,73 @@ it('handles case-insensitive SRC metadata with a wildcard root layout and safe r
   expect(await f.manager.roots(f.game)).toEqual([f.directory]);
   expect(await fs.readFile(path.join(f.directory, 'MicrosoftGame.config'), 'utf8')).toBe(childXml());
 });
+
+
+async function installedWithoutDeclaredContent() {
+  const f = await installFixture();
+  await f.manager.complete(f.game, f.selected);
+  // Catalog discovery added this content; the shipped base config has no list.
+  await fs.writeFile(path.join(f.base, 'MicrosoftGame.Config'), config());
+  return f;
+}
+it('retains validated installed DLC hints when the public catalog is unavailable, without granting access', async () => {
+  const f = await installedWithoutDeclaredContent();
+  const fetcher = vi.fn(async () => new Response('', { status: 503 }));
+  const manager = new GameContent(f.data, fetcher);
+  expect(await manager.relatedProducts(f.game, {}, 'US')).toEqual([OWN]);
+  expect(await manager.roots(f.game)).toEqual([f.directory]);
+  // Installation/repair still requires current catalog and account admission.
+  await expect(manager.plan(f.game, access)).rejects.toThrow('metadata');
+  expect(await fs.readFile(path.join(f.base, 'MicrosoftGame.Config'), 'utf8')).toBe(config());
+  expect(fetcher).toHaveBeenCalledTimes(2);
+});
+it('retains installed DLC after the optional launch discovery deadline and retries on the next launch', async () => {
+  const f = await installedWithoutDeclaredContent();
+  const realTimeout = AbortSignal.timeout.bind(AbortSignal);
+  const timeout = vi.spyOn(AbortSignal, 'timeout').mockImplementation(ms => realTimeout(ms === 5_000 ? 25 : ms));
+  const requests: AbortSignal[] = [];
+  const fetcher = vi.fn(async (_url: URL | RequestInfo, options?: RequestInit) => {
+    const signal = options!.signal!;
+    requests.push(signal);
+    return new Promise<Response>((_resolve, reject) => {
+      signal.throwIfAborted();
+      signal.addEventListener('abort', () => reject(signal.reason), { once: true });
+    });
+  }) as unknown as typeof fetch;
+  try {
+    const manager = new GameContent(f.data, fetcher);
+    expect(await manager.relatedProducts(f.game, {})).toEqual([OWN]);
+    expect(requests[0].aborted).toBe(true);
+    expect(await manager.relatedProducts(f.game, {})).toEqual([OWN]);
+    expect(fetcher).toHaveBeenCalledTimes(2);
+  } finally { timeout.mockRestore(); }
+});
+it('keeps package-declared hints on a catalog outage but excludes incomplete or changed local content', async () => {
+  const f = await installedWithoutDeclaredContent();
+  await fs.unlink(path.join(f.directory, 'logo.PNG'));
+  const fetcher = vi.fn(async () => { throw Error('network unavailable'); });
+  const manager = new GameContent(f.data, fetcher);
+  expect(await manager.relatedProducts(f.game, {})).toEqual([]);
+  await fs.writeFile(path.join(f.base, 'MicrosoftGame.Config'), baseXml);
+  expect((await manager.relatedProducts(f.game, {})).sort()).toEqual([OWN, GP, PAID].sort());
+  expect(await manager.roots(f.game)).toEqual([]);
+});
+it('honors explicit caller cancellation instead of replacing it with installed DLC hints', async () => {
+  const f = await installedWithoutDeclaredContent();
+  const fetcher = vi.fn(async (_url: URL | RequestInfo, options?: RequestInit) => new Promise<Response>((_resolve, reject) => {
+    options!.signal!.addEventListener('abort', () => reject(options!.signal!.reason), { once: true });
+  })) as unknown as typeof fetch;
+  const manager = new GameContent(f.data, fetcher);
+  const canceled = new AbortController(); canceled.abort(Error('caller canceled'));
+  await expect(manager.relatedProducts(f.game, {}, 'US', canceled.signal)).rejects.toThrow('caller canceled');
+  expect(fetcher).not.toHaveBeenCalled();
+  await expect(manager.relatedProducts(f.game, {}, 'US', AbortSignal.timeout(25))).rejects.toThrow();
+  expect(fetcher).toHaveBeenCalledTimes(1);
+});
+it('uses validated installed content offline without querying the catalog', async () => {
+  const f = await installedWithoutDeclaredContent();
+  const fetcher = vi.fn(async () => { throw Error('must not reach network'); });
+  const manager = new GameContent(f.data, fetcher);
+  expect(await manager.relatedProducts(f.game, {}, 'US', undefined, true)).toEqual([OWN]);
+  expect(fetcher).not.toHaveBeenCalled();
+});

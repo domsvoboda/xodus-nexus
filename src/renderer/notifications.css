@@ -11,7 +11,9 @@
 .notification-panel header button { display: grid; place-items: center; background: transparent; border: 0; border-radius: 3px; width: 30px; height: 30px; cursor: pointer; }
 .notification-panel header svg { width: 17px; height: 17px; }
 .notification-panel > p { padding: 8px 16px; color: #bac0c7; font-size: 12px; line-height: 1.5; }
-.notification-panel ul { list-style: none; padding: 4px; margin: 0; }
+/* Keep the padded controller ring clear of the panel's scrolling clip and
+   adjacent notification backgrounds. */
+.notification-panel ul { list-style: none; padding: 8px; margin: 0; display: grid; gap: 8px; }
 .notification-panel li button { width: 100%; display: flex; align-items: center; gap: 11px; padding: 13px 10px; border: 0; border-radius: 4px; text-align: left; background: transparent; cursor: pointer; }
 .notification-panel li button:hover { background: #393f47; }
 .notification-panel li button.unread { background: #30382f; }

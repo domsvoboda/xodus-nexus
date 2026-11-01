@@ -1,0 +1,190 @@
+/* Shared control geometry and interaction states across pages, dialogs and social UI. */
+:root {
+  --control-height: 44px;
+  --control-radius: 6px;
+  --focus-ring: #a9d792;
+  --control-border: #59616b;
+  --action-green: #2e7d32;
+  --action-green-hover: #358237;
+}
+button, input, select, textarea { font-family: inherit; }
+button, a, input, select, textarea, summary { scroll-margin-block: 16px; }
+button svg, a svg { flex-shrink: 0; }
+:where(button, a[href], input, select, textarea, summary, [tabindex]):focus-visible {
+  outline: 2px solid var(--focus-ring);
+  outline-offset: 3px;
+}
+html[data-gamepad-navigation] [data-gamepad-focus] {
+  outline: 2px solid var(--focus-ring) !important;
+  outline-offset: -2px;
+}
+html:not([data-gamepad-navigation]) [data-gamepad-card][tabindex="0"]:focus-visible,
+html:not([data-gamepad-navigation]) [data-gamepad-card]:has(> :is(.library-card,.catalog-card-install):focus-visible) {
+  outline: 2px solid var(--focus-ring); outline-offset: -2px;
+}
+:is(button, a).primary, :is(button, a).secondary {
+  display: inline-flex; align-items: center; justify-content: center; gap: 8px;
+  min-height: var(--control-height); height: auto; max-width: 100%;
+  padding: 10px 16px; border: 1px solid var(--line); border-radius: var(--control-radius);
+  font-size: 13px; font-weight: 600; line-height: 1.4; text-align: center;
+  text-decoration: none; overflow-wrap: anywhere; cursor: pointer;
+}
+a.primary { background: #388e35; color: #fff; }
+a.primary:hover { background: var(--green-hover); }
+:is(button, a).secondary { background: #32363b; color: #f7f7f8; }
+button:disabled { cursor: not-allowed; }
+:is(button.primary, button.secondary, input, select, textarea):disabled { opacity: .5; cursor: not-allowed; }
+button.danger { border-color: #aa6060; color: #ffb0b0; }
+button.danger:hover:not(:disabled) { background: #482d32; border-color: var(--danger); }
+.button-row { gap: 10px; }
+:is(.settings-page, .game-dialog, .wizard, .library-filters, .install-form) :is(select, input:not([type="checkbox"]):not([type="radio"])) {
+  min-width: 0; max-width: 100%; min-height: var(--control-height); height: auto;
+  border-radius: var(--control-radius); border: 1px solid var(--control-border);
+  padding: 10px 12px; background: #1c1f23; color: #f5f5f5; font-size: 13px; line-height: 1.4;
+}
+:is(.settings-page, .game-dialog) textarea { border: 1px solid var(--control-border); border-radius: var(--control-radius); padding: 12px; color: inherit; background: #1c1f23; }
+:is(.settings-page, .game-dialog, .wizard) .input-action { min-width: 0; border-radius: var(--control-radius); }
+:is(.settings-page, .game-dialog, .wizard) .input-action input { border: 0; width: 100%; }
+.input-action button { min-width: var(--control-height); min-height: var(--control-height); flex-shrink: 0; }
+input[aria-invalid="true"], textarea[aria-invalid="true"] { border-color: var(--danger) !important; }
+.error-text, .warning-text, [role="alert"] { overflow-wrap: anywhere; }
+
+/* One native checkbox implementation. Labels provide the full 44px target. */
+label.check-field, .game-dialog label.check-field {
+  display: flex; align-items: center; gap: 12px; min-width: 0; min-height: var(--control-height);
+  margin: 0; padding: 8px 0; border-radius: var(--control-radius);
+  color: #e6e9ed; font-size: 13px; line-height: 1.5; cursor: pointer;
+}
+.check-field .check-copy { display: grid; gap: 4px; min-width: 0; font-weight: 600; overflow-wrap: anywhere; }
+.check-field .check-copy small { display: block; margin: 0; color: var(--muted); font-size: 12px; font-weight: 400; line-height: 1.5; }
+label.check-field input.check-input {
+  appearance: auto; width: 20px; height: 20px; min-height: 0; flex: 0 0 20px;
+  padding: 0; margin: 0; accent-color: #65a945; cursor: pointer;
+}
+.check-field:has(input:disabled) { cursor: not-allowed; opacity: .55; }
+.check-field input:disabled { opacity: 1; cursor: not-allowed; }
+.check-field:has(input:focus-visible), html[data-gamepad-navigation] .check-field:has([data-gamepad-focus]) {
+  outline: 2px solid var(--focus-ring); outline-offset: 4px;
+}
+.check-field input:focus-visible, html[data-gamepad-navigation] .check-field input[data-gamepad-focus] { outline: none !important; }
+label.check-switch { justify-content: space-between; }
+.check-switch .check-copy { order: -1; }
+label.check-switch input.check-input {
+  appearance: none; position: relative; width: 44px; height: 26px; flex-basis: 44px;
+  border: 1px solid #7d8792; border-radius: 16px; background: #343840;
+}
+label.check-switch input::after { content: ''; position: absolute; inset-inline-start: 4px; top: 4px; width: 16px; height: 16px; border-radius: 50%; background: #e6e9ed; transition: transform .12s; }
+label.check-switch input:checked { background: #388e35; border-color: #91c67b; }
+label.check-switch input:checked::after { transform: translateX(18px); background: #fff; }
+[dir="rtl"] label.check-switch input:checked::after { transform: translateX(-18px); }
+label.check-field.download-delete-confirm { padding: 12px; margin-top: 16px; background: #38272b; color: #ffb0b0; }
+
+/* Readable settings, predictable section rhythm and wrapping translations. */
+.settings-card, .settings-card.compact { margin-bottom: 16px; border-radius: 8px; }
+.settings-page .settings-heading { gap: 14px; flex-wrap: wrap; }
+.settings-heading .settings-icon, .settings-heading .account-avatar { flex-shrink: 0; border-radius: 8px; }
+.settings-heading .account-avatar { border-radius: 50%; }
+.settings-heading > div:nth-child(2) { flex: 1; min-width: min(180px, 100%); }
+.settings-heading p { font-size: 12px; line-height: 1.5; white-space: normal; overflow: visible; overflow-wrap: anywhere; }
+.settings-page .status-label { flex-shrink: 0; font-size: 11px; border-radius: 4px; }
+.settings-page :is(.fine-print, .account-note, .save-row span, .offline-permissions-note, .offline-permissions-limit) { font-size: 12px; line-height: 1.5; }
+.settings-page .form-grid label { min-width: 0; font-size: 13px; line-height: 1.5; }
+.settings-storage .form-grid { grid-template-columns: minmax(0, 2fr) repeat(2, minmax(0, 1fr)); }
+.settings-page .save-row { flex-wrap: wrap; gap: 12px; }
+.save-row > button { margin-inline-start: auto; flex-shrink: 0; }
+.settings-page .settings-language .save-row { flex: 1 1 300px; }
+.settings-language > label { max-width: 100%; }
+.settings-page .settings-language select { width: 100%; }
+.settings-page .toggle-row { padding: 12px 16px; margin-bottom: 12px; border-radius: 6px; }
+.settings-page .guide-settings-fields > label { grid-template-rows: auto minmax(44px, auto) auto; }
+.settings-page .meta-grid span, .settings-page .dependency { font-size: 11px; }
+.settings-page .meta-grid strong, .settings-page .runtime-phase { font-size: 12px; }
+.settings-page .meta-grid strong { white-space: normal; overflow-wrap: anywhere; }
+.settings-page .diagnostics-content > section { min-width: 0; }
+
+.game-dialog, .gamepad-select-dialog { border-radius: 8px; border-color: var(--control-border); padding: 24px; }
+.game-dialog h2 { font-size: 22px; line-height: 1.25; overflow-wrap: anywhere; }
+.game-dialog p, .game-dialog label { font-size: 13px; line-height: 1.5; }
+.game-dialog .dialog-actions { gap: 10px; margin-top: 24px; }
+.game-dialog .dialog-actions button { min-height: var(--control-height); }
+.game-dialog .game-launch-tools { min-width: 0; padding: 16px; border-radius: 6px; }
+.game-launch-tools > small, .game-launch-tools label > small { font-size: 12px; line-height: 1.5; }
+.gamepad-select-dialog button { min-height: var(--control-height); padding: 10px 12px; font-size: 13px; }
+.toast { font-size: 13px; line-height: 1.5; grid-template-columns: 20px minmax(0, 1fr) 32px; }
+.toast button { min-width: 32px; min-height: 32px; }
+.gamepad-hints { font-size: 12px; gap: 8px 16px; padding: 10px 16px; border-radius: 8px; }
+
+@media (max-width: 1100px) {
+  .sidebar .nav-item { min-height: 56px; height: auto; grid-template-columns: 1fr; gap: 4px; padding: 8px 2px; }
+  .sidebar .nav-item span { display: block; font-size: 10px; line-height: 1.2; text-align: center; overflow-wrap: anywhere; }
+  .sidebar { padding-inline: 8px; }
+}
+@media (max-width: 820px) {
+  .page { padding: 20px 20px 64px; }
+  .page-header { flex-wrap: wrap; gap: 12px; }
+  .page-header h1 { font-size: 28px; }
+  .settings-card { padding: 20px; }
+  .settings-storage .form-grid { grid-template-columns: 1fr; }
+  .settings-guide .guide-settings-fields { grid-template-columns: 1fr; }
+  .settings-heading > div:nth-child(2) { min-width: 120px; }
+  .settings-heading .status-label { margin-left: 0; }
+  .settings-language .save-row { justify-content: space-between; flex-wrap: wrap; }
+  .dialog-backdrop { padding: 16px; }
+  .game-dialog { max-height: calc(100dvh - 32px); padding: 20px; }
+  .game-dialog .dialog-actions > button { flex: 1 1 140px; }
+  .gamepad-hints { font-size: 11px; gap: 6px 12px; padding: 8px 12px; }
+  .catalog-selection-copy { padding: 24px; }
+}
+@media (max-height: 650px) {
+  .sidebar { padding-top: 8px; padding-bottom: 8px; }
+  .account-summary { margin-bottom: 4px; }
+  .sidebar .recents { display: none; }
+  .sidebar nav { gap: 0; }
+  .sidebar .nav-item { min-height: 44px; padding-block: 4px; }
+  .game-dialog { max-height: calc(100dvh - 24px); }
+  .dialog-backdrop { padding: 12px; }
+}
+@media (prefers-reduced-motion: reduce) {
+  .check-switch input::after, .poster-card .game-cover, .poster-card .cover-placeholder { transition: none; }
+}
+@media (forced-colors: active) {
+  label.check-switch input.check-input { appearance: auto; }
+  label.check-switch input::after { display: none; }
+}
+.settings-page .launcher-card .settings-heading { flex: 1 1 220px; flex-wrap: nowrap; }
+.settings-page .launcher-card .settings-heading > div:nth-child(2) { min-width: 0; }
+.download-item { border-radius: 8px; }
+.download-actions { flex-wrap: wrap; gap: 8px; }
+.download-actions button, .game-menu button, .gd-actions button { min-height: var(--control-height); border-radius: var(--control-radius); }
+.download-actions button { width: var(--control-height); height: var(--control-height); }
+.download-main > p { white-space: normal; overflow-wrap: anywhere; line-height: 1.5; font-size: 12px; }
+.download-heading h3 { line-height: 1.4; }
+.download-heading span { overflow-wrap: anywhere; }
+.gd-text-button, .achievements-refresh, .section-title > button { min-height: var(--control-height); }
+.library-filters { flex-wrap: wrap; }
+.library-filters label { min-width: 0; max-width: 100%; }
+.library-filters :is(select,input) { max-width: 100%; }
+@media (max-width: 820px) {
+  .settings-page .settings-language { align-items: stretch; gap: 12px; }
+  .settings-page .settings-language > label { width: 100%; }
+  .settings-page .settings-language .save-row { flex-basis: 100%; }
+  .download-item { grid-template-columns: 40px minmax(0, 1fr); }
+  .download-actions { grid-column: 2; }
+  .download-heading { flex-wrap: wrap; gap: 4px; }
+}
+.wizard-overlay { padding: 16px; }
+.wizard { max-height: calc(100dvh - 32px); overflow-y: auto; }
+.wizard .input-action { min-width: 0; }
+.wizard-actions, .wizard-account { flex-wrap: wrap; gap: 12px; }
+.button-row a.primary { min-height: var(--control-height); padding: 10px 16px; font-size: 13px; border-radius: var(--control-radius); }
+.notification-panel header button { width: 44px; height: 44px; flex-shrink: 0; }
+.notification-panel header h2 { overflow-wrap: anywhere; }
+html[data-gamepad-navigation] :is(.social-circle-button, .social-people-search-submit) { min-width: 44px; min-height: 44px; }
+.toast { bottom: 68px; }
+html[data-gamepad-navigation] .nexus-social-toggle { bottom: 88px; }
+html[data-gamepad-navigation] .toast { bottom: 144px; }
+:is(button, a).primary, .button-row a.primary { background: var(--action-green); }
+:is(button, a).primary:hover:not(:disabled) { background: var(--action-green-hover); }
+.game-dialog:has(.game-launch-tools) { width: min(640px, 100%); }
+label.check-field:not(.check-switch):has(.check-copy small) { align-items: flex-start; }
+label.check-field:not(.check-switch):has(.check-copy small) input { margin-top: 2px; }

@@ -98,11 +98,13 @@ export function NotificationBell({notices,failed=false,unsupported=false,openNot
   const [open,setOpen]=useState(false),root=useRef<HTMLDivElement>(null),bell=useRef<HTMLButtonElement>(null);
   const count=notices.filter(notice=>notice.unread).length;
   const toggle=(value:boolean)=>{setOpen(value);openNotice?.(value);};
+  // Restore after React removes the popup and pad navigation leaves its scope.
+  const close=()=>{toggle(false);requestAnimationFrame(()=>bell.current?.focus({preventScroll:true}));};
   useEffect(()=>{
     if(!open)return;
     root.current?.querySelector<HTMLElement>('[data-gamepad-initial]')?.focus({preventScroll:true});
     const outside=(event:PointerEvent)=>{if(!root.current?.contains(event.target as Node))toggle(false);};
-    const escape=(event:KeyboardEvent)=>{if(event.key==='Escape'){event.preventDefault();event.stopImmediatePropagation();toggle(false);bell.current?.focus({preventScroll:true});}};
+    const escape=(event:KeyboardEvent)=>{if(event.key==='Escape'){event.preventDefault();event.stopImmediatePropagation();close();}};
     document.addEventListener('pointerdown',outside);window.addEventListener('keydown',escape,true);
     return()=>{document.removeEventListener('pointerdown',outside);window.removeEventListener('keydown',escape,true);};
   },[open]);
@@ -111,7 +113,7 @@ export function NotificationBell({notices,failed=false,unsupported=false,openNot
       <Bell aria-hidden="true"/>{count>0?<span className="notification-badge" aria-hidden="true">{notificationBadge(count)}</span>:null}
     </button>
     {open?<section id="notification-panel" className="notification-panel" role="dialog" aria-label={ui('notifications.title')} data-gamepad-layer>
-      <header><h2>{ui('notifications.title')}</h2><button data-gamepad-initial data-gamepad-cancel aria-label={ui('notifications.close')} onClick={()=>{toggle(false);bell.current?.focus({preventScroll:true});}}><X/></button></header>
+      <header><h2>{ui('notifications.title')}</h2><button data-gamepad-initial data-gamepad-cancel aria-label={ui('notifications.close')} onClick={()=>{close();}}><X/></button></header>
       {failed?<p role="status">{ui('notifications.refresh_failed')}</p>:unsupported?<p>{ui('notifications.unsupported')}</p>:null}
       {!notices.length?<p>{ui('notifications.empty')}</p>:<ul>{notices.map(notice=><li key={notice.key}>
         <button className={notice.unread?'unread':''} onClick={()=>{toggle(false);onSelect(notice);}}>

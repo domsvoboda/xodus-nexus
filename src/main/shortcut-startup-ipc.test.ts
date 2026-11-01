@@ -21,3 +21,11 @@ it('makes a normal window ready before scheduling its visible account check',asy
     showBeforeAccountCheck:async(show:()=>void)=>{expect(context.launchReady).toBe(true);show();},refreshInitialAccount:vi.fn()};
   await runInNewContext(script,context);expect(showLauncher).toHaveBeenCalledOnce();
 });
+
+it('a Steam secondary exits without touching primary-only services or game cleanup',()=>{
+  const quitSource=source.slice(source.indexOf("app.on('before-quit', (event) => {"));
+  const quitScript=transpileModule(quitSource,{compilerOptions:{target:ScriptTarget.ES2022}}).outputText;
+  const event={preventDefault:vi.fn()};
+  runInNewContext(quitScript,{primaryInstance:false,app:{on:(_name:string,callback:(event:unknown)=>void)=>callback(event)}});
+  expect(event.preventDefault).not.toHaveBeenCalled();
+});

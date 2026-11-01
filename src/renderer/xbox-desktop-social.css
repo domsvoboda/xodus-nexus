@@ -35,15 +35,6 @@
 .guide-state.on { display:flex;align-items:center;gap:6px;color:#b5e2a3;border-color:#5c934d;background:#2d4029;font-weight:600; }
 .guide-state.on::before { content:'';width:6px;height:6px;border-radius:50%;background:#91d46e; }
 .guide-settings-content { padding:0 24px 20px;border-top:1px solid var(--line); }
-.guide-enable { display:flex;align-items:center;justify-content:space-between;gap:20px;padding:18px 0;cursor:pointer; }
-.guide-enable>span { display:grid;gap:5px; }
-.guide-enable strong { font-size:13px;font-weight:600; }
-.guide-enable small { font-size:11px;color:var(--muted);line-height:1.5; }
-.guide-enable input { appearance:none;position:relative;flex:0 0 36px;width:36px;height:20px;margin:0;border:1px solid #656c76;border-radius:20px;background:#343840;cursor:pointer; }
-.guide-enable input::after { content:'';position:absolute;top:3px;left:3px;width:12px;height:12px;background:#d8dce0;border-radius:50%;transition:transform .15s; }
-.guide-enable input:checked { background:var(--green);border-color:var(--green); }
-.guide-enable input:checked::after { transform:translateX(16px);background:#fff; }
-.guide-enable input:focus-visible { outline:2px solid var(--green);outline-offset:4px; }
 .guide-settings-fields { display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:20px;min-width:0;margin:0;padding:2px 0 20px;border:0; }
 .guide-settings-fields>label { display:grid;grid-template-rows:auto 40px auto;align-content:start;gap:8px;min-width:0;font-size:12px;font-weight:600; }
 .guide-settings-fields input,.guide-settings-fields select { box-sizing:border-box;width:100%;height:40px;padding:0 12px;border:1px solid var(--line);border-radius:5px;background:var(--canvas);color:inherit;font:inherit; }
