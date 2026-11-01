@@ -124,9 +124,11 @@ html:not([data-gamepad-navigation]) [data-gamepad-card]:has(> :is(.library-card,
 .search-box input::placeholder { color: #8d9298; }
 .search-box > button { border: 0; background: none; color: #a8acb1; padding: 3px; cursor: pointer; }
 .search-box > button svg { width: 15px; }
-.search-results { position: absolute; left: 0; right: 0; top: 43px; padding: 6px; background: #292c31; border: 1px solid #484d53; border-radius: 4px; box-shadow: 0 20px 40px rgba(0,0,0,.55); }
+.search-results { position: absolute; left: 0; right: 0; top: 43px; padding: 8px; background: #292c31; border: 1px solid #484d53; border-radius: 4px; box-shadow: 0 20px 40px rgba(0,0,0,.55); max-height: min(480px, calc(100vh - 110px)); overflow-y: auto; display: grid; gap: 8px; }
 .search-results button { width: 100%; height: 52px; border: 0; background: transparent; display: grid; grid-template-columns: 40px 1fr; align-items: center; gap: 10px; text-align: left; padding: 6px; cursor: pointer; }
 .search-results button:hover { background: #373b40; }
+.search-results .search-all-results { border-top: 1px solid #484d53; }
+.search-results .search-all-results > svg { width: 20px; height: 20px; justify-self: center; }
 .search-results .game-cover, .search-results .cover-placeholder { width: 40px; height: 40px; }
 .search-results span { min-width: 0; display: grid; gap: 3px; }
 .search-results strong, .search-results small { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }

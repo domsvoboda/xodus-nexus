@@ -16,6 +16,13 @@ const get = (selector: string) => {
 };
 const click = async (selector: string) => { await act(async () => { get(selector).focus(); get(selector).click(); }); };
 const press = async (button: number) => { await act(async () => { harness.press(button); }); await act(async () => { harness.step(); }); };
+const typeSearch = async (query: string) => {
+  await act(async () => {
+    const input = get('.search-box input');
+    Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value')!.set!.call(input, query);
+    input.dispatchEvent(new Event('input', { bubbles: true }));
+  });
+};
 beforeEach(async () => {
   vi.stubGlobal('IS_REACT_ACT_ENVIRONMENT', true);
   localStorage.clear(); window.location.hash = '';
@@ -37,6 +44,8 @@ beforeEach(async () => {
     getGameDetails: vi.fn(async () => undefined),
     getGameActivity: vi.fn(async () => ({ status: 'unsupported' })),
     getGameAchievements: vi.fn(async () => ({ status: 'unsupported' })),
+    searchCatalog: vi.fn(async (query: string) => ({ query, products: [], hasMore: false })),
+    getFeaturedCatalog: vi.fn(async () => ({ query: '', products: [], hasMore: false })),
     ...demo.voice,
     getXboxChatReads: vi.fn(async () => undefined), onXboxChatReads: unsubscribe, viewedXboxChat: vi.fn(async () => {}),
     nativeSocial: { ...demo.social, openXboxPlayerProfile: vi.fn(async (xuid: string) => { profileListener?.({ id: 'demo-full-profile', xuid }); }) },
@@ -47,6 +56,65 @@ beforeEach(async () => {
   await act(async () => { harness.step(); });
 });
 afterEach(async () => { await act(async () => root.unmount()); vi.restoreAllMocks(); vi.unstubAllGlobals(); document.body.innerHTML = ''; });
+
+it.each([true, false])('returns from Load More to the previous game before entering the new rows (more pages: %s)', async hasMore => {
+  const first = demoAccountLibrary('all', new Map());
+  let finish!: (value: typeof first) => void;
+  vi.mocked(window.launcher.getAccountLibrary).mockImplementation(async (_kind, cursor) => cursor
+    ? new Promise(resolve => { finish = resolve; }) : { ...first, products: [], cursor: 'next-page' });
+  await click('.sidebar nav button:nth-child(2)');
+  const cards = [...document.querySelectorAll<HTMLElement>('[data-gamepad-grid] [data-gamepad-detail-target]')];
+  const origin = cards.at(-1)!;
+  cards.forEach((card, index) => { (card.closest<HTMLElement>('[data-gamepad-card]') ?? card).dataset.testRect = `200,${200 + index * 120},100,100`; });
+  const more = get('[data-gamepad-library-footer] button');
+  more.dataset.testRect = `200,${200 + cards.length * 120},100,40`;
+  await press(3);
+  await act(async () => { origin.focus(); harness.step(); });
+  await press(13);
+  expect(document.activeElement).toBe(more);
+  await press(0);
+  expect(more.getAttribute('aria-busy')).toBe('true');
+  expect(document.activeElement).toBe(more);
+  await act(async () => { finish({ ...first, cursor: hasMore ? 'last-page' : undefined }); });
+  expect(document.activeElement).toBe(origin);
+  const added = [...document.querySelectorAll<HTMLElement>('[data-gamepad-grid] [data-gamepad-detail-target]')].find(card => !cards.includes(card))!;
+  added.closest<HTMLElement>('[data-gamepad-card]')!.dataset.testRect = `200,${200 + cards.length * 120},100,100`;
+  await press(13);
+  expect(document.activeElement).toBe(added);
+});
+
+it('navigates Search suggestions in both directions, selects a game, and offers full results without a match', async () => {
+  await press(3); await typeSearch('Forza');
+  const suggestion = get('#global-search-results button');
+  await press(13); expect(document.activeElement).toBe(suggestion);
+  await press(13); expect(document.activeElement).toBe(get('.search-all-results'));
+  await press(13); expect(document.activeElement).toBe(get('.search-all-results'));
+  await press(12); expect(document.activeElement).toBe(suggestion);
+  await press(12); expect(document.activeElement).toBe(get('.search-box input'));
+  await press(13); await press(0);
+  expect(get('[data-gamepad-detail]').dataset.gamepadDetail).toBe(demoSnapshot().games.find(game => game.title.includes('Forza'))!.id);
+  await press(3); await typeSearch('not installed here');
+  expect(document.querySelectorAll('#global-search-results button')).toHaveLength(1);
+  await press(13); expect(document.activeElement).toBe(get('.search-all-results'));
+  // The full-results action uses the same submission path as Enter.
+  await press(0);
+  expect(document.querySelector('.store-page')).not.toBeNull();
+  expect(document.querySelector('#global-search-results')).toBeNull();
+});
+
+it('dismisses Search with B, clears the query, and returns to the active Library game without changing pages', async () => {
+  await click('.sidebar nav button:nth-child(2)');
+  const card = get('.library-card');
+  await press(3);
+  await act(async () => { card.focus(); harness.step(); });
+  await press(3); await typeSearch('Forza');
+  await press(13); expect(document.activeElement?.closest('#global-search-results')).not.toBeNull();
+  await press(1);
+  expect((get('.search-box input') as HTMLInputElement).value).toBe('');
+  expect(document.querySelector('#global-search-results')).toBeNull();
+  expect(document.querySelector('.library-page')).not.toBeNull();
+  expect(document.activeElement).toBe(card);
+});
 
 it.each(['.home-feature-card', '.poster-card'])('opens the clicked Home game and returns to its card with B (%s)', async selector => {
   const card = get(selector), key = card.dataset.gamepadKey!;

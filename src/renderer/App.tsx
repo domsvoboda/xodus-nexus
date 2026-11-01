@@ -447,6 +447,18 @@ export function AccountGames({ data, toast, selectedId, select, menu, openProduc
   const [error, setError] = useState<string>();
   const [installing, setInstalling] = useState<string>();
   const [searchTerm, setSearchTerm] = useState('');
+  const accountGames = useRef<HTMLElement>(null);
+  const lastGridFocus = useRef<HTMLElement>();
+  const paginationReturn = useRef<HTMLElement>();
+  useBrowserLayoutEffect(() => {
+    if (busy || !paginationReturn.current) return;
+    const target = paginationReturn.current;
+    paginationReturn.current = undefined;
+    const active = document.activeElement;
+    // Restore the old bottom-row game before Down enters the newly loaded
+    // rows. Do not steal focus if the user moved away while loading.
+    if (target.isConnected && document.hasFocus() && (active === document.body || active?.closest('[data-gamepad-library-footer]'))) target.focus();
+  }, [busy]);
   useEffect(() => {
     if (!query.trim()) { setSearchTerm(''); return; }
     const timer = window.setTimeout(() => setSearchTerm(query.trim()), 300);
@@ -487,6 +499,10 @@ export function AccountGames({ data, toast, selectedId, select, menu, openProduc
   ].filter(row => row.title.toLocaleLowerCase().includes(query.trim().toLocaleLowerCase())),
     sort ? visible?.recentProductIds : undefined, row => row.product?.productId ?? row.game?.storeId?.toUpperCase());
   async function load(refresh = false) {
+    if (!refresh && document.documentElement.hasAttribute('data-gamepad-navigation') && accountGames.current?.contains(document.activeElement)
+      && document.activeElement?.closest('[data-gamepad-library-footer]')) {
+      paginationReturn.current = lastGridFocus.current ?? [...accountGames.current.querySelectorAll<HTMLElement>('[data-gamepad-grid] [data-gamepad-detail-target]')].at(-1);
+    }
     setBusy(true); setError(undefined);
     try {
       const next = await window.launcher.getAccountLibrary(kind, refresh ? undefined : visible?.cursor, refresh, sort);
@@ -495,7 +511,7 @@ export function AccountGames({ data, toast, selectedId, select, menu, openProduc
       // This instance is remounted on identity changes, so pending callbacks
       // cannot publish another account's products into the active component.
       setResult(old => ({ ...next, products: refresh ? next.products : [...(old?.products ?? []), ...next.products.filter(p => !old?.products.some(old => old.productId === p.productId))] }));
-    } catch (error) { if (currentIdentity.current === identity) setError(errorMessage(error)); }
+    } catch (error) { if (currentIdentity.current === identity) { paginationReturn.current = undefined; setError(errorMessage(error)); } }
     finally { if (currentIdentity.current === identity) setBusy(false); }
   }
   async function install(product: CatalogProduct) {
@@ -508,7 +524,10 @@ export function AccountGames({ data, toast, selectedId, select, menu, openProduc
     } catch (error) { toast({ kind: 'error', message: errorMessage(error) }); }
     finally { setInstalling(undefined); }
   }
-  return <section className="account-games">
+  return <section ref={accountGames} className="account-games" onFocusCapture={event => {
+    const target = event.target as HTMLElement;
+    if (target.closest('[data-gamepad-grid]') && target.hasAttribute('data-gamepad-detail-target')) lastGridFocus.current = target;
+  }}>
     <div className="library-filters" data-gamepad-filters>
       <label>{ui("ui.access_ec5ba0a")}<select aria-label={ui("ui.access_ec5ba0a")} value={kind} onChange={event => setKind(event.target.value as AccountLibraryPage['kind'])}><option value="all">{ui("ui.all_games_cf2bf15")}</option><option value="owned">{ui("ui.owned_17b760c")}</option><option value="gamepass">{ui("ui.in_game_pass_69c8edf")}</option><option value="other">{ui("ui.other_access_542b2ae")}</option></select></label>
       <label>{ui("ui.play_state_6f423d1")}<select aria-label={ui("ui.play_state_6f423d1")} value={playState} onChange={event => setPlayState(event.target.value as typeof playState)}><option value="all">{ui("ui.all_states_f189411")}</option><option value="installed">{ui("ui.installed_f8b32f4")}</option><option value="installable">{ui("ui.ready_to_install_bda18b9")}</option></select></label>
@@ -1119,15 +1138,18 @@ export function GlobalSearch({ games, page, query, change, submit, select }: {
   useEffect(() => setOpen(false), [page]);
   const term = query.trim().toLowerCase();
   const results = term ? games.filter(game => `${game.title} ${game.storeId ?? ''}`.toLowerCase().includes(term)) : [];
-  const visible = open && page !== 'store' && results.length > 0;
+  const visible = open && page !== 'store' && (results.length > 0 || term.length >= 2);
   return <div className="search-box" onFocus={() => setOpen(true)} onBlur={event => {
     if (!event.currentTarget.contains(event.relatedTarget as Node | null)) setOpen(false);
+  }} onKeyDown={event => {
+    if (event.key === 'Escape') { event.preventDefault(); event.stopPropagation(); setOpen(false); change(''); }
   }}><Search /><input value={query} onChange={event => { change(event.target.value); setOpen(true); }} onKeyDown={event => {
-    if (event.key === 'Escape') setOpen(false);
     if (event.key === 'Enter' && term.length >= 2) { setOpen(false); submit(query.trim()); }
   }} aria-expanded={visible} aria-controls={visible ? 'global-search-results' : undefined} placeholder={ui("ui.search_games_add_ons_and_your_library_55858e9")} />
     {query ? <button aria-label={ui("ui.clear_search_3b7ea51")} onClick={() => { change(''); setOpen(false); }}><X /></button> : null}
-    {visible ? <div className="search-results" id="global-search-results">{results.map(game => <button key={game.id} onClick={() => { setOpen(false); change(''); select(game.id); }}><Cover game={game} /><span><GameTitle title={game.title} /><small>{game.storeId ?? game.path}</small></span></button>)}</div> : null}
+    {visible ? <div className="search-results" id="global-search-results">{results.map(game => <button key={game.id} onClick={() => { setOpen(false); change(''); select(game.id); }}><Cover game={game} /><span><GameTitle title={game.title} /><small>{game.storeId ?? game.path}</small></span></button>)}
+      {term.length >= 2 ? <button className="search-all-results" onClick={() => { setOpen(false); submit(query.trim()); }}><Search aria-hidden="true"/><span>{ui('ui.search_49c266b')}</span></button> : null}
+    </div> : null}
   </div>;
 }
 

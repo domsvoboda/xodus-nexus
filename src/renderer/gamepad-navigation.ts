@@ -366,6 +366,15 @@ export function installGamepadNavigation(win: Window, options: Options): () => v
       }
       return; // Never act behind a modal or confirm a destructive action.
     }
+    const search = focused()?.closest<HTMLElement>('.search-box');
+    if (search) {
+      escapeFromPad = true;
+      try { search.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true })); }
+      finally { escapeFromPad = false; }
+      const content = doc.querySelector<HTMLElement>('.page-scroll');
+      if (content) focus(pageReturn(content) ?? content.querySelector<HTMLElement>('[data-gamepad-home-primary]') ?? initial(content));
+      return;
+    }
     const detailBack = [...doc.querySelectorAll<HTMLElement>('[data-gamepad-detail-back]')].find(enabled);
     if (detailBack) { pendingDetail = undefined; detailReturn = undefined; detailBack.click(); return; }
     if (detailReturn && focused()?.closest('[data-gamepad-detail]')?.getAttribute('data-gamepad-detail') === detailReturn.id && enabled(detailReturn.origin)) {
@@ -376,9 +385,17 @@ export function installGamepadNavigation(win: Window, options: Options): () => v
   };
   /** A move that bypasses the ordinary directional beam. `select` permits auto-select on focus. */
   type Exit = { target?: HTMLElement; select?: boolean };
-  /** Down from the topbar always enters the page: Home's Play, remembered content, or the first control. */
+  /** Search suggestions take priority over the page behind the topbar. */
   const fromTopbar = (element: HTMLElement, direction: Direction): Exit | undefined => {
-    if (scope !== doc || direction !== 'down' || !element.closest('.topbar')) return;
+    if (scope !== doc || !element.closest('.topbar') || direction !== 'down' && direction !== 'up') return;
+    const suggestions = doc.querySelector<HTMLElement>('#global-search-results');
+    if (suggestions) {
+      const targets = candidates(suggestions);
+      const index = targets.indexOf(element);
+      if (index !== -1) return { target: direction === 'up' ? targets[index - 1] ?? doc.querySelector<HTMLElement>('.search-box input') ?? undefined : targets[index + 1] ?? element };
+      if (direction === 'down' && element.closest('.search-box') && targets.length) return { target: targets[0] };
+    }
+    if (direction !== 'down') return;
     const content = doc.querySelector<HTMLElement>('.page-scroll');
     return { target: content ? content.querySelector<HTMLElement>('[data-gamepad-home-primary]') ?? pageReturn(content) ?? initial(content) : undefined };
   };
