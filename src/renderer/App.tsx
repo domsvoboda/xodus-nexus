@@ -1,3 +1,5 @@
+import { CheckField } from './CheckField';
+import { useDialogFocus } from './use-dialog-focus';
 import { useEffect, useLayoutEffect, useMemo, useRef, useState, type FormEvent } from 'react';
 import {
   ArrowDownToLine, Check, ChevronRight, CircleAlert, CircleUserRound,
@@ -124,6 +126,8 @@ export function TopStatus({ data, go, openFriends }: { data: AppSnapshot; go: (p
 }
 
 export function DiagnosticDialog({ log, close, revealFile, copyLog }: { log: DiagnosticLog; close: () => void; revealFile?: () => Promise<void>; copyLog?: () => Promise<void> }) {
+  const dialogRef = useRef<HTMLElement>(null);
+  useDialogFocus(dialogRef, close);
   const [copyStatus, setCopyStatus] = useState(ui("ui.copy_log_99d7297"));
   const [copying, setCopying] = useState(false);
   const [copyError, setCopyError] = useState('');
@@ -141,7 +145,7 @@ export function DiagnosticDialog({ log, close, revealFile, copyLog }: { log: Dia
         : ui("ui.could_not_copy_the_complete_log_try_again_or_use_3195d2c"));
     } finally { setCopying(false); }
   }
-  return <div className="dialog-backdrop" onMouseDown={event => { if (event.target === event.currentTarget) close(); }}><section className="game-dialog diagnostic-dialog" role="dialog" aria-modal="true" aria-label={ui("ui.diagnostic_log_c46c657")}><h2>{log.name}</h2><p>{ui("ui.private_diagnostic_log_review_before_sharing_22816a7")}{log.truncated ? ui("ui.preview_shows_the_most_recent_512_kib_copy_log_c_0e89f87") : ''}</p><pre>{log.content || ui("ui.the_log_is_empty_7261125")}</pre>{fileError ? <p role="alert">{ui("ui.the_log_file_is_no_longer_available_e454fa3")}</p> : null}{copyError ? <p role="alert">{copyError}</p> : null}<div className="dialog-actions">{revealFile ? <button className="secondary" onClick={() => { setFileError(false); void revealFile().catch(() => setFileError(true)); }}>{ui("ui.show_log_file_5ea7142")}</button> : null}<button className="secondary" disabled={copying} onClick={() => void copy()}>{copying ? ui("ui.copying_d250fad") : copyStatus}</button><button className="secondary" data-gamepad-cancel onClick={close}>{ui("ui.close_7d9eb7a")}</button></div></section></div>;
+  return <div className="dialog-backdrop" onMouseDown={event => { if (event.target === event.currentTarget) close(); }}><section ref={dialogRef} className="game-dialog diagnostic-dialog" role="dialog" aria-modal="true" aria-label={ui("ui.diagnostic_log_c46c657")}><h2>{log.name}</h2><p>{ui("ui.private_diagnostic_log_review_before_sharing_22816a7")}{log.truncated ? ui("ui.preview_shows_the_most_recent_512_kib_copy_log_c_0e89f87") : ''}</p><pre>{log.content || ui("ui.the_log_is_empty_7261125")}</pre>{fileError ? <p role="alert">{ui("ui.the_log_file_is_no_longer_available_e454fa3")}</p> : null}{copyError ? <p role="alert">{copyError}</p> : null}<div className="dialog-actions">{revealFile ? <button className="secondary" onClick={() => { setFileError(false); void revealFile().catch(() => setFileError(true)); }}>{ui("ui.show_log_file_5ea7142")}</button> : null}<button className="secondary" disabled={copying} onClick={() => void copy()}>{copying ? ui("ui.copying_d250fad") : copyStatus}</button><button className="secondary" data-gamepad-cancel onClick={close}>{ui("ui.close_7d9eb7a")}</button></div></section></div>;
 }
 
 export function BackendLogButton({ toast }: { toast: (value: Toast) => void }) {
@@ -217,7 +221,7 @@ export function HomePage({ data, go, action }: {
           <button className="secondary" onClick={() => go('library')}><Library />{ui("ui.view_library_108eb25")}</button>
         </div>
       </div>
-      {featured ? <div className="spotlight-meta"><StatePill game={featured} />{launchOptions?.cloudSaves ? <span>{ui("ui.cloud_saves_4c54136")}</span> : null}<span>{featured.storeId ? ui("ui.store_id_884e198", { name: featured.storeId }) : ui("ui.local_import_c7e8b68")}</span></div> : null}
+      {featured ? <div className="spotlight-meta"><StatePill game={featured} />{launchOptions?.cloudSaves ? <span>{ui("ui.cloud_saves_4c54136")}</span> : null}</div> : null}
     </section>
     {data.games.length>1?<div className="home-secondary">{data.games.slice(1,3).map(game=><button key={game.id} className="home-feature-card" onClick={()=>go('library')}>
       <Cover game={game} variant="hero" /><span><strong>{game.title}</strong><small>{game.publisher??ui("ui.in_your_library_b9da1b7")}</small></span>
@@ -549,6 +553,8 @@ function GameContentDialog({ game, data, close, toast }: { game: Game; data: App
   const [loading, setLoading] = useState(true);
   const [pending, setPending] = useState<string>();
   const [revision, setRevision] = useState(0);
+  const dialogRef = useRef<HTMLElement>(null);
+  useDialogFocus(dialogRef, close, true, Boolean(pending));
   const queue = data.downloads.filter(task => task.kind === 'content' && task.gameId === game.id);
   const queueState = queue.map(task => task.id + ':' + task.status).join(',');
   const busy = data.downloads.some(task => ['running', 'paused', 'queued'].includes(task.status)) || Boolean(data.gameOperation && ['preparing', 'running', 'stopping'].includes(data.gameOperation.status));
@@ -568,7 +574,7 @@ function GameContentDialog({ game, data, close, toast }: { game: Game; data: App
     catch (error) { setError(errorMessage(error)); }
     finally { setPending(undefined); }
   }
-  return <div className="dialog-backdrop" onMouseDown={event => { if (event.target === event.currentTarget && !pending) close(); }}><section className="game-dialog content-dialog" role="dialog" aria-modal="true" aria-label={ui("ui.content_for_73287b5", { game: game.title })}>
+  return <div className="dialog-backdrop" onMouseDown={event => { if (event.target === event.currentTarget && !pending) close(); }}><section ref={dialogRef} className="game-dialog content-dialog" role="dialog" aria-modal="true" aria-label={ui("ui.content_for_73287b5", { game: game.title })}>
     <h2>{ui("ui.manage_content_459a3de")}</h2><p>{game.title}</p><p>{ui("ui.only_verified_licensed_pc_content_can_be_install_dfb3a32")}</p>
     {loading ? <p role="status"><LoaderCircle className="spin" />{ui("ui.checking_account_licenses_and_packages_1ace530")}</p> : null}
     {error ? <p role="alert" className="error-text">{uiText(error)}</p> : null}
@@ -582,12 +588,10 @@ function GameContentDialog({ game, data, close, toast }: { game: Game; data: App
 export function GameLaunchToolFields({ value, change }: { value: GameLaunchTools; change: (value: GameLaunchTools) => void }) {
   const update = (patch: Partial<GameLaunchTools>) => change({ ...value, ...patch });
   return <fieldset className="game-launch-tools"><legend>{ui("ui.launch_tools_c1a69e7")}</legend>
-    <label className="tool-checkbox"><input type="checkbox" checked={value.dualSenseCompatibility === true} onChange={event => update({ dualSenseCompatibility: event.target.checked })} /><span>{ui("ui.dualsense_compatibility_mode_666f577")}</span></label>
-    <small>{ui("ui.try_this_if_a_standard_dualsense_controller_is_n_114e408")}</small>
-    <label className="tool-checkbox"><input type="checkbox" checked={value.dualShock4Compatibility === true} onChange={event => update({ dualShock4Compatibility: event.target.checked })} /><span>{ui("controllers.dualshock4_compatibility")}</span></label>
-    <small>{ui("controllers.dualshock4_help")}</small>
-    <label className="tool-checkbox"><input type="checkbox" checked={value.mangoHud} onChange={event => update({ mangoHud: event.target.checked })} /><span>{ui("ui.enable_mangohud_dcae6c8")}</span></label>
-    <label className="tool-checkbox"><input type="checkbox" checked={value.gamescope} onChange={event => update({ gamescope: event.target.checked })} /><span>{ui("ui.run_in_gamescope_58f2d35")}</span></label>
+    <CheckField className="tool-checkbox" checked={value.dualSenseCompatibility === true} onChange={event => update({ dualSenseCompatibility: event.target.checked })} label={ui("ui.dualsense_compatibility_mode_666f577")} description={ui("ui.try_this_if_a_standard_dualsense_controller_is_n_114e408")} />
+    <CheckField className="tool-checkbox" checked={value.dualShock4Compatibility === true} onChange={event => update({ dualShock4Compatibility: event.target.checked })} label={ui("controllers.dualshock4_compatibility")} description={ui("controllers.dualshock4_help")} />
+    <CheckField className="tool-checkbox" checked={value.mangoHud} onChange={event => update({ mangoHud: event.target.checked })} label={ui("ui.enable_mangohud_dcae6c8")} />
+    <CheckField className="tool-checkbox" checked={value.gamescope} onChange={event => update({ gamescope: event.target.checked })} label={ui("ui.run_in_gamescope_58f2d35")} />
     {value.gamescope ? <label>{ui("ui.gamescope_options_cb81326")}<input value={value.gamescopeArgs} maxLength={2048} placeholder="-W 1920 -H 1080 -f" onChange={event => update({ gamescopeArgs: event.target.value })} /><small>{ui("ui.only_options_nexus_adds_the_game_command_mangohu_c4b6ad8")}</small></label> : null}
     <label>{ui("ui.launch_options_5dfe538")}<textarea rows={3} value={value.launchOptions} maxLength={2048} placeholder="PROTON_ENABLE_WAYLAND=1 gamemoderun %command% --launcher-skip" onChange={event => update({ launchOptions: event.target.value })} /><small>{ui("ui.name_value_and_wrappers_before_command_game_argu_930be12")}</small></label>
     <small>{ui("ui.tools_must_already_be_installed_applies_to_this_956d794")}</small>
@@ -749,6 +753,8 @@ export function LibraryPage({ data, toast, filters, onFiltersChange, selection }
   const launchOptions = useGameLaunchOptions(selected, data);
   const menuGame = data.games.find((game) => game.id === menu?.id);
   const modalGame = data.games.find((game) => game.id === dialogGame?.id);
+  const modalRef = useRef<HTMLElement>(null);
+  useDialogFocus(modalRef, () => setDialogGame(undefined), Boolean(dialogGame && modalGame), dialogBusy);
   const managementProps = (game: Game): GameMenuActionsProps => ({
     game, options: launchOptions, busy: gameBusy,
     onBrowse: () => { setMenu(undefined); void window.launcher.openPath(game.path).catch(error => toast({ kind: 'error', message: errorMessage(error) })); },
@@ -786,12 +792,11 @@ export function LibraryPage({ data, toast, filters, onFiltersChange, selection }
     {menu && menuGame ? <GameContextMenu x={menu.x} y={menu.y} {...managementProps(menuGame)} /> : null}
 {diagnosticLog ? <DiagnosticDialog log={diagnosticLog.log} close={() => setDiagnosticLog(undefined)} revealFile={() => window.launcher.revealDiagnosticLog(diagnosticLog.operationId)} copyLog={() => window.launcher.copyDiagnosticLog(diagnosticLog.operationId)} /> : null}
     {contentGameId && data.games.find(game => game.id === contentGameId) ? <GameContentDialog key={`${contentGameId}:${data.auth.username}:${data.auth.stored}`} game={data.games.find(game => game.id === contentGameId)!} data={data} close={() => setContentGameId(undefined)} toast={toast} /> : null}
-    {dialogGame && modalGame ? <div className="dialog-backdrop" onMouseDown={(event) => { if (event.target === event.currentTarget && !dialogBusy) setDialogGame(undefined); }}><section className="game-dialog" role="dialog" aria-modal="true" aria-label={dialogGame.kind === 'remove' ? ui("ui.remove_d2f6b9b", { name: modalGame.title }) : ui("ui.settings_for_9d9bd70", { game: modalGame.title })}>
+    {dialogGame && modalGame ? <div className="dialog-backdrop" onMouseDown={(event) => { if (event.target === event.currentTarget && !dialogBusy) setDialogGame(undefined); }}><section ref={modalRef} className="game-dialog" role="dialog" aria-modal="true" aria-label={dialogGame.kind === 'remove' ? ui("ui.remove_d2f6b9b", { name: modalGame.title }) : ui("ui.settings_for_9d9bd70", { game: modalGame.title })}>
       {dialogGame.kind === 'remove' ? <GameRemovalContents game={modalGame} busy={dialogBusy} close={() => setDialogGame(undefined)} remove={mode => { void removeGame(mode); }} /> : <form onSubmit={saveGameSettings}>
         <h2>{ui("ui.game_settings_fece860")}</h2>
-        <label>{ui("ui.display_name_2b7f6a8")}<input required value={editTitle} onChange={(event) => setEditTitle(event.target.value)} /></label>
+        <label>{ui("ui.display_name_2b7f6a8")}<input data-gamepad-initial required value={editTitle} onChange={(event) => setEditTitle(event.target.value)} /></label>
         <GameLanguage value={editLocale} locales={localeOptions} onChange={setEditLocale} />
-        <p>{ui("ui.all_games_use_the_active_runtime_b931ef4")}</p>
         <GameLaunchToolFields value={editTools} change={setEditTools} />
         <div className="dialog-actions"><button type="button" className="secondary" disabled={dialogBusy} data-gamepad-cancel onClick={() => setDialogGame(undefined)}>{ui("ui.cancel_19766ed")}</button><button className="primary" disabled={dialogBusy || !editTitle.trim()}><Check />{ui("ui.save_1509f56")}</button></div>
       </form>}
@@ -916,7 +921,7 @@ export function SettingsPage({ data, toast }: { data: AppSnapshot; toast: (value
   const shortcutState=data.overlayShortcut?.state;
   const shortcutStatus=!savedOverlay.overlayEnabled?ui('settings.guide_shortcut_disabled'):shortcutState==='registered'?ui('settings.guide_shortcut_ready'):shortcutState==='unavailable'?data.overlayShortcut?.message??ui('settings.guide_shortcut_unavailable'):ui('settings.guide_shortcut_requested');
   return <main className="page settings-page">
-    <header className="page-header"><div><h1>{ui("ui.settings_74a883a")}</h1><p>{ui("ui.account_backend_runtime_and_storage_11bda06")}</p></div></header>
+    <header className="page-header"><div><h1>{ui("ui.settings_74a883a")}</h1></div></header>
 
     <section className="settings-card compact settings-language">
       <label>{ui('settings.interface_language')}<select value={form.interfaceLanguage ?? 'system'} onChange={event => setForm({ ...form, interfaceLanguage: event.target.value })}>
@@ -927,15 +932,14 @@ export function SettingsPage({ data, toast }: { data: AppSnapshot; toast: (value
     </section>
 
     <section className="settings-card compact tray-settings">
-      <label className="tray-toggle"><input type="checkbox" checked={form.closeToTray===true} disabled={Boolean(busy)} onChange={event=>{const closeToTray=event.target.checked;setForm({...form,closeToTray});void invoke('close-to-tray',()=>window.launcher.updateSettings({closeToTray}),ui('settings.tray_saved'));}}/><span>{ui('settings.close_to_tray')}</span></label>
-      <small>{ui('settings.close_to_tray_help')}</small>
+      <CheckField className="tray-toggle" role="switch" label={ui('settings.close_to_tray')} description={ui('settings.close_to_tray_help')} checked={form.closeToTray===true} disabled={Boolean(busy)} onChange={event=>{const closeToTray=event.target.checked;setForm({...form,closeToTray});void invoke('close-to-tray',()=>window.launcher.updateSettings({closeToTray}),ui('settings.tray_saved'));}}/>
     </section>
 
     <section className="settings-card compact launcher-card">
       {data.launcherUpdate?.phase ? <p>{uiText(data.launcherUpdate.phase)}</p> : null}
       {data.launcherUpdate?.updating ? <div className="progress-track"><i style={{ width: `${data.launcherUpdate.progress ?? 0}%` }} /></div> : null}
       {data.launcherUpdate?.error ? <div className="alert amber"><CircleAlert /><span>{uiText(data.launcherUpdate.error)}</span></div> : null}
-      <div className="settings-heading"><div className="settings-icon"><Rocket /></div><div><span className="overline">XODUS NEXUS</span><h2>{data.launcherUpdate?.currentVersion ?? ui("ui.development_build_63d499e")}</h2><p>{data.launcherUpdate?.latestVersion ? ui("ui.version_is_available_cc7c84d", { version: data.launcherUpdate.latestVersion }) : ui("ui.check_github_for_launcher_updates_6fa32b9")}</p></div></div>
+      <div className="settings-heading"><div className="settings-icon"><Rocket /></div><div><span className="overline">XODUS NEXUS</span><h2>{data.launcherUpdate?.currentVersion ?? ui("ui.development_build_63d499e")}</h2>{data.launcherUpdate?.latestVersion ? <p>{ui("ui.version_is_available_cc7c84d", { version: data.launcherUpdate.latestVersion })}</p> : null}</div></div>
       <div className="button-row">
         {data.launcherUpdate?.latestVersion && data.launcherUpdate.canInstall && !data.launcherUpdate.restartRequired ? <button className="primary" disabled={data.launcherUpdate.updating || Boolean(busy)} onClick={async () => { if (await confirm({ title: ui("ui.install_launcher_update_15498d2"), message: ui("ui.the_current_appimage_will_be_backed_up_games_and_8e8c5e5"), confirmLabel: ui("ui.install_update_cada421") })) void invoke('launcher-install', () => window.launcher.installLauncherUpdate()); }}><ArrowDownToLine />{data.launcherUpdate.updating ? ui("ui.updating_dfe40ef") : ui("ui.install_launcher_update_d1988d9")}</button> : null}
         {data.launcherUpdate?.releaseUrl && !data.launcherUpdate.canInstall ? <a className="primary" href={data.launcherUpdate.releaseUrl} target="_blank" rel="noreferrer"><ArrowDownToLine />{ui("ui.download_update_4f494b2")}</a> : null}
@@ -978,20 +982,20 @@ export function SettingsPage({ data, toast }: { data: AppSnapshot; toast: (value
     <div className="settings-storage">
       <section className="settings-card compact">
         <div className="settings-heading"><div className="settings-icon"><HardDrive /></div><div><h2>{ui("ui.shader_cache_d7b5738")}</h2><p>{ui("ui.limit_mesa_and_nvidia_driver_caches_per_game_13f5b89")}</p></div></div>
-        <div className="form-grid"><label>{ui("ui.driver_cache_limit_gib_acf77d9")}<input type="number" min="0.25" max="1024" step="0.25" value={form.shaderCacheLimitGiB ?? DEFAULT_SHADER_CACHE_GIB} onChange={event=>setForm({...form,shaderCacheLimitGiB:Number(event.target.value)})} /></label></div>
-        <div className="save-row"><span>{ui("ui.default_4_gib_applies_on_the_next_game_launch_ex_d0a7298")}</span><button className="primary" disabled={Boolean(busy)||!cacheLimitValid} onClick={()=>invoke('save-shader-cache',()=>window.launcher.updateSettings({shaderCacheLimitGiB:form.shaderCacheLimitGiB ?? DEFAULT_SHADER_CACHE_GIB}),ui("ui.shader_cache_limit_saved_applies_on_the_next_gam_4ca411d"))}>{busy==='save-shader-cache'?<LoaderCircle className="spin" />:<Check />}{ui("ui.save_cache_limit_a1d0333")}</button></div>
+        <div className="form-grid"><label>{ui("ui.driver_cache_limit_gib_acf77d9")}<input type="number" min="0.25" max="1024" step="0.25" aria-invalid={!cacheLimitValid} aria-describedby={!cacheLimitValid ? "cache-limit-error" : undefined} value={form.shaderCacheLimitGiB ?? DEFAULT_SHADER_CACHE_GIB} onChange={event=>setForm({...form,shaderCacheLimitGiB:Number(event.target.value)})} /></label></div>
+        {!cacheLimitValid ? <p id="cache-limit-error" className="error-text" role="alert">{ui("settings.cache_limit_error")}</p> : null}<div className="save-row"><span>{ui("ui.default_4_gib_applies_on_the_next_game_launch_ex_d0a7298")}</span><button className="primary" disabled={Boolean(busy)||!cacheLimitValid} onClick={()=>invoke('save-shader-cache',()=>window.launcher.updateSettings({shaderCacheLimitGiB:form.shaderCacheLimitGiB ?? DEFAULT_SHADER_CACHE_GIB}),ui("ui.shader_cache_limit_saved_applies_on_the_next_gam_4ca411d"))}>{busy==='save-shader-cache'?<LoaderCircle className="spin" />:<Check />}{ui("ui.save_cache_limit_a1d0333")}</button></div>
       </section>
       <section className="settings-card compact">
         <div className="settings-heading"><div className="settings-icon"><Download /></div><div><h2>{ui("ui.downloads_d5fdc1a")}</h2><p>{ui("ui.limit_the_combined_game_download_speed_across_al_baea745")}</p></div></div>
         <div className="form-grid"><label>{ui("ui.download_speed_limit_mib_s_1b1cf51")}<input type="number" min="0" max="1024" step="0.1" value={form.downloadLimitMiB ?? 0} onChange={event => setForm({...form, downloadLimitMiB:Number(event.target.value)})} /></label></div>
         <div className="save-row"><span>{ui("ui.0_unlimited_applies_to_active_and_future_game_do_2374ba9")}</span><button className="primary" disabled={Boolean(busy) || Boolean((form.downloadLimitMiB ?? 0) > 0 && !data.backend.capabilities.streamingBandwidthLimit)} onClick={() => invoke('save-bandwidth', () => window.launcher.updateSettings({downloadLimitMiB:form.downloadLimitMiB ?? 0}), ui("ui.download_speed_limit_saved_8fd9160"))}>{busy === 'save-bandwidth' ? <LoaderCircle className="spin" /> : <Check />}{ui("ui.save_download_limit_8abf702")}</button></div>
       </section>
-      <section className="settings-card compact"><div className="settings-heading"><div className="settings-icon"><HardDrive /></div><div><h2>{ui("ui.storage_and_launch_paths_d3c8c4d")}</h2><p>{ui("ui.the_external_xodus_checkout_is_never_modified_b63317f")}</p></div></div><div className="form-grid"><label>{ui("ui.default_game_location_5e830cb")}<div className="input-action"><input value={form.installRoot} onChange={(event) => setForm({ ...form, installRoot: event.target.value })} /><button onClick={() => pick('install')}><FolderOpen /></button></div></label><label>{ui("ui.market_5238d9b")}<input value={form.market} onChange={(event) => setForm({ ...form, market: event.target.value })} /></label><label>{ui("ui.parallel_streams_e81513c")}<input type="number" min="1" max="16" value={form.parallelDownloads} onChange={(event) => setForm({ ...form, parallelDownloads: Number(event.target.value) })} /></label><label>{ui("ui.external_xodus_source_ef00493")}<div className="input-action"><input value={form.externalXodusRoot} onChange={(event) => setForm({ ...form, externalXodusRoot: event.target.value })} /><button onClick={() => pick('backend')}><FolderOpen /></button></div></label><label>{ui("ui.versioned_runtime_directory_3764480")}<div className="input-action"><input value={form.runtimeRoot} onChange={(event) => setForm({ ...form, runtimeRoot: event.target.value })} /><button onClick={() => pick('runtime')}><FolderOpen /></button></div></label><label>{ui("ui.wine_proton_binary_2b08a4a")}<div className="input-action"><input value={form.winePath} onChange={(event) => setForm({ ...form, winePath: event.target.value })} placeholder={ui("ui.selected_automatically_by_the_runtime_manager_0722211")} /><button onClick={() => pick('wine')}><FolderOpen /></button></div></label></div><div className="save-row"><span>{ui("ui.settings_are_stored_locally_in_electron_userdata_5ff2a49")}</span><button className="primary" disabled={busy === 'save'} onClick={() => invoke('save', () => window.launcher.updateSettings(form), ui("ui.settings_saved_ae493e2"))}>{busy === 'save' ? <LoaderCircle className="spin" /> : <Check />}{ui("ui.save_1509f56")}</button></div></section>
+      <section className="settings-card compact"><div className="settings-heading"><div className="settings-icon"><HardDrive /></div><div><h2>{ui("ui.storage_and_launch_paths_d3c8c4d")}</h2></div></div><div className="form-grid"><label>{ui("ui.default_game_location_5e830cb")}<div className="input-action"><input value={form.installRoot} onChange={(event) => setForm({ ...form, installRoot: event.target.value })} /><button type="button" aria-label={ui('ui.browse_3227aa9')} onClick={() => pick('install')}><FolderOpen /></button></div></label><label>{ui("ui.market_5238d9b")}<input value={form.market} onChange={(event) => setForm({ ...form, market: event.target.value })} /></label><label>{ui("ui.parallel_streams_e81513c")}<input type="number" min="1" max="16" value={form.parallelDownloads} onChange={(event) => setForm({ ...form, parallelDownloads: Number(event.target.value) })} /></label><label>{ui("ui.external_xodus_source_ef00493")}<div className="input-action"><input value={form.externalXodusRoot} onChange={(event) => setForm({ ...form, externalXodusRoot: event.target.value })} /><button type="button" aria-label={ui('ui.browse_3227aa9')} onClick={() => pick('backend')}><FolderOpen /></button></div></label><label>{ui("ui.versioned_runtime_directory_3764480")}<div className="input-action"><input value={form.runtimeRoot} onChange={(event) => setForm({ ...form, runtimeRoot: event.target.value })} /><button type="button" aria-label={ui('ui.browse_3227aa9')} onClick={() => pick('runtime')}><FolderOpen /></button></div></label><label>{ui("ui.wine_proton_binary_2b08a4a")}<div className="input-action"><input value={form.winePath} onChange={(event) => setForm({ ...form, winePath: event.target.value })} placeholder={ui("ui.selected_automatically_by_the_runtime_manager_0722211")} /><button type="button" aria-label={ui('ui.browse_3227aa9')} onClick={() => pick('wine')}><FolderOpen /></button></div></label></div><div className="save-row"><button className="primary" disabled={busy === 'save'} onClick={() => invoke('save', () => window.launcher.updateSettings(form), ui("ui.settings_saved_ae493e2"))}>{busy === 'save' ? <LoaderCircle className="spin" /> : <Check />}{ui("ui.save_1509f56")}</button></div></section>
     </div>
     <details className="settings-card settings-guide" aria-label={ui('settings.guide_title')}>
       <summary><PanelLeft aria-hidden="true"/><span className="guide-summary-text"><strong>{ui('settings.guide_title')}</strong><small>{ui('settings.guide_summary')}</small></span><span className={`guide-state${savedOverlay.overlayEnabled?' on':''}`}>{savedOverlay.overlayEnabled?ui('settings.guide_on'):ui('settings.guide_off')}</span><ChevronRight aria-hidden="true"/></summary>
       <div className="guide-settings-content">
-        <label className="guide-enable"><span><strong>{ui('settings.guide_enable')}</strong><small>{ui('settings.guide_enable_help')}</small></span><input type="checkbox" role="switch" checked={overlay.overlayEnabled} disabled={Boolean(busy)} onChange={event=>setForm({...form,overlayEnabled:event.target.checked})}/></label>
+        <CheckField className="guide-enable" label={ui('settings.guide_enable')} description={ui('settings.guide_enable_help')} role="switch" checked={overlay.overlayEnabled} disabled={Boolean(busy)} onChange={event=>setForm({...form,overlayEnabled:event.target.checked})}/>
         <fieldset className="guide-settings-fields" disabled={!overlay.overlayEnabled||Boolean(busy)}>
           <legend className="social-sr-only">{ui('settings.guide_controls')}</legend>
           <label htmlFor="guide-shortcut"><span>{ui('settings.guide_shortcut')}</span><OverlayShortcutRecorder value={form.overlayShortcut??'Super+G'} onChange={overlayShortcut=>setForm(current=>({...current,overlayShortcut}))}/></label>
@@ -1004,7 +1008,7 @@ export function SettingsPage({ data, toast }: { data: AppSnapshot; toast: (value
       <summary><Settings2 /><span>{ui("ui.advanced_diagnostics_2130ca1")}</span><ChevronRight /></summary>
       <div className="diagnostics-content">
         <DiagnosticReportButton games={data.games} />
-        <section><h3>{ui("ui.game_logging_6cb644e")}</h3><div className="toggle-row"><label className="toggle"><input type="checkbox" checked={form.verboseLogs} onChange={(event) => setForm({ ...form, verboseLogs: event.target.checked })} /><span>{ui("ui.verbose_game_logs_58e750b")}</span></label><p>{ui("ui.writes_full_wine_vkd3d_proton_and_xodus_diagnost_dfa1fa3")}</p></div><div className="button-row"><button className="secondary" disabled={Boolean(busy)} onClick={() => invoke('save-diagnostics', () => window.launcher.updateSettings({ verboseLogs: form.verboseLogs }), ui("ui.logging_settings_saved_5a9dd67"))}>{ui("ui.save_diagnostics_52fe7bd")}</button></div></section>
+        <section><h3>{ui("ui.game_logging_6cb644e")}</h3><div className="toggle-row"><CheckField className="toggle" label={ui("ui.verbose_game_logs_58e750b")} description={ui("ui.writes_full_wine_vkd3d_proton_and_xodus_diagnost_dfa1fa3")} checked={form.verboseLogs} onChange={(event) => setForm({ ...form, verboseLogs: event.target.checked })} /></div><div className="button-row"><button className="secondary" disabled={Boolean(busy)} onClick={() => invoke('save-diagnostics', () => window.launcher.updateSettings({ verboseLogs: form.verboseLogs }), ui("ui.logging_settings_saved_5a9dd67"))}>{ui("ui.save_diagnostics_52fe7bd")}</button></div></section>
         <section><h3>{ui("ui.backend_details_522061f")}</h3><p className="diagnostic-path mono">{data.backend.binaryPath ?? ui("ui.no_backend_selected_e322189")}</p><div className="meta-grid"><div><span>{ui("ui.source_56ccd01")}</span><strong>{data.backend.source === 'external' ? ui("ui.external_installation_read_only_9cedb28") : data.backend.delivery === 'release' ? ui("ui.nexus_github_release_44f7ae9") : data.backend.source === 'managed' ? ui("ui.local_versioned_build_284259d") : '—'}</strong></div><div><span>{ui("ui.commit_79663c1")}</span><strong className="mono">{data.backend.commit?.slice(0, 12) ?? '—'}</strong></div></div><div className="button-row"><button className="secondary" disabled={Boolean(busy) || data.backend.updating || data.backend.checking} onClick={() => invoke('backend-rebuild', () => window.launcher.rebuildBackend(), ui("ui.pinned_backend_source_was_built_and_activated_70c1519"))}><Github />{ui("ui.build_backend_from_source_e654dac")}</button></div>{data.backend.updating || logs.length > 0 ? <pre className="build-log">{logs.join('\n') || ui("ui.waiting_for_backend_output_1ad8939")}</pre> : null}</section>
         <section><h3>{ui("ui.runtime_details_77fa868")}</h3><p className="diagnostic-path mono">{data.runtime.winePath ?? ui("ui.no_runtime_selected_b8e7445")}</p><div className="meta-grid"><div><span>{ui("ui.source_56ccd01")}</span><strong>{runtimeInfo.source}</strong></div><div><span>{ui("ui.build_3053677")}</span><strong className="mono">{data.runtime.commit ?? '—'}</strong></div></div></section>
         <section><h3>{ui("ui.build_dependencies_8926e84")}</h3><div className="dependency-grid"><ToggleStatus ok={data.backend.prerequisites.git} label="Git" /><ToggleStatus ok={data.backend.prerequisites.cargo} label="Cargo" /><ToggleStatus ok={data.backend.prerequisites.rustc} label="Rust 1.99" /><ToggleStatus ok={data.backend.prerequisites.protoc} label="protoc" /></div><p className="fine-print">{ui("ui.building_xodus_also_requires_a_c_c_toolchain_cma_a847b06")}</p></section>
@@ -1024,6 +1028,8 @@ function PasskeySignInNotice() {
 }
 
 export function FirstRunWizard({ data, toast }: { data: AppSnapshot; toast: (value: Toast) => void }) {
+  const wizardRef = useRef<HTMLDivElement>(null);
+  useDialogFocus(wizardRef, () => {}, true, true);
   const [installRoot, setInstallRoot] = useState(data.settings.installRoot);
   const [saving, setSaving] = useState(false);
   const [signingIn, setSigningIn] = useState(false);
@@ -1058,7 +1064,7 @@ export function FirstRunWizard({ data, toast }: { data: AppSnapshot; toast: (val
   }
 
   return <div className="wizard-overlay">
-    <div className="wizard" role="dialog" aria-modal="true" aria-label={ui("ui.set_up_xodus_nexus_e3954fb")}>
+    <div ref={wizardRef} className="wizard" role="dialog" aria-modal="true" aria-label={ui("ui.set_up_xodus_nexus_e3954fb")}>
       <div><span className="overline">{ui("ui.welcome_26ded03")}</span><h1>{ui("ui.set_up_xodus_nexus_e3954fb")}</h1></div>
       <section className="wizard-disclaimer" role="note" aria-labelledby="wizard-disclaimer-title">
         <CircleAlert aria-hidden="true" />

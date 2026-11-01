@@ -744,5 +744,6 @@
   "ui.your_owned_games_game_pass_games_and_local_insta_ebb2bf4": "你擁有的遊戲、Xbox 遊戲通行證遊戲和本地安裝。",
   "ui.your_pc_games_brought_together_354f2fc": "你的 PC 遊戲，盡歸一處。",
   "ui.your_settings_and_games_will_not_change_3e99619": "你的設定和遊戲不會改變。",
-  "ui.your_wallet_provider_handles_its_password_window_eb886e1": "錢包提供商自行處理其密碼視窗。Nexus 不接收密碼，也不啟用已停用的錢包或重置儲存的憑據。"
+  "ui.your_wallet_provider_handles_its_password_window_eb886e1": "錢包提供商自行處理其密碼視窗。Nexus 不接收密碼，也不啟用已停用的錢包或重置儲存的憑據。",
+  "settings.cache_limit_error": "請輸入 0.25 至 1024 GiB 之間的快取上限。"
 }

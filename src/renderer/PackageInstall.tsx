@@ -1,3 +1,4 @@
+import { useDialogFocus } from './use-dialog-focus';
 import { ui, uiText } from './i18n';
 import { createContext, useContext, useEffect, useRef, useState, type ReactNode } from 'react';
 import type { CatalogProduct, InstallPlan, InstallRequest } from '../shared/types';
@@ -27,13 +28,10 @@ export function PackageDialog({ plan, choose, destination }: { plan: InstallPlan
   const choice = plan.choices.find(item => item.contentId === selected);
   const estimated = estimatedInstallBytes(choice);
   const lowSpace = estimated !== undefined && plan.availableBytes !== undefined && estimated > plan.availableBytes;
-  useEffect(() => {
-    const onKey = (event: KeyboardEvent) => { if (event.key === 'Escape') choose(); };
-    window.addEventListener('keydown', onKey);
-    return () => window.removeEventListener('keydown', onKey);
-  }, [choose]);
+  const dialog = useRef<HTMLElement>(null);
+  useDialogFocus(dialog, () => choose());
   return <div className="dialog-backdrop" onMouseDown={event => { if (event.target === event.currentTarget) choose(); }}>
-    <section className="game-dialog package-dialog" role="dialog" aria-modal="true" aria-labelledby="package-dialog-title">
+    <section ref={dialog} className="game-dialog package-dialog" role="dialog" aria-modal="true" aria-labelledby="package-dialog-title">
       <h2 id="package-dialog-title">{plan.status === 'ready' ? ui("ui.install_game_675299c") : ui("ui.choose_files_to_install_4a6019d")}</h2>
       <p>{plan.status === 'ready' ? ui("ui.review_the_installation_before_downloading_708b238") : ui("ui.choose_the_package_you_want_to_install_from_this_82f3bef")}{' '}{ui("ui.xodus_checks_your_license_before_downloading_ca2f356")}</p>
       <div className="package-choices">{plan.choices.map(item => <label className={`package-choice${item.supported ? '' : ' unsupported'}`} key={`${item.productId}:${item.contentId}`}>

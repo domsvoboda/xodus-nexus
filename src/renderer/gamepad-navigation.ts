@@ -90,6 +90,7 @@ export function installGamepadNavigation(win: Window, options: Options): () => v
   let active = false, stopped = false, frame = 0, previousTime = 0;
   let scope: HTMLElement | Document = doc;
   let picker: HTMLElement | undefined;
+  let heldFocus: HTMLElement | undefined;
   let escapeFromPad = false;
   let pendingDetail: { id: string; origin: HTMLElement; deadline: number } | undefined;
   let detailReturn: { id: string; origin: HTMLElement } | undefined;
@@ -101,10 +102,16 @@ export function installGamepadNavigation(win: Window, options: Options): () => v
   const enabled = (element: HTMLElement) => visible(element) && !element.matches(':disabled,[aria-disabled="true"]');
   const candidates = (root: HTMLElement | Document) => [...root.querySelectorAll<HTMLElement>(controls)]
     .filter(element => enabled(element) && element.tabIndex >= 0 && !element.hasAttribute('data-gamepad-skip'));
-  const currentScope = () => [...doc.querySelectorAll<HTMLElement>('[role="dialog"][aria-modal="true"],[data-game-menu]')]
+  const currentScope = () => [...doc.querySelectorAll<HTMLElement>('[role="dialog"][aria-modal="true"],[data-game-menu],[data-gamepad-layer]')]
     .filter(visible).at(-1) ?? doc;
-  const focused = () => doc.activeElement instanceof HTMLElement ? doc.activeElement : undefined;
-  const focusBox = (element: HTMLElement) => element.closest<HTMLElement>('[data-gamepad-card]') ?? element;
+  const focused = () => {
+    const element = doc.activeElement instanceof HTMLElement ? doc.activeElement : undefined;
+    // Native controls blur when a pending operation disables them. Keep the
+    // spatial anchor until it is re-enabled, removed, or the user moves away.
+    return active && (!element || element === doc.body) && heldFocus && scope.contains(heldFocus) && visible(heldFocus)
+      ? heldFocus : element;
+  };
+  const focusBox = (element: HTMLElement) => element.closest<HTMLElement>('[data-gamepad-card],.check-field') ?? element;
   const scrollParent = (element: HTMLElement) => {
     let parent = element.parentElement;
     while (parent) {
@@ -128,6 +135,7 @@ export function installGamepadNavigation(win: Window, options: Options): () => v
   };
   const focus = (element: HTMLElement | undefined, select = false) => {
     if (!element || !enabled(element)) return;
+    heldFocus = element;
     element.focus({ preventScroll: true });
     reveal(element);
     // Only explicitly reviewed, selection-only controls may act on focus.
@@ -169,7 +177,11 @@ export function installGamepadNavigation(win: Window, options: Options): () => v
       } else if (!pending.origin.isConnected || Date.now() >= pending.deadline) pendingDetail = undefined;
     }
     const element = focused();
-    if (!element || !scope.contains(element) || !enabled(element) || !element.matches(controls)) focus(initial(scope));
+    if (!element || !scope.contains(element) || !visible(element) || !element.matches(controls)) focus(initial(scope));
+    else {
+      heldFocus = element;
+      if (doc.activeElement !== element && enabled(element)) focus(element);
+    }
     mark();
   };
   const setMode = (value: boolean) => {
@@ -185,11 +197,18 @@ export function installGamepadNavigation(win: Window, options: Options): () => v
     picker.remove(); picker = undefined;
     if (restore) focus(target);
   };
-  const pointer = () => { pendingDetail = undefined; setMode(false); inputs.forEach(input => input.reset()); };
+  const pointer = () => { heldFocus = undefined; pendingDetail = undefined; setMode(false); inputs.forEach(input => input.reset()); };
   const pointerMove = (event: PointerEvent) => { if (event.movementX || event.movementY) pointer(); };
   const keyboard = (event: KeyboardEvent) => {
     if (!escapeFromPad) {
-      if (picker && event.key === 'Escape') { closePicker(true); event.stopImmediatePropagation(); }
+      if (picker && event.key === 'Escape') { closePicker(true); event.preventDefault(); event.stopImmediatePropagation(); }
+      if (picker && event.key === 'Tab') {
+        const buttons = candidates(picker);
+        const first = buttons[0], last = buttons.at(-1);
+        if (!picker.contains(doc.activeElement) || event.shiftKey && doc.activeElement === first || !event.shiftKey && doc.activeElement === last) {
+          event.preventDefault(); (event.shiftKey ? last : first)?.focus();
+        }
+      }
       pointer();
     }
   };

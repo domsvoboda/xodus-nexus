@@ -22,7 +22,7 @@ describe('Settings diagnostics', () => {
     const html = renderToStaticMarkup(<SettingsPage data={demoSnapshot()} toast={() => {}} />);
     expect(html).toContain(`<h2>${demoSnapshot().launcherUpdate?.currentVersion}</h2>`);
     expect(html).not.toContain('latest published release');
-    expect(html).toContain('Check GitHub for launcher updates.');
+    expect(html).not.toContain('Check GitHub for launcher updates.');
   });
   it('keeps technical details in a closed disclosure, without a CLI command list', () => {
     const html = renderToStaticMarkup(<SettingsPage data={demoSnapshot()} toast={() => {}} />);
@@ -31,14 +31,14 @@ describe('Settings diagnostics', () => {
     expect(details?.split('>')[0]).not.toMatch(/\bopen\b/);
     expect(details).toContain('Build dependencies');
     expect(details).toContain('COMMIT');
-    expect(details).toContain('Verbose game logs');
+    expect(details).toContain('Detailed game logs');
     expect(details).toContain('Save diagnostics');
     expect(details).toContain('Build backend from source');
     expect(details).not.toContain('Install upstream snapshot');
     expect(details).not.toContain('Check upstream snapshot');
     const main = html.replace(details!, '');
     expect(main).not.toContain('Build dependencies');
-    expect(main).not.toContain('Verbose game logs');
+    expect(main).not.toContain('Detailed game logs');
     expect(main).not.toContain('PROTON HEAD');
     expect(main).not.toContain('Install upstream snapshot');
     expect(main).not.toContain('Official GitHub Actions snapshot');
@@ -83,6 +83,6 @@ describe('Settings diagnostics', () => {
 it('shows close-to-tray as an optional desktop preference',()=>{
  const data=demoSnapshot();data.settings.closeToTray=true;
  const html=renderToStaticMarkup(<SettingsPage data={data} toast={()=>{}}/>);
- expect(html).toContain('Close Nexus to the system tray');expect(html).toContain('Desktop sessions only.');
+ expect(html).toContain('Close to system tray');expect(html).toContain('Desktop mode only.');
  expect(html).toMatch(/type="checkbox"[^>]*checked=""/);
 });

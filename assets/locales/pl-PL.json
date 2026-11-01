@@ -735,5 +735,6 @@
   "ui.your_owned_games_game_pass_games_and_local_insta_ebb2bf4": "Twoje posiadane gry, gry z Game Pass i instalacje lokalne.",
   "ui.your_pc_games_brought_together_354f2fc": "Twoje gry na PC, zebrane w jednym miejscu.",
   "ui.your_settings_and_games_will_not_change_3e99619": "Twoje ustawienia i gry pozostaną bez zmian.",
-  "ui.your_wallet_provider_handles_its_password_window_eb886e1": "Twój dostawca portfela obsługuje własne okno hasła. Nexus nie otrzymuje hasła, nie włącza wyłączonego portfela ani nie resetuje zapisanych danych logowania."
+  "ui.your_wallet_provider_handles_its_password_window_eb886e1": "Twój dostawca portfela obsługuje własne okno hasła. Nexus nie otrzymuje hasła, nie włącza wyłączonego portfela ani nie resetuje zapisanych danych logowania.",
+  "settings.cache_limit_error": "Wpisz limit pamięci podręcznej od 0,25 do 1024 GiB."
 }

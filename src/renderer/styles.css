@@ -338,8 +338,6 @@ button.primary svg, button.secondary svg { width: 17px; height: 17px; }
 .game-dialog .input-action input { border: 0; }
 .game-launch-tools { display: grid; gap: 12px; min-width: 0; margin: 0; padding: 15px; border: 1px solid var(--line); border-radius: 5px; }
 .game-launch-tools legend { padding: 0 5px; font-size: 12px; font-weight: 600; }
-.game-launch-tools .tool-checkbox { display: flex; align-items: center; gap: 9px; cursor: pointer; }
-.game-launch-tools input[type="checkbox"] { width: 16px; height: 16px; margin: 0; accent-color: #388e35; }
 .game-launch-tools small { color: var(--muted); font-size: 10px; line-height: 1.5; }
 .game-launch-tools textarea { width: 100%; min-height: 72px; resize: vertical; padding: 9px 10px; border: 1px solid #5b626b; border-radius: 4px; background: #1c1f23; color: #f4f4f4; font: 11px/1.5 monospace; }
 .game-launch-tools summary { font-size: 11px; cursor: pointer; }
@@ -376,8 +374,6 @@ button.primary svg, button.secondary svg { width: 17px; height: 17px; }
 .icon-button:hover { background: #3c4147; }
 .icon-button svg { width: 18px; }
 .secondary.danger { color: #ff9a9a; }
-.game-dialog .download-delete-confirm { display: flex; align-items: flex-start; gap: 9px; margin-top: 16px; font-size: 12px; line-height: 1.6; color: #ffb0b0; }
-.game-dialog .download-delete-confirm input { width: 16px; height: 16px; flex-shrink: 0; margin-top: 4px; accent-color: #9a4d4d; }
 .support-note, .fine-print { color: #92979d; font-size: 9px; line-height: 1.55; }
 .support-note { margin: 10px 20px 20px; }
 .alert { display: flex; align-items: flex-start; gap: 8px; padding: 10px 11px; font-size: 9px; line-height: 1.45; }
@@ -428,11 +424,6 @@ button.primary svg, button.secondary svg { width: 17px; height: 17px; }
 .settings-page { max-width: 1240px; }
 .settings-card { margin-bottom: 14px; padding: 24px; background: #222529; border: 1px solid var(--line); }
 .settings-card.compact { margin-bottom: 0; }
-.tray-settings .tray-toggle { display: flex; align-items: center; gap: 10px; font-size: 12px; font-weight: 650; cursor: pointer; }
-.tray-settings input[type="checkbox"] { width: 16px; height: 16px; margin: 0; accent-color: #388e35; }
-.tray-settings small { display: block; margin-top: 8px; color: var(--muted); font-size: 10px; line-height: 1.5; }
-.offline-permissions-card .offline-permissions-toggle { display: flex; align-items: center; gap: 10px; margin: 14px 0 8px; font-size: 12px; font-weight: 650; }
-.offline-permissions-card .offline-permissions-toggle input[type="checkbox"] { width: 16px; height: 16px; margin: 0; accent-color: #388e35; }
 .offline-permissions-card .offline-permissions-note { display: flex; align-items: center; gap: 8px; margin: 6px 0; color: #c2c5c9; font-size: 10px; line-height: 1.5; }
 .offline-permissions-card .offline-permissions-limit { margin: 4px 0 12px; color: #e3bd69; font-size: 10px; }
 .offline-permissions-card .offline-permissions-limit.exhausted { color: #ed9090; }
@@ -521,8 +512,6 @@ button.primary svg, button.secondary svg { width: 17px; height: 17px; }
 .save-row span { color: var(--muted); font-size: 9px; }
 
 .toggle-row { margin-top: 14px; padding: 12px; border: 1px solid var(--line); border-radius: 2px; background: var(--surface); display: grid; grid-template-columns: 1fr; gap: 7px; }
-.toggle-row .toggle { display: flex; align-items: center; gap: 9px; margin: 0; color: #d2d4d7; font-size: 10px; font-weight: 600; cursor: pointer; }
-.toggle-row .toggle input { width: 15px; height: 15px; accent-color: var(--green); cursor: pointer; }
 .toggle-row p { margin: 0; color: var(--faint); font-size: 10px; line-height: 1.5; }
 
 .toast { position: fixed; right: 22px; bottom: 22px; width: min(430px, calc(100vw - 44px)); min-height: 51px; display: grid; grid-template-columns: 20px 1fr 20px; align-items: center; gap: 9px; padding: 12px 14px; background: #283022; border: 1px solid rgba(139,216,10,.3); box-shadow: 0 16px 45px rgba(0,0,0,.55); z-index: 100; font-size: 10px; }

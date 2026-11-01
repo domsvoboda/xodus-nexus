@@ -189,5 +189,6 @@
   "ui.preparing_sign_in_cdca952": "Préparation de la connexion...",
   "ui.previous_a57b08a": "Précédent",
   "ui.price_unavailable_6a9e657": "Prix non disponible",
-  "ui.publisher_2137854": "Éditeur"
+  "ui.publisher_2137854": "Éditeur",
+  "settings.cache_limit_error": "Saisissez une limite de cache comprise entre 0,25 et 1024 Gio."
 }
