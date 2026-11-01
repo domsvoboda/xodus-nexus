@@ -268,9 +268,11 @@ it('coalesces duplicate requests, refuses concurrent games, and recovers after s
     active = value;
   });
   const pending = router.request(id);
-  await router.request(id);
+  let duplicateFinished = false;
+  const duplicate = router.request(id).then(() => { duplicateFinished = true; });
   await expect(router.request('fedcba9876543210')).rejects.toThrow('Another game');
-  expect(calls).toEqual([id]); finish(); await pending;
+  expect(calls).toEqual([id]); expect(duplicateFinished).toBe(false);
+  finish(); await Promise.all([pending, duplicate]); expect(duplicateFinished).toBe(true);
   await router.request(id); expect(calls).toEqual([id]);
   await expect(router.request('fedcba9876543210')).rejects.toThrow('Another game');
   const failure = new ShortcutLaunch(() => undefined, async () => { throw Error('missing runtime'); });

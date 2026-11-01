@@ -21,7 +21,7 @@ describe('gamepad input isolation and edge detection', () => {
     expect(input.poll(pad([0]), 2200).action).toBe('accept');
     expect(input.poll(pad([0]), 5000).action).toBeUndefined();
   });
-  it.each([[0, 'accept'], [1, 'back'], [2, 'options'], [4, 'previous-page'], [5, 'next-page']] as const)('button %s fires %s once until release', (button, action) => {
+  it.each([[0, 'accept'], [1, 'back'], [2, 'options'], [3, 'search'], [8, 'social'], [4, 'previous-page'], [5, 'next-page']] as const)('button %s fires %s once until release', (button, action) => {
     const input = new PadInput(); input.poll(pad(), 0);
     expect(input.poll(pad([button]), 10).action).toBe(action);
     expect(input.poll(pad([button]), 5000).action).toBeUndefined();
