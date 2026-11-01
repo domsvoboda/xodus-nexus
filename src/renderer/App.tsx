@@ -194,15 +194,22 @@ function useGameLaunchOptions(game: Game | undefined, data: AppSnapshot): GameLa
   return options;
 }
 
-export function HomePage({ data, go, action }: {
-  data: AppSnapshot; go: (page: Page) => void; action: (fn: () => Promise<unknown>, success?: string) => void;
+export function HomePage({ data, go, action, openGame, returnFocusKey }: {
+  data: AppSnapshot; go: (page: Page) => void; action: (fn: () => Promise<unknown>, success?: string) => void; openGame?: (id: string, returnKey: string) => void; returnFocusKey?: string;
 }) {
   const featured = data.games[0];
   const canPlay = Boolean(featured?.installState === 'ready' && data.backend.capabilities.run && (data.settings.winePath || data.runtime.winePath));
   const launchOptions = useGameLaunchOptions(featured, data);
   const spotlightArt = featured?.heroUrl ?? featured?.coverUrl;
+  const home = useRef<HTMLElement>(null);
+  const initialFocusKey = useRef(returnFocusKey);
+  useBrowserLayoutEffect(() => {
+    if (document.activeElement?.closest('.sidebar')) return;
+    const returnTarget = [...home.current?.querySelectorAll<HTMLElement>('[data-gamepad-key]') ?? []].find(element => element.dataset.gamepadKey === initialFocusKey.current);
+    (returnTarget ?? home.current?.querySelector<HTMLElement>('[data-gamepad-home-primary]'))?.focus({ preventScroll: true });
+  }, []);
 
-  return <main className="page home-page">
+  return <main ref={home} className="page home-page">
     <div className={`home-highlights${data.games.length>1?' has-secondary':''}`}>
     <section className={`spotlight ${spotlightArt ? 'has-art' : ''}`} style={spotlightArt ? { '--spotlight-art': `url(${spotlightArt})` } as React.CSSProperties : undefined}>
       <div className="spotlight-copy">
@@ -213,21 +220,21 @@ export function HomePage({ data, go, action }: {
           : ui("ui.import_an_existing_xodus_installation_or_install_a7f793f"))}</p>
         <div className="button-row">
           {featured && canPlay
-            ? <button className="primary" onClick={() => action(() => window.launcher.launchGame(featured.id))}><Play fill="currentColor" />{ui("ui.play_436e610")}</button>
-            : <button className="primary" onClick={() => go(featured ? 'settings' : 'library')}><ChevronRight />{featured ? ui("ui.finish_setup_bc01ae7") : ui("ui.import_a_game_54c0a6d")}</button>}
+            ? <button className="primary" data-gamepad-home-primary data-gamepad-key="home-play" onClick={() => action(() => window.launcher.launchGame(featured.id))}><Play fill="currentColor" />{ui("ui.play_436e610")}</button>
+            : <button className="primary" data-gamepad-home-primary data-gamepad-key="home-setup" onClick={() => go(featured ? 'settings' : 'library')}><ChevronRight />{featured ? ui("ui.finish_setup_bc01ae7") : ui("ui.import_a_game_54c0a6d")}</button>}
           <button className="secondary" onClick={() => go('library')}><Library />{ui("ui.view_library_108eb25")}</button>
         </div>
       </div>
       {featured ? <div className="spotlight-meta"><StatePill game={featured} />{launchOptions?.cloudSaves ? <span>{ui("ui.cloud_saves_4c54136")}</span> : null}<span>{featured.storeId ? ui("ui.store_id_884e198", { name: featured.storeId }) : ui("ui.local_import_c7e8b68")}</span></div> : null}
     </section>
-    {data.games.length>1?<div className="home-secondary">{data.games.slice(1,3).map(game=><button key={game.id} className="home-feature-card" onClick={()=>go('library')}>
+    {data.games.length>1?<div className="home-secondary">{data.games.slice(1,3).map(game=><button key={game.id} className="home-feature-card" data-gamepad-key={`home-feature:${game.id}`} onClick={()=>openGame ? openGame(game.id, `home-feature:${game.id}`) : go('library')}>
       <Cover game={game} variant="hero" /><span><strong>{game.title}</strong><small>{game.publisher??ui("ui.in_your_library_b9da1b7")}</small></span>
     </button>)}</div>:null}
     </div>
 
     <SectionTitle title={ui("ui.recently_added_96ec5d3")} action={ui("ui.see_all_d7a8c44")} onClick={() => go('library')} />
     {data.games.length > 0 ? <div className="poster-row">
-      {data.games.slice(0, 6).map((game) => <button className="poster-card" key={game.id} onClick={() => go('library')}>
+      {data.games.slice(0, 6).map((game) => <button className="poster-card" key={game.id} data-gamepad-key={`home-poster:${game.id}`} onClick={() => openGame ? openGame(game.id, `home-poster:${game.id}`) : go('library')}>
         <Cover game={game} /><GameTitle title={game.title} /><span>{game.publisher ?? (game.storeId ? ui("ui.microsoft_store_installation_99bfa99") : ui("ui.local_installation_e5d8322"))}</span>
       </button>)}
     </div> : <div className="empty-strip"><Gamepad2 /><div><strong>{ui("ui.no_games_imported_0bbcb51")}</strong><span>{ui("ui.your_library_is_built_only_from_real_local_manif_1513d78")}</span></div><button className="secondary" onClick={() => go('library')}>{ui("ui.import_folder_b849e38")}</button></div>}
@@ -595,7 +602,9 @@ export function GameLaunchToolFields({ value, change }: { value: GameLaunchTools
   </fieldset>;
 }
 
-export function LibraryPage({ data, toast, filters, onFiltersChange, selection }: Pick<AccountGamesProps, 'data' | 'toast' | 'filters' | 'onFiltersChange'> & { selection?: { id: string } }) {
+type LibrarySelection = { id: string; returnHomeKey?: string };
+
+export function LibraryPage({ data, toast, filters, onFiltersChange, selection, onSelectionHandled, returnHome }: Pick<AccountGamesProps, 'data' | 'toast' | 'filters' | 'onFiltersChange'> & { selection?: LibrarySelection; onSelectionHandled?: (request: LibrarySelection) => void; returnHome?: (key: string) => void }) {
   const confirm = useConfirmation();
   const [selectedId, setSelectedId] = useState<string | undefined>(selection?.id);
   const [menu, setMenu] = useState<{ id: string; x: number; y: number }>();
@@ -617,14 +626,21 @@ export function LibraryPage({ data, toast, filters, onFiltersChange, selection }
   const pageRef = useRef<HTMLElement>(null);
   const savedScroll = useRef(0);
   const wasOpen = useRef(false);
+  const returnHomeKey = useRef(selection?.returnHomeKey);
+  function closeDetails() {
+    setDetailOpen(false);
+    if (returnHomeKey.current) { const key = returnHomeKey.current; returnHomeKey.current = undefined; returnHome?.(key); }
+  }
   const selected = data.games.find((game) => game.id === selectedId) ?? data.games[0];
   const detailVisible=detailOpen&&Boolean(catalogSelection?catalogProduct:selected);
   const returnTarget=catalogProduct?(catalogGameInstalled(catalogProduct,data)?.id??catalogProduct.productId):selected?.id;
   function selectProductDetails(product:CatalogProduct){
+    returnHomeKey.current = undefined;
     savedScroll.current=pageRef.current?.closest('.page-scroll')?.scrollTop??0;
     setCatalogSelection({product,scope:catalogScope});setDetailOpen(true);
   }
   function selectGame(game: Game, openDetails = false) {
+    if (openDetails) returnHomeKey.current = undefined;
     setSelectedId(game.id);
     if (openDetails) { setCatalogSelection(undefined);savedScroll.current = pageRef.current?.closest('.page-scroll')?.scrollTop ?? 0; setDetailOpen(true); }
   }
@@ -647,6 +663,8 @@ export function LibraryPage({ data, toast, filters, onFiltersChange, selection }
     setCatalogSelection(undefined);
     setMenu(undefined);
     setDetailOpen(true);
+    returnHomeKey.current = selection.returnHomeKey;
+    onSelectionHandled?.(selection);
   }, [selection]);
   useEffect(() => {
     if (!menu) return;
@@ -768,7 +786,7 @@ export function LibraryPage({ data, toast, filters, onFiltersChange, selection }
     onContent: () => { setMenu(undefined); setContentGameId(game.id); },
     contentDisabled: !game.storeId || data.auth.stored !== true || !data.backend.capabilities.library,
   });
-  const selectedPanel = catalogProduct&&detailVisible?<CatalogGameDetails key={catalogProduct.productId+catalogScope} product={catalogProduct} data={data} back={()=>setDetailOpen(false)} toast={toast}/>:!catalogSelection&&selected&&detailVisible ? <GameDetails key={`${selected.id}:${data.auth.username}:${data.auth.stored}:${data.auth.running}:${data.backend.binaryPath}:${data.settings.market}`} game={selected} data={data} back={() => setDetailOpen(false)} play={<>
+  const selectedPanel = catalogProduct&&detailVisible?<CatalogGameDetails key={catalogProduct.productId+catalogScope} product={catalogProduct} data={data} back={closeDetails} toast={toast}/>:!catalogSelection&&selected&&detailVisible ? <GameDetails key={`${selected.id}:${data.auth.username}:${data.auth.stored}:${data.auth.running}:${data.backend.binaryPath}:${data.settings.market}`} game={selected} data={data} back={closeDetails} backLabel={returnHomeKey.current ? ui('game.back_to_home') : undefined} play={<>
           <button className="primary" data-gamepad-play disabled={gameBusy || selected.installState !== 'ready' || !data.backend.capabilities.run || !(data.settings.winePath || data.runtime.winePath)} onClick={() => play()}>{gameBusy ? <LoaderCircle className="spin" /> : <Play fill="currentColor" />}{gameBusy ? ui("ui.working_5474eef") : ui("ui.play_436e610")}</button>
           {gameBusy && !(selectedOperation?.kind === 'prerequisite' && selectedOperation.status === 'running') ? <button className="secondary danger" onClick={stopGame}><X />{ui("ui.stop_cae7d57")}</button> : null}
         </>} manage={<GameMenuActions {...managementProps(selected)} />} technical={<dl><div><dt>{ui("ui.store_id_4a3eac6")}</dt><dd>{selected.storeId ?? ui("ui.not_found_e3ebaa1")}</dd></div><div><dt>{ui("ui.executable_72cd8a6")}</dt><dd>{selected.executable ?? ui("ui.not_found_e3ebaa1")}</dd></div><div><dt>{ui("ui.location_15b6197")}</dt><dd>{selected.path}</dd></div></dl>} notices={<>
@@ -1129,7 +1147,13 @@ export default function App() {
   const [desktopProfile,setDesktopProfile]=useState<XboxProfileRequest>();
   // App stays mounted while pages change, unlike LibraryPage/AccountGames.
   const [libraryFilters, setLibraryFilters] = useState<LibraryFilters>(() => loadLibraryFilters());
-  const [librarySelection, setLibrarySelection] = useState<{ id: string }>();
+  const [librarySelection, setLibrarySelection] = useState<LibrarySelection>();
+  const [homeReturnKey, setHomeReturnKey] = useState<string>();
+  useBrowserLayoutEffect(() => {
+    if (page !== 'home' || !homeReturnKey) return;
+    [...document.querySelectorAll<HTMLElement>('[data-gamepad-key]')].find(element => element.dataset.gamepadKey === homeReturnKey)?.focus({ preventScroll: true });
+    setHomeReturnKey(undefined);
+  }, [page, homeReturnKey]);
   useEffect(() => window.launcher.onOpenFriends(() => {setSocialMounted(true);setSocialOpen(true);}), []);
   useEffect(()=>window.launcher.onLauncherPage(next=>{if(['home','library','store','settings'].includes(next))go(next);}),[]);
 
@@ -1152,7 +1176,7 @@ export default function App() {
   },[socialOpen]);
   function go(next:Page){
     if(next==='social'){setSocialMounted(true);setSocialOpen(open=>!open);return;}
-    setSocialOpen(false);setPage(next);
+    setLibrarySelection(undefined);setSocialOpen(false);setPage(next);
   }
   useEffect(() => { if (!toast) return; const timeout = window.setTimeout(() => setToast(undefined), 5000); return () => window.clearTimeout(timeout); }, [toast]);
   useEffect(() => {
@@ -1170,9 +1194,9 @@ export default function App() {
     if (!saveLibraryFilters(filters)) setToast({ kind: 'error', message: ui("ui.library_filters_could_not_be_saved_they_may_rese_262002e") });
   }
 
-  function openLibraryGame(id: string) {
+  function openLibraryGame(id: string, returnHomeKey?: string) {
     if (!data.games.some(game => game.id === id)) return;
-    setLibrarySelection({ id });
+    setLibrarySelection({ id, returnHomeKey });
     setSearch('');
     changeLibraryFilters({ ...defaultLibraryFilters, playState: 'installed' });
     setSocialOpen(false);setPage('library');
@@ -1191,7 +1215,7 @@ export default function App() {
 
     <section className="content-shell">
       <header className="topbar" ref={element => { if (element) element.inert = socialOpen; }}><GlobalSearch games={data.games} page={page} query={search} change={setSearch} submit={value => { setSubmittedSearch(value); go('store'); }} select={openLibraryGame} /><TopStatus data={data} go={go} /></header>
-      <div data-gamepad-page={page} ref={element => { if (element) element.inert = socialOpen; }} className={'page-scroll'+(page==='social'?' social-full-page':'')}>{page === 'home' ? <HomePage data={data} go={go} action={action} /> : null}{page === 'store' ? <StorePage data={data} toast={setToast} go={go} initialQuery={submittedSearch} /> : null}{page === 'library' ? <LibraryPage data={data} toast={setToast} filters={libraryFilters} onFiltersChange={changeLibraryFilters} selection={librarySelection} /> : null}{page === 'downloads' ? <DownloadsPage data={data} toast={setToast} /> : null}{page === 'settings' ? <SettingsPage data={data} toast={setToast} /> : null}{page === 'social' ? <div className="nexus-social-page"><XboxSocial key={JSON.stringify([data.auth.username,data.backend.binaryPath])} auth={data.auth} api={window.launcher.nativeSocial} voice={data.backend.available&&data.backend.capabilities.nativeSocial?window.launcher:undefined} runtimeInvites={data.social} runtimeApi={window.launcher} expanded active={!socialOpen} readKeys={notifications.readKeys} onViewed={notifications.viewed} showProfile={desktopProfile}/></div> : null}</div>
+      <div data-gamepad-page={page} ref={element => { if (element) element.inert = socialOpen; }} className={'page-scroll'+(page==='social'?' social-full-page':'')}>{page === 'home' ? <HomePage data={data} go={go} action={action} openGame={openLibraryGame} returnFocusKey={homeReturnKey} /> : null}{page === 'store' ? <StorePage data={data} toast={setToast} go={go} initialQuery={submittedSearch} /> : null}{page === 'library' ? <LibraryPage data={data} toast={setToast} filters={libraryFilters} onFiltersChange={changeLibraryFilters} selection={librarySelection} onSelectionHandled={request => setLibrarySelection(current => current === request ? undefined : current)} returnHome={key => { setHomeReturnKey(key); go('home'); }} /> : null}{page === 'downloads' ? <DownloadsPage data={data} toast={setToast} /> : null}{page === 'settings' ? <SettingsPage data={data} toast={setToast} /> : null}{page === 'social' ? <div className="nexus-social-page"><XboxSocial key={JSON.stringify([data.auth.username,data.backend.binaryPath])} auth={data.auth} api={window.launcher.nativeSocial} voice={data.backend.available&&data.backend.capabilities.nativeSocial?window.launcher:undefined} runtimeInvites={data.social} runtimeApi={window.launcher} expanded active={!socialOpen} readKeys={notifications.readKeys} onViewed={notifications.viewed} showProfile={desktopProfile}/></div> : null}</div>
       {socialOpen?<button className="nexus-social-scrim" aria-label={ui("social.close_social_shelf_09c6eb")} onClick={()=>setSocialOpen(false)}/>:null}
       <aside id="nexus-social-shelf" role="dialog" aria-modal={socialOpen || undefined} data-gamepad-layer data-gamepad-social-shelf className={'nexus-social-shelf'+(socialOpen?' is-open':'')} aria-label={ui("social.xbox_social_shelf_bb6aaf")} aria-hidden={!socialOpen}
         ref={element=>{if(element)element.inert=!socialOpen;}}>

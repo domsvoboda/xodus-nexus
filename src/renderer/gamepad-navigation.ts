@@ -231,7 +231,13 @@ export function installGamepadNavigation(win: Window, options: Options): () => v
       if (scope === doc) {
         // Detail pages set their own initial Play/Back focus in a layout effect.
         const element = focused();
-        if (!element?.closest('[data-gamepad-detail]') && !element?.matches('.sidebar .nav-item.active')) {
+        const homePrimary = doc.querySelector<HTMLElement>('[data-gamepad-home-primary]');
+        if (previousPage === 'home' && homePrimary) {
+          // Preserve sidebar ownership and explicit Home-card returns. Ordinary
+          // Home entry starts at Play, never at a persistent Search input.
+          const explicitHomeReturn = element?.closest('.home-page') && lastFocus?.page === 'home' && lastFocus.element === element;
+          if (!element?.closest('.sidebar') && !explicitHomeReturn) focus(homePrimary);
+        } else if (!element?.closest('[data-gamepad-detail]') && !element?.matches('.sidebar .nav-item.active')) {
           // Sidebar navigation already placed focus on the destination item.
           // Remembered content is restored only when Right enters the page.
           focus(resolve(previousPage ? pageReturns.get(previousPage) : undefined, doc) ?? initial(doc));

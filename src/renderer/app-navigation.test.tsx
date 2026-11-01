@@ -48,6 +48,44 @@ beforeEach(async () => {
 });
 afterEach(async () => { await act(async () => root.unmount()); vi.restoreAllMocks(); vi.unstubAllGlobals(); document.body.innerHTML = ''; });
 
+it.each(['.home-feature-card', '.poster-card'])('opens the clicked Home game and returns to its card with B (%s)', async selector => {
+  const card = get(selector), key = card.dataset.gamepadKey!;
+  const id = key.slice(key.indexOf(':') + 1);
+  await click(selector);
+  expect(get('[data-gamepad-detail]').dataset.gamepadDetail).toBe(id);
+  expect(document.activeElement).toBe(get('[data-gamepad-play]'));
+  expect(get('[data-gamepad-detail-back]').textContent).toContain('Back to Home');
+  await press(1);
+  expect(document.querySelector('.home-page')).not.toBeNull();
+  expect((document.activeElement as HTMLElement).dataset.gamepadKey).toBe(key);
+});
+
+it('falls back to Back to Home when the selected game cannot be played', async () => {
+  const game = demoSnapshot().games.find(game => game.installState === 'incomplete')!;
+  await click(`[data-gamepad-key="home-poster:${game.id}"]`);
+  expect(get('[data-gamepad-play]').matches(':disabled')).toBe(true);
+  expect(document.activeElement).toBe(get('[data-gamepad-detail-back]'));
+  expect(document.activeElement?.textContent).toContain('Back to Home');
+  await click('[data-gamepad-detail-back]');
+  expect(document.querySelector('.home-page')).not.toBeNull();
+});
+
+it('consumes a sidebar game request so later plain Library navigation opens the grid', async () => {
+  await click('.recents button:nth-of-type(2)');
+  expect(get('[data-gamepad-detail]').dataset.gamepadDetail).toBe(demoSnapshot().games[1].id);
+  await click('.sidebar nav button:first-child');
+  await click('.sidebar nav button:nth-child(2)');
+  expect(document.querySelector('.library-page')).not.toBeNull();
+  expect(document.querySelector('[data-gamepad-detail]')).toBeNull();
+});
+
+it('opens the clicked Home game even after a different sidebar game was selected', async () => {
+  await click('.recents button:first-of-type');
+  await click('.sidebar nav button:first-child');
+  await click('.home-feature-card');
+  expect(get('[data-gamepad-detail]').dataset.gamepadDetail).toBe(demoSnapshot().games[1].id);
+});
+
 it('preserves the working Library card → details → B focus restoration', async () => {
   await click('.sidebar nav button:nth-child(2)');
   const card = get('.library-card'), id = card.dataset.gamepadDetailTarget;
@@ -79,4 +117,61 @@ it('uses Y for Search and the keyboard, including when closing Social', async ()
   await press(3); expect(get('#nexus-social-shelf').inert).toBe(true);
   expect(document.activeElement).toBe(get('.search-box input'));
   expect(window.launcher.showTouchKeyboard).toHaveBeenCalledTimes(2);
+});
+
+it('starts Home at Play and lets Down leave Search for the main page', async () => {
+  expect(document.activeElement).toBe(get('[data-gamepad-home-primary]'));
+  await press(3); expect(document.activeElement).toBe(get('.search-box input'));
+  await press(13); expect(document.activeElement).toBe(get('[data-gamepad-home-primary]'));
+  expect(window.launcher.showTouchKeyboard).toHaveBeenCalledOnce();
+});
+
+it('preserves sidebar focus when opening Home from there, with a visible focus marker', async () => {
+  await click('.sidebar nav button:nth-child(2)');
+  await click('.sidebar nav button:first-child'); await press(2);
+  expect(document.activeElement).toBe(get('.sidebar nav button:first-child'));
+  expect(document.activeElement?.hasAttribute('data-gamepad-focus')).toBe(true);
+  await press(15); expect(document.activeElement).toBe(get('[data-gamepad-home-primary]'));
+});
+
+it('returns to Play when Home is opened from a page rather than the sidebar', async () => {
+  await click('.sidebar nav button:nth-child(2)');
+  await act(async () => { get('.library-card').focus(); }); await press(1);
+  expect(document.activeElement).toBe(get('[data-gamepad-home-primary]'));
+});
+
+it('keeps sidebar ownership when returning to Library after a shoulder-page switch', async () => {
+  document.querySelectorAll<HTMLElement>('.sidebar nav button').forEach((button, index) => { button.dataset.testRect = `0,${100 + index * 60},100,40`; });
+  await click('.sidebar nav button:nth-child(2)');
+  const card = document.querySelectorAll<HTMLElement>('.library-card')[1];
+  const game = card.dataset.gamepadDetailTarget;
+  await act(async () => { card.focus(); });
+  await press(4); // Library → Home via LB
+  await press(14); // Left into Home's sidebar item
+  expect(document.activeElement).toBe(get('.sidebar nav button:first-child'));
+  await press(13); // Down activates Library in the sidebar
+  expect(document.activeElement).toBe(get('.sidebar nav button:nth-child(2)'));
+  await press(12); await press(13); // Repeated sidebar page changes keep ownership
+  expect(document.activeElement).toBe(get('.sidebar nav button:nth-child(2)'));
+  await press(15); // Only Right restores the remembered game
+  expect((document.activeElement as HTMLElement).dataset.gamepadDetailTarget).toBe(game);
+});
+
+it('navigates from the sidebar account card to notifications, opens it and returns to the bell with B', async () => {
+  get('.account-summary').dataset.testRect = '0,10,180,58';
+  get('.notification-bell').dataset.testRect = '196,23,32,32';
+  get('.sidebar nav button:first-child').dataset.testRect = '0,100,240,40';
+  await press(14); await press(12);
+  expect(document.activeElement).toBe(get('.account-summary'));
+  await press(15); expect(document.activeElement).toBe(get('.notification-bell'));
+  expect(document.activeElement?.hasAttribute('data-gamepad-focus')).toBe(true);
+  await press(14); expect(document.activeElement).toBe(get('.account-summary'));
+  await press(15); await press(0);
+  expect(document.querySelector('#notification-panel')).not.toBeNull();
+  expect(document.activeElement?.closest('#notification-panel')).not.toBeNull();
+  await press(1);
+  expect(document.querySelector('#notification-panel')).toBeNull();
+  expect(document.activeElement).toBe(get('.notification-bell'));
+  expect(window.launcher.nativeSocial.openXboxPlayerProfile).not.toHaveBeenCalled();
+  await press(15); expect(document.activeElement).toBe(get('[data-gamepad-home-primary]'));
 });
