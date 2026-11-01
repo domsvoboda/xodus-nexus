@@ -5,7 +5,7 @@
   "commit": "53ea781dcd073e31d7ea68e894134e9c959bff04",
   "rust": "1.99.0",
   "cargoLockSha256": "2259b343e00dadc263018beb7664b12e9d58a0b73bff502ad566f5f8619ce28a",
-  "patchId": "linux-run-v74",
+  "patchId": "linux-run-v75",
   "compatibility": "linux-run-v25",
   "patches": [
     {
@@ -307,6 +307,10 @@
     {
       "file": "xodus-private-launch-views.patch",
       "sha256": "4541bfc1e65afeb5ffa8b0e1704ea4eccab3346996a60a0f9ac7459195b9ae65"
+    },
+    {
+      "file": "xodus-dlc-mount-workspace.patch",
+      "sha256": "e19556947f556c7d507801c09d024bd70020dc3f8534c30a38fb5d47c684b251"
     }
   ]
 }
