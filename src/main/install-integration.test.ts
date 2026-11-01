@@ -6,6 +6,7 @@ import { randomUUID } from 'node:crypto';
 import { demoSnapshot } from '../shared/demo-data.js';
 import { StateStore } from './store.js';
 import { GameContent } from './game-content.js';
+import { ContentCatalog } from './content-catalog.js';
 import { DownloadCleanup } from './download-cleanup.js';
 import { offerSteamHandoff } from './steam-launch-context.js';
 
@@ -476,6 +477,45 @@ it('routes a direct Durable through real managed-content admission and completio
       expect.objectContaining({ title: 'Content download complete', body: `${task.title} has finished downloading.` }),
     ]));
   }finally{releaseCleanup();cleanup.mockRestore();globalThis.fetch=fetcher;h.contentSupported=false;h.downloads.splice(0);h.notifications.splice(0);}
+});
+
+it('passes installed DLC into the real launch environment when public discovery fails after installation', async () => {
+  const task = snapshot().downloads.find((task: any) => task.kind === 'content' && task.productId === '9MMMMMMMMMMM');
+  expect(task.status).toBe('complete');
+  const manifest = path.join(h.root, 'installed-game/MicrosoftGame.config');
+  const original = await fs.readFile(manifest, 'utf8');
+  expect(original).not.toContain('9MMMMMMMMMMM');
+  const discovery = vi.spyOn(ContentCatalog.prototype, 'discover');
+  const old = process.env.NEXUS_RELATED_PRODUCT_IDS;
+  process.env.NEXUS_RELATED_PRODUCT_IDS = '9FFFFFFFFFFF';
+  h.discoverySupported = true;
+  try {
+    for (const error of [Error('catalog 503 private.invalid/signed?secret'), new DOMException('optional discovery deadline', 'TimeoutError')]) {
+      discovery.mockRejectedValueOnce(error);
+      await ipc('launch-game', 'sample');
+      expect(snapshot().gameOperation.status).toBe('running');
+      const environment = h.launchEnvironments.at(-1)!;
+      expect(environment.NEXUS_RELATED_PRODUCT_IDS).toBe('9MMMMMMMMMMM');
+      expect(environment.XODUS_CONTENT_ROOTS).toContain('Z:' + task.destination.replaceAll('/', '\\'));
+      expect(snapshot().gameOperation.log.join('\n')).not.toContain('secret');
+      h.game!.finish();
+      await vi.waitFor(() => expect(snapshot().gameOperation.status).toBe('complete'));
+      await new Promise(resolve => setTimeout(resolve, 10));
+    }
+    expect(discovery).toHaveBeenCalledTimes(2);
+    expect(await fs.readFile(manifest, 'utf8')).toBe(original);
+    expect((await fs.readdir(task.destination))).toContain('.nexus-content-complete.json');
+  } finally {
+    if (snapshot().gameOperation.status === 'running') {
+      h.game!.finish();
+      await vi.waitFor(() => expect(snapshot().gameOperation.status).toBe('complete'));
+      await new Promise(resolve => setTimeout(resolve, 10));
+    }
+    discovery.mockRestore(); h.discoverySupported = false;
+    h.blockDisplay.mockClear(); h.releaseDisplay.mockClear();
+    if (old === undefined) delete process.env.NEXUS_RELATED_PRODUCT_IDS;
+    else process.env.NEXUS_RELATED_PRODUCT_IDS = old;
+  }
 });
 
 it('gates runtime DLC hints, clears inherited foreign hints and still launches after optional discovery fails without reading accounts',async()=>{
