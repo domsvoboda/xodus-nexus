@@ -30,6 +30,13 @@ afterEach(() => { stop?.(); vi.restoreAllMocks(); document.body.innerHTML = ''; 
 const wake = (id: string) => { get(id).focus(); harness.press(2); };
 
 describe('focus recovery', () => {
+  it('preserves an explicitly focused sidebar action on the first controller input after mouse navigation', () => {
+    document.querySelector<HTMLElement>('.page-scroll')!.dataset.gamepadPage = 'settings';
+    const action = document.createElement('button'); action.textContent = 'Notifications'; action.className = 'notification-bell';
+    document.querySelector('.sidebar')!.append(action);
+    const click = vi.fn(); action.onclick = click; action.focus(); harness.press(0);
+    expect(document.activeElement).toBe(action); expect(click).toHaveBeenCalledOnce();
+  });
   it('opens the keyboard only when A activates an editable field, not when navigation focuses it', () => {
     get('grid').insertAdjacentHTML('afterbegin', '<input id="search" type="search" data-test-rect="200,140,300,40">');
     wake('search'); expect(callbacks.keyboard).not.toHaveBeenCalled();

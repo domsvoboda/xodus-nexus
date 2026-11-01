@@ -250,7 +250,7 @@ export function installGamepadNavigation(win: Window, options: Options): () => v
       // Home entry starts at Play, never at a persistent Search input.
       const explicitHomeReturn = element?.closest('.home-page') && lastFocus?.page === 'home' && lastFocus.element === element;
       if (!element?.closest('.sidebar') && !explicitHomeReturn) focus(homePrimary);
-    } else if (!element?.closest('[data-gamepad-detail]') && !element?.matches('.sidebar .nav-item.active')) {
+    } else if (!element?.closest('[data-gamepad-detail]') && !element?.matches('.sidebar .nav-item.active,.notification-bell')) {
       // Sidebar navigation already placed focus on the destination item.
       // Remembered content is restored only when Right enters the page.
       focus(pageReturn(doc) ?? initial(doc));
