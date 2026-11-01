@@ -30,6 +30,10 @@ export function registerDemoSocialIpc(ipc: Pick<IpcMain, 'handle' | 'removeHandl
   handle('pop-out-xbox-chat', options.popOutChat);
   handle('xbox-chat-reads', () => ({ account: 'sample@example.test', binary: '/home/demo/.config/xodus-nexus/xodus-backends/current', keys: [] }));
   handle('xbox-chat-viewed', () => {});
+  // Legacy media-host IPC must not fall through to the real account in demo mode.
+  for (const channel of ['xbox-party-start', 'xbox-party-connected', 'xbox-party-leave', 'xbox-party-voice-policy', 'xbox-party-microphone', 'xbox-party-accept']) {
+    handle(channel, () => { throw Error('Live party media is unavailable in demo mode.'); });
+  }
   handle('xbox-party-state', voice.getXboxParty);
   handle('xbox-party-active', voice.getXboxActiveParties);
   handle('xbox-party-leave-existing', voice.leaveExistingXboxParty);

@@ -15,6 +15,10 @@ it('replaces demo Social IPC with local fixtures, enforces sender checks, and pu
   expect(emit).toHaveBeenCalledWith('xbox-party-state', expect.objectContaining({ phase: 'connected' }));
   expect(emit).toHaveBeenCalledWith('xbox-voice-state', expect.objectContaining({ connected: true, muted: true }));
   expect(ipc.removeHandler).toHaveBeenCalledWith('xbox-voice-control');
+  for (const channel of ['xbox-party-start', 'xbox-party-accept', 'xbox-party-microphone']) {
+    expect(() => invoke(channel, 'offer', 'invite')).toThrow('unavailable in demo mode');
+    expect(ipc.removeHandler).toHaveBeenCalledWith(channel);
+  }
   authorize.mockImplementationOnce(() => { throw Error('Not Nexus'); });
   expect(() => invoke('xbox-social-friends')).toThrow('Not Nexus');
 });
