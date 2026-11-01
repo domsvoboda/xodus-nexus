@@ -19,3 +19,10 @@ it('omits the warning for prerequisites and sessions with no detected cloud fail
   for (const op of [undefined, { ...operation, cloudSaveWarning: undefined }, { ...operation, kind: 'prerequisite' as const }])
     expect(renderToStaticMarkup(<CloudSaveWarning operation={op} openGame={() => {}} />)).toBe('');
 });
+
+it('keeps the save warning visible but blocks background navigation while Social is modal', () => {
+  const html = renderToStaticMarkup(<CloudSaveWarning operation={operation} openGame={() => {}} disabled />);
+  expect(html).toContain('role="alert"');
+  expect(html).toContain('Keep your local saves');
+  expect(html).toMatch(/<button[^>]*disabled=""/);
+});
