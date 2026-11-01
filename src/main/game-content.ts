@@ -135,14 +135,28 @@ export class GameContent {
   constructor(private dataRoot: string, fetcher: typeof fetch = fetch) { this.catalog = new ContentCatalog(fetcher); }
   /**
    * Public discovery hints only. Never reads credentials or grants runtime rights.
-   * An offline launch skips the catalog, which cannot answer, and lists only
-   * content installed on this device instead of waiting for the timeout.
+   * Optional catalog failures retain package-declared and validated installed
+   * IDs, so an outage cannot remove installed DLC from runtime receipt queries.
+   * Installation/repair still requires fresh catalog admission in plan/prepare.
+   * Offline launches list only installed content and never query the network.
    */
-  async relatedProducts(game: Game, access: Access, market = 'US', signal = AbortSignal.timeout(5_000), offline = false): Promise<string[]> {
+  async relatedProducts(game: Game, access: Access, market = 'US', signal?: AbortSignal, offline = false): Promise<string[]> {
+    signal?.throwIfAborted();
     const base = await baseManifest(game);
-    const catalog = offline ? { related: [] } : await this.catalog.discover(base, access, market, game.offerProductId, signal);
-    signal.throwIfAborted();
-    const related = [...new Set([...catalog.related, ...await this.installedIds(game)])].filter(id => id !== base.storeId);
+    let discovered = offline ? [] : base.related;
+    if (!offline) {
+      try {
+        const catalog = await this.catalog.discover(base, access, market, game.offerProductId, signal ?? AbortSignal.timeout(5_000));
+        discovered = catalog.related;
+      } catch {
+        // A caller cancellation must propagate. The optional launch lookup's
+        // own deadline/network failure can fall back to local metadata.
+        signal?.throwIfAborted();
+      }
+    }
+    signal?.throwIfAborted();
+    const related = [...new Set([...discovered, ...await this.installedIds(game)])].filter(id => id !== base.storeId);
+    signal?.throwIfAborted();
     if (related.length > 256 || related.some(id => !productId.test(id))) throw Error('Content discovery scope is too large.');
     return related;
   }

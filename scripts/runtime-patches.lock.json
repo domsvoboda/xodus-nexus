@@ -249,7 +249,7 @@
     "scripts/runtime-compat/build.mjs": "ac150747020a3a29d1d436c2e2af879e66ea2fe9104d4d330534d6128ba3ea19",
     "scripts/runtime-compat/playfab-save-folder.c": "fa63ceff1c77e2a1cdac5daae134ad46c29a20bf889208b5d73cfa808d53d56f",
     "scripts/runtime-compat/playfab-save-folder.def": "a6f34058988f103cda4ae4f8774683a3ccbdf146fcc54af750b12335fc08cf8a",
-    "scripts/runtime-compat/wine-launcher.c": "b93a9669cc5b8420a79c74ecaee619d699c0105e54d1237770cdfed4ea7fe2a7",
+    "scripts/runtime-compat/wine-launcher.c": "b5994348d348d77a5e039dd70f8b3ab3d5e77c2465be99cf5e88aeec05ea242b",
     "scripts/runtime-compat/gaming-services-version.c": "3410efcc5c862085684323034b41131ce1bc6d44c36fb013ecc4b9dc197dd128",
     "scripts/runtime-compat/playfab-session.c": "b52994538c05e98e758d82dd7d69d29aca8093303e2c503c72f016158621f4ec",
     "scripts/runtime-compat/playfab-session.h": "a7bf5c391f58314439925e4095c31b6e93776609c0563a5df0198012799b80e3"

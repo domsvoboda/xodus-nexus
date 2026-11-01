@@ -1,3 +1,4 @@
+import { CheckField } from './CheckField';
 import { useEffect, useRef, useState } from 'react';
 import { CircleAlert, CloudOff, LoaderCircle, RefreshCw } from 'lucide-react';
 import type { OfflinePermissions } from '../shared/types';
@@ -32,10 +33,7 @@ export function OfflinePermissionsView({ status, busy, error, onToggle, onRetry 
     {!status && !error ? <p className="offline-permissions-note"><LoaderCircle className="spin" /> {ui('offline.checking')}</p> : null}
     {status ? <>
       {status.launchSupported === false ? <div className="alert amber"><CircleAlert /><span>{ui('offline.compatible_components_required')}</span></div> : null}
-      <label className="tool-checkbox offline-permissions-toggle" data-testid="offline-permissions-toggle">
-        <input type="checkbox" checked={status.enabled} disabled={locked} onChange={event => onToggle(event.target.checked)} />
-        <span>{ui('offline.toggle')}</span>
-      </label>
+      <CheckField className="tool-checkbox offline-permissions-toggle" data-testid="offline-permissions-toggle" label={ui('offline.toggle')} checked={status.enabled} disabled={locked} onChange={event => onToggle(event.target.checked)} />
       <p className="offline-permissions-note">{status.enabled ? ui('offline.enabled_note') : ui('offline.disabled_note')}</p>
       <p className={`offline-permissions-limit${exhausted ? ' exhausted' : ''}`}>{uiText(offlinePermissionLimitText(status))}</p>
     </> : null}

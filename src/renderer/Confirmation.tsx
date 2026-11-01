@@ -1,3 +1,4 @@
+import { useDialogFocus } from './use-dialog-focus';
 import { ui } from './i18n';
 import { createContext, useContext, useEffect, useRef, useState, type ReactNode } from 'react';
 
@@ -15,22 +16,7 @@ export function ConfirmationProvider({ children }: { children: ReactNode }) {
     mounted.current = true;
     return () => { mounted.current = false; pending.current?.(false); pending.current = undefined; };
   }, []);
-  useEffect(() => {
-    if (!question) return;
-    const origin = document.activeElement instanceof HTMLElement ? document.activeElement : undefined;
-    dialog.current?.querySelector<HTMLButtonElement>('[data-gamepad-cancel]')?.focus({ preventScroll: true });
-    const keydown = (event: KeyboardEvent) => {
-      if (event.key === 'Escape') { event.preventDefault(); event.stopImmediatePropagation(); choose(false); }
-      if (event.key !== 'Tab') return;
-      const controls = [...(dialog.current?.querySelectorAll<HTMLButtonElement>('button:not(:disabled)') ?? [])];
-      const first = controls[0], last = controls.at(-1);
-      if (!dialog.current?.contains(document.activeElement) || (event.shiftKey && document.activeElement === first) || (!event.shiftKey && document.activeElement === last)) {
-        event.preventDefault(); (event.shiftKey ? last : first)?.focus();
-      }
-    };
-    window.addEventListener('keydown', keydown, true);
-    return () => { window.removeEventListener('keydown', keydown, true); if (origin?.isConnected) origin.focus({ preventScroll: true }); };
-  }, [question]);
+  useDialogFocus(dialog, () => choose(false), Boolean(question));
   const ask = (next: Question) => {
     if (!mounted.current || pending.current) return Promise.resolve(false);
     setQuestion(next);
