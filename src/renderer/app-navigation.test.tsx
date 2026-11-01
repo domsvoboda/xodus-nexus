@@ -25,6 +25,9 @@ const typeSearch = async (query: string) => {
 };
 beforeEach(async () => {
   vi.stubGlobal('IS_REACT_ACT_ENVIRONMENT', true);
+  // Node 25+ has its own storage global. Keep these browser tests on jsdom's
+  // per-window storage, without a Node backing file or extra launch flags.
+  vi.stubGlobal('localStorage', (globalThis as unknown as { jsdom: { window: Window } }).jsdom.window.localStorage);
   localStorage.clear(); window.location.hash = '';
   harness = gamepadHarness();
   const data = demoSnapshot();
