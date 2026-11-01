@@ -321,6 +321,7 @@ it('follows Settings rows across columns instead of skipping the tray and launch
   const [updates, steam] = [...document.querySelectorAll<HTMLElement>('.launcher-card .button-row button')];
   const signIn = get('.account-card .button-row button');
   language.dataset.testRect = '430,270,330,56'; save.dataset.testRect = '1720,269,164,56';
+  tray.closest<HTMLElement>('.check-field')!.dataset.testRect = '427,400,1457,48';
   tray.dataset.testRect = '427,413,22,22'; updates.dataset.testRect = '1400,551,227,56';
   steam.dataset.testRect = '1639,551,244,56'; signIn.dataset.testRect = '427,987,186,56';
   language.focus(); await press(2);

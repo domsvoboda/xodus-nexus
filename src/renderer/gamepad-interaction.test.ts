@@ -69,8 +69,10 @@ describe('focus recovery', () => {
     harness.press(13);
     expect(store).not.toHaveBeenCalled(); expect(callbacks.page).not.toHaveBeenCalled();
   });
-  it('recovers locally if a focused control becomes natively disabled', () => {
+  it('retains the pending disabled anchor and lets the user navigate away', () => {
     wake('more'); (get('more') as HTMLButtonElement).disabled = true; harness.step();
+    expect(get('more').hasAttribute('data-gamepad-focus')).toBe(true);
+    harness.press(12);
     expect(document.activeElement?.closest('#grid')).toBe(get('grid'));
   });
   it('restores the last game by key after switching pages and replacing its DOM node', () => {

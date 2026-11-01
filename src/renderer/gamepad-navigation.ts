@@ -130,7 +130,7 @@ export function installGamepadNavigation(win: Window, options: Options): () => v
     .filter(visible).at(-1) ?? doc;
   const focused = () => {
     const element = doc.activeElement instanceof HTMLElement ? doc.activeElement : undefined;
-    return active && (!element || element === doc.body) && heldFocus && scope.contains(heldFocus) && visible(heldFocus)
+    return active && (!element || element === doc.body) && heldFocus?.matches(':disabled') && scope.contains(heldFocus) && visible(heldFocus)
       ? heldFocus : element;
   };
   const page = () => doc.querySelector<HTMLElement>('.page-scroll')?.dataset.gamepadPage;
