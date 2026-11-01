@@ -1,5 +1,8 @@
+import { isTextField, requestTextKeyboard } from './touch-keyboard';
+import type { SteamKeyboardRequest } from '../shared/types';
+
 export type Direction = 'up' | 'down' | 'left' | 'right';
-export type PadAction = Direction | 'accept' | 'back' | 'options' | 'previous-page' | 'next-page';
+export type PadAction = Direction | 'accept' | 'back' | 'options' | 'search' | 'social' | 'previous-page' | 'next-page';
 type Rect = Pick<DOMRect, 'left' | 'right' | 'top' | 'bottom'>;
 type Pad = Pick<Gamepad, 'buttons' | 'axes'>;
 const directions: Direction[] = ['up', 'down', 'left', 'right'];
@@ -25,7 +28,7 @@ export class PadInput {
   private repeatAt = 0;
   reset() { this.armed = false; this.previous = []; this.direction = undefined; this.repeatAt = 0; }
   poll(pad: Pad, now: number): { action?: PadAction; scroll: number } {
-    const buttons = [1, 0, 2, 4, 5].map(index => pressed(pad, index));
+    const buttons = [1, 0, 2, 3, 8, 4, 5].map(index => pressed(pad, index));
     const direction = padDirection(pad);
     const scroll = Math.abs(axis(pad, 3)) >= 0.3 ? axis(pad, 3) : 0;
     if (pressed(pad, 16)) { this.reset(); return { scroll: 0 }; } // Steam/Guide chords belong to Steam.
@@ -37,7 +40,7 @@ export class PadInput {
     const edge = buttons.findIndex((value, index) => value && !this.previous[index]);
     this.previous = buttons;
     let action: PadAction | undefined;
-    if (edge !== -1) action = (['back', 'accept', 'options', 'previous-page', 'next-page'] as const)[edge];
+    if (edge !== -1) action = (['back', 'accept', 'options', 'search', 'social', 'previous-page', 'next-page'] as const)[edge];
     if (direction !== this.direction) {
       this.direction = direction;
       this.repeatAt = now + 380;
@@ -72,8 +75,11 @@ export function navigationTarget<T>(from: Rect, targets: readonly { value: T; re
   return best;
 }
 
-type Options = { mode: (active: boolean) => void; back: () => void; page: (delta: number) => void };
+type Options = { mode: (active: boolean) => void; back: () => void; page: (delta: number) => void; social?: () => void; search?: () => void; keyboard?: (field: SteamKeyboardRequest) => Promise<unknown> };
 const controls = 'button,a[href],input:not([type="hidden"]),select,textarea,summary,[tabindex]';
+const layers = '[role="dialog"][aria-modal="true"],[data-game-menu],[data-gamepad-layer]';
+const regions = '[data-gamepad-grid],[data-gamepad-filters],[data-gamepad-library-header],[data-gamepad-library-footer],[data-gamepad-detail],.page-scroll,.topbar,.sidebar';
+type FocusMemory = { element: HTMLElement; key?: string; page?: string; region?: HTMLElement; rect: Rect };
 
 export function revealDelta(top: number, bottom: number, viewTop: number, viewBottom: number): number {
   if (bottom - top > viewBottom - viewTop || top < viewTop) return top - viewTop;
@@ -85,8 +91,10 @@ export function revealDelta(top: number, bottom: number, viewTop: number, viewBo
 export function installGamepadNavigation(win: Window, options: Options): () => void {
   const doc = win.document;
   const inputs = new Map<string, PadInput>();
-  const returns = new WeakMap<Element, HTMLElement>();
-  const sidebarReturns = new WeakMap<Element, HTMLElement>();
+  const returns = new WeakMap<Element, FocusMemory>();
+  const parents = new WeakMap<Element, HTMLElement | Document>();
+  const pageReturns = new Map<string, FocusMemory>();
+  let lastFocus: FocusMemory | undefined;
   let active = false, stopped = false, frame = 0, previousTime = 0;
   let scope: HTMLElement | Document = doc;
   let picker: HTMLElement | undefined;
@@ -99,16 +107,32 @@ export function installGamepadNavigation(win: Window, options: Options): () => v
     return style.visibility !== 'hidden' && style.visibility !== 'collapse' && style.display !== 'none';
   };
   const enabled = (element: HTMLElement) => visible(element) && !element.matches(':disabled,[aria-disabled="true"]');
+  // Busy pagination remains focusable, but can never be activated again.
+  const focusable = (element: HTMLElement) => enabled(element) || visible(element) && !element.matches(':disabled') && element.getAttribute('aria-busy') === 'true';
   const candidates = (root: HTMLElement | Document) => [...root.querySelectorAll<HTMLElement>(controls)]
-    .filter(element => enabled(element) && element.tabIndex >= 0 && !element.hasAttribute('data-gamepad-skip'));
-  const currentScope = () => [...doc.querySelectorAll<HTMLElement>('[role="dialog"][aria-modal="true"],[data-game-menu]')]
+    .filter(element => focusable(element) && element.tabIndex >= 0 && !element.hasAttribute('data-gamepad-skip'));
+  const currentScope = () => [...doc.querySelectorAll<HTMLElement>(layers)]
     .filter(visible).at(-1) ?? doc;
   const focused = () => doc.activeElement instanceof HTMLElement ? doc.activeElement : undefined;
+  const page = () => doc.querySelector<HTMLElement>('.page-scroll')?.dataset.gamepadPage;
+  let previousPage = page();
+  const key = (element: HTMLElement) => element.dataset.gamepadKey ?? (element.dataset.gamepadDetailTarget ? `game:${element.dataset.gamepadDetailTarget}` : element.id || undefined);
   const focusBox = (element: HTMLElement) => element.closest<HTMLElement>('[data-gamepad-card]') ?? element;
+  const remember = (element: HTMLElement): FocusMemory => ({ element, key: key(element), page: page(), region: element.closest<HTMLElement>(regions) ?? undefined, rect: focusBox(element).getBoundingClientRect() });
+  const resolve = (memory: FocusMemory | undefined, root: HTMLElement | Document): HTMLElement | undefined => {
+    if (!memory || memory.page !== page()) return;
+    if (root.contains(memory.element) && focusable(memory.element)) return memory.element;
+    return memory.key ? candidates(root).find(element => key(element) === memory.key) : undefined;
+  };
+  const nearest = (memory: FocusMemory, root: HTMLElement | Document) => candidates(root).sort((a, b) => {
+    const distance = (element: HTMLElement) => { const rect = focusBox(element).getBoundingClientRect(); return Math.hypot(rect.left + rect.right - memory.rect.left - memory.rect.right, rect.top + rect.bottom - memory.rect.top - memory.rect.bottom); };
+    return distance(a) - distance(b);
+  })[0];
   const scrollParent = (element: HTMLElement) => {
     let parent = element.parentElement;
-    while (parent) {
+    while (parent && (scope === doc || scope.contains(parent))) {
       if (parent.scrollHeight > parent.clientHeight && /auto|scroll/.test(win.getComputedStyle(parent).overflowY)) return parent;
+      if (parent === scope) break;
       parent = parent.parentElement;
     }
   };
@@ -122,12 +146,12 @@ export function installGamepadNavigation(win: Window, options: Options): () => v
   };
   const mark = () => {
     const element = active ? focused() : undefined;
-    const target = element && !element.hasAttribute('data-gamepad-auto-select') ? focusBox(element) : undefined;
+    const target = element ? focusBox(element) : undefined;
     doc.querySelectorAll('[data-gamepad-focus]').forEach(element => { if (element !== target) element.removeAttribute('data-gamepad-focus'); });
     if (target && !target.hasAttribute('data-gamepad-focus')) target.setAttribute('data-gamepad-focus', '');
   };
   const focus = (element: HTMLElement | undefined, select = false) => {
-    if (!element || !enabled(element)) return;
+    if (!element || !focusable(element)) return;
     element.focus({ preventScroll: true });
     reveal(element);
     // Only explicitly reviewed, selection-only controls may act on focus.
@@ -140,6 +164,26 @@ export function installGamepadNavigation(win: Window, options: Options): () => v
   const initial = (root: HTMLElement | Document) => candidates(root).find(element => element.hasAttribute('data-gamepad-initial'))
     ?? candidates(root).find(element => element.hasAttribute('data-gamepad-cancel'))
     ?? candidates(root).find(element => element.matches('.sidebar .active')) ?? candidates(root)[0];
+  const recover = () => {
+    const memory = lastFocus;
+    const replacement = resolve(memory, scope);
+    if (replacement) return replacement;
+    if (memory && memory.page === page()) {
+      if (memory.region && scope.contains(memory.region) && visible(memory.region)) {
+        const local = nearest(memory, memory.region);
+        if (local) return local;
+      }
+      const content = scope === doc ? doc.querySelector<HTMLElement>('.page-scroll') : scope;
+      if (content) return nearest(memory, content) ?? initial(scope);
+    }
+    return initial(scope);
+  };
+  const recordFocus = () => {
+    const element = focused();
+    if (!element || currentScope() !== scope || !scope.contains(element) || !focusable(element) || !element.matches(controls)) return;
+    lastFocus = remember(element);
+    if (scope === doc && element.closest('.page-scroll') && lastFocus.page) pageReturns.set(lastFocus.page, lastFocus);
+  };
   const ensureFocus = () => {
     const next = currentScope();
     if (next !== scope) {
@@ -148,14 +192,37 @@ export function installGamepadNavigation(win: Window, options: Options): () => v
       // A detail drawer is its own modal scope, so no inline-detail focus
       // request may survive it and swallow a quick reopen after B.
       if (pendingDetail && next instanceof HTMLElement && next.getAttribute('data-gamepad-detail') === pendingDetail.id) pendingDetail = undefined;
-      const target = previous instanceof HTMLElement ? returns.get(previous) : undefined;
+      const returning = previous instanceof HTMLElement ? returns.get(previous) : undefined;
+      const target = resolve(returning, next);
       const origin = focused();
-      if (next instanceof HTMLElement && !returns.has(next)) {
-        const restore = origin && origin !== doc.body && origin !== doc.documentElement ? origin : target;
+      // Refresh the opener every time a persistent shelf opens, but preserve
+      // the parent's opener when returning from a nested dialog.
+      const closing = previous instanceof HTMLElement && parents.get(previous) === next;
+      if (next instanceof HTMLElement && !closing) {
+        const restore = origin && !next.contains(origin) && origin.matches(controls) ? remember(origin) : returning ?? lastFocus;
         if (restore) returns.set(next, restore);
+        parents.set(next, previous);
       }
-      if (target && next.contains(target) && enabled(target)) focus(target);
-      else if (!focused() || !next.contains(focused()!)) focus(initial(next));
+      const explicitReturn = closing && origin && next.contains(origin) && !previous.contains(origin) && focusable(origin) && origin.matches(controls);
+      if (explicitReturn) { /* A committed navigation request already focused its destination. */ }
+      else if (target && next.contains(target) && enabled(target)) focus(target);
+      else if (!origin || !next.contains(origin) || !focusable(origin)) {
+        if (closing && returning) lastFocus = returning;
+        focus(closing ? recover() : initial(next));
+      }
+    }
+    if (page() !== previousPage) {
+      previousPage = page();
+      pendingDetail = undefined; detailReturn = undefined;
+      if (scope === doc) {
+        // Detail pages set their own initial Play/Back focus in a layout effect.
+        const element = focused();
+        if (!element?.closest('[data-gamepad-detail]') && !element?.matches('.sidebar .nav-item.active')) {
+          // Sidebar navigation already placed focus on the destination item.
+          // Remembered content is restored only when Right enters the page.
+          focus(resolve(previousPage ? pageReturns.get(previousPage) : undefined, doc) ?? initial(doc));
+        }
+      }
     }
     if (pendingDetail && scope === doc) {
       const pending = pendingDetail;
@@ -169,7 +236,8 @@ export function installGamepadNavigation(win: Window, options: Options): () => v
       } else if (!pending.origin.isConnected || Date.now() >= pending.deadline) pendingDetail = undefined;
     }
     const element = focused();
-    if (!element || !scope.contains(element) || !enabled(element) || !element.matches(controls)) focus(initial(scope));
+    if (!element || !scope.contains(element) || !focusable(element) || !element.matches(controls)) focus(recover());
+    recordFocus();
     mark();
   };
   const setMode = (value: boolean) => {
@@ -181,7 +249,7 @@ export function installGamepadNavigation(win: Window, options: Options): () => v
   };
   const closePicker = (restore: boolean) => {
     if (!picker) return;
-    const target = returns.get(picker);
+    const target = resolve(returns.get(picker), doc);
     picker.remove(); picker = undefined;
     if (restore) focus(target);
   };
@@ -228,14 +296,15 @@ export function installGamepadNavigation(win: Window, options: Options): () => v
     cancel.addEventListener('click', () => closePicker(true));
     dialog.append(cancel); backdrop.append(dialog); doc.body.append(backdrop);
     backdrop.addEventListener('pointerdown', event => { if (event.target === backdrop) closePicker(false); });
-    picker = backdrop; returns.set(backdrop, select); returns.set(dialog, select);
+    picker = backdrop; returns.set(backdrop, remember(select)); returns.set(dialog, remember(select)); parents.set(dialog, scope);
     scope = dialog; focus(initial(dialog));
   }
 
   const activate = () => {
     const element = focused();
     if (!element || !scope.contains(element) || !enabled(element) || pendingDetail) return;
-    if (element instanceof HTMLSelectElement) selectPicker(element);
+    if (isTextField(element) && options.keyboard) void requestTextKeyboard(win, element, options.keyboard).catch(() => {});
+    else if (element instanceof HTMLSelectElement) selectPicker(element);
     else if (element.hasAttribute('data-gamepad-card-activate')) {
       // A on a Store card delegates only to its real, enabled action. Selection
       // on focus and ordinary pointer/keyboard clicks never start an install.
@@ -249,10 +318,9 @@ export function installGamepadNavigation(win: Window, options: Options): () => v
     }
   };
   const pageFocus = () => {
-    focused()?.blur();
-    // React commits the new page asynchronously. Restore its active nav item
-    // without selecting the old page again during fallback/return focus.
-    win.requestAnimationFrame(() => { if (!stopped && active && currentScope() === doc) focus(initial(doc)); });
+    // React commits the new page asynchronously. Recover by page/key after
+    // that commit, without auto-activating a navigation item during recovery.
+    win.requestAnimationFrame(() => { if (!stopped && active) ensureFocus(); });
   };
   const back = () => {
     if (picker) { closePicker(true); return; }
@@ -281,17 +349,27 @@ export function installGamepadNavigation(win: Window, options: Options): () => v
       const element = focused();
       if (element) {
         const direction = value as Direction;
+        if (scope === doc && direction === 'down' && element.closest('.topbar')) {
+          const content = doc.querySelector<HTMLElement>('.page-scroll');
+          if (content) focus(content.querySelector<HTMLElement>('[data-gamepad-home-primary]') ?? resolve(page() ? pageReturns.get(page()!) : undefined, content) ?? initial(content));
+          return;
+        }
         // The sidebar and page are separate navigation regions. Their controls
         // need not line up vertically, so enter the page explicitly instead of
         // applying the strict within-region directional beam across that gap.
         if (scope === doc && direction === 'right' && element.closest('.sidebar')) {
+          // Visit adjacent header actions (account → notification bell) before
+          // crossing from the sidebar into the page content.
+          const row = element.closest<HTMLElement>('[data-gamepad-action-row]');
+          const adjacent = row && navigationTarget(focusBox(element).getBoundingClientRect(), candidates(row).filter(target => target !== element)
+            .map(target => ({ value: target, rect: focusBox(target).getBoundingClientRect() })), direction, true);
+          if (adjacent) { focus(adjacent); return; }
           const content = doc.querySelector<HTMLElement>('.page-scroll');
           if (content) {
             const targets = candidates(content);
             const grid = targets.filter(target => target.closest('[data-gamepad-grid]'));
-            const shell = content.closest('.content-shell');
-            const previous = shell ? sidebarReturns.get(shell) : undefined;
-            const entry = previous && shell?.contains(previous) && enabled(previous) ? previous : targets.find(target => target.hasAttribute('data-gamepad-play'))
+            const previous = resolve(page() ? pageReturns.get(page()!) : undefined, content);
+            const entry = previous ?? targets.find(target => target.hasAttribute('data-gamepad-play'))
               ?? grid.find(target => target.closest('[data-gamepad-card]')?.classList.contains('selected'))
               ?? grid[0] ?? targets.find(target => target.closest('[data-gamepad-filters]')) ?? initial(content);
             focus(entry, true);
@@ -299,12 +377,23 @@ export function installGamepadNavigation(win: Window, options: Options): () => v
           return;
         }
         const actionRow = direction === 'left' || direction === 'right' ? element.closest<HTMLElement>('[data-gamepad-action-row]') : undefined;
-        const region = scope === doc ? actionRow ?? element.closest<HTMLElement>('[data-gamepad-grid],[data-gamepad-filters],[data-gamepad-library-header],[data-gamepad-library-footer],[data-gamepad-detail],.page-scroll,.topbar') ?? scope : scope;
+        const region = scope === doc ? actionRow ?? element.closest<HTMLElement>(regions) ?? scope : scope;
         const choose = (root: HTMLElement | Document) => navigationTarget(focusBox(element).getBoundingClientRect(), candidates(root).filter(target => target !== element)
           .map(target => ({ value: target, rect: focusBox(target).getBoundingClientRect() })), direction, root === actionRow);
+        const crossRegion = (root: HTMLElement) => choose(root) ?? nearest(remember(element), root);
         let target = choose(region);
         const library = element.closest<HTMLElement>('.library-page');
-        if (!target && !library && element.closest('.store-page') && region instanceof HTMLElement && region.hasAttribute('data-gamepad-grid') && (direction === 'up' || direction === 'down')) target = choose(scope);
+        const store = element.closest<HTMLElement>('.store-page');
+        if (!target && store && region instanceof HTMLElement) {
+          if (region.hasAttribute('data-gamepad-grid')) {
+            const footer = store.querySelector<HTMLElement>('[data-gamepad-library-footer]');
+            if (footer && direction === 'down') target = crossRegion(footer);
+            else if (direction === 'up' || direction === 'down') target = choose(store);
+          } else if (region.hasAttribute('data-gamepad-library-footer') && direction === 'up') {
+            const grid = store.querySelector<HTMLElement>('[data-gamepad-grid]');
+            if (grid) target = crossRegion(grid);
+          }
+        }
         if (!target && library && region instanceof HTMLElement) {
           // Cross library rows explicitly, without diagonal drift into an
           // unrelated card or control. Sidebar exit is handled separately.
@@ -315,23 +404,17 @@ export function installGamepadNavigation(win: Window, options: Options): () => v
           else if (region.hasAttribute('data-gamepad-library-header') && direction === 'down') next = '[data-gamepad-filters]';
           else if ((region.hasAttribute('data-gamepad-filters') && direction === 'down') || (region.hasAttribute('data-gamepad-library-footer') && direction === 'up')) next = '[data-gamepad-grid]';
           const root = next ? library.querySelector<HTMLElement>(next) : undefined;
-          if (root) {
-            target = choose(root);
-            // Header actions are right-aligned, while filters span the page.
-            // A vertical region crossing may need a different column, but it
-            // must not weaken the strict directional beam within a card grid.
-            if (!target && (region.hasAttribute('data-gamepad-library-header') || root.hasAttribute('data-gamepad-library-header'))) {
-              const rect = element.getBoundingClientRect(), x = (rect.left + rect.right) / 2;
-              target = candidates(root).sort((a, b) => {
-                const distance = (e: HTMLElement) => { const r = e.getBoundingClientRect(); return Math.abs((r.left + r.right) / 2 - x); };
-                return distance(a) - distance(b);
-              })[0];
-            }
-          }
+          if (root) target = crossRegion(root);
           if (!target && direction === 'down' && region.hasAttribute('data-gamepad-grid')) {
             const parent = scrollParent(focusBox(element));
             if (parent) parent.scrollTop += Math.min(260, parent.clientHeight * 0.5);
           }
+        }
+        const social = doc.querySelector<HTMLElement>('[data-gamepad-social-toggle]');
+        if (!target && scope === doc && social && enabled(social)) {
+          if (direction === 'down' && element.closest('.sidebar')) target = social;
+          else if (element === social && direction === 'up') target = candidates(doc.querySelector<HTMLElement>('.sidebar') ?? doc).at(-1);
+          else if (direction === 'down' && element.closest('.page-scroll')) target = social;
         }
         if (!target && scope === doc && direction === 'left') {
           const shell = element.closest('.content-shell');
@@ -340,7 +423,7 @@ export function installGamepadNavigation(win: Window, options: Options): () => v
             target = candidates(sidebar).find(item => item.matches('.nav-item.active'))
               ?? candidates(sidebar).find(item => item.matches('.nav-item'));
             if (target) {
-              sidebarReturns.set(shell, element);
+              if (page()) pageReturns.set(page()!, remember(element));
               // This is a focus handoff, not a page change. In particular,
               // leaving a game detail must not reselect/reset its Library page.
               focus(target);
@@ -352,14 +435,28 @@ export function installGamepadNavigation(win: Window, options: Options): () => v
       }
     } else if (value === 'accept') activate();
     else if (value === 'back') back();
+    else if (value === 'search') {
+      if (scope === doc || scope instanceof HTMLElement && scope.hasAttribute('data-gamepad-social-shelf')) options.search?.();
+    }
+    else if (value === 'social') {
+      if (scope === doc) options.social?.();
+      else if (scope instanceof HTMLElement && scope.hasAttribute('data-gamepad-social-shelf')) scope.querySelector<HTMLElement>('[data-gamepad-social-close]')?.click();
+    }
     else if (value === 'options') {
       const origin = detailReturn && focused()?.closest('[data-gamepad-detail]')?.getAttribute('data-gamepad-detail') === detailReturn.id ? detailReturn.origin : focused();
       const trigger = origin?.closest('.library-card-wrap')?.querySelector<HTMLElement>('[data-game-menu-trigger]');
-      if (trigger && enabled(trigger)) trigger.click();
+      if (trigger && scope.contains(trigger) && enabled(trigger)) trigger.click();
     } else if (scope instanceof HTMLElement && scope.hasAttribute('data-gamepad-gallery')) {
       // Shoulder buttons change only the active gallery, never the page behind it.
       const target = scope.querySelector<HTMLElement>(value === 'previous-page' ? '[data-gamepad-gallery-previous]' : '[data-gamepad-gallery-next]');
       if (target && enabled(target)) target.click();
+    } else if (scope instanceof HTMLElement && scope.querySelector('[data-gamepad-tabs]')) {
+      const tabs = candidates(scope).filter(element => element.hasAttribute('data-gamepad-tab'));
+      const current = tabs.findIndex(element => element.getAttribute('aria-selected') === 'true');
+      if (tabs.length && current !== -1) {
+        const target = tabs[(current + (value === 'previous-page' ? -1 : 1) + tabs.length) % tabs.length];
+        focus(target); target.click();
+      }
     } else if (scope === doc) {
       options.page(value === 'previous-page' ? -1 : 1);
       pageFocus();
@@ -368,8 +465,10 @@ export function installGamepadNavigation(win: Window, options: Options): () => v
   const scroll = (value: number, elapsed: number) => {
     const canScroll = (element: HTMLElement) => element.scrollHeight > element.clientHeight && /auto|scroll/.test(win.getComputedStyle(element).overflowY);
     let element = focused();
-    while (element && !canScroll(element)) element = element.parentElement ?? undefined;
-    element ??= [...scope.querySelectorAll<HTMLElement>('pre,.page-scroll,.game-dialog')].find(canScroll);
+    if (element && !scope.contains(element)) element = undefined;
+    while (element && !canScroll(element)) element = element === scope ? undefined : element.parentElement ?? undefined;
+    if (element && !scope.contains(element)) element = undefined;
+    element ??= [...scope.querySelectorAll<HTMLElement>('[data-gamepad-scroll],pre,.page-scroll,.game-dialog')].find(canScroll);
     if (element) element.scrollTop += value * elapsed * 0.75;
   };
   const tick = (now: number) => {
@@ -405,6 +504,7 @@ export function installGamepadNavigation(win: Window, options: Options): () => v
   win.addEventListener('keydown', keyboard, true);
   win.addEventListener('blur', blur);
   doc.addEventListener('visibilitychange', blur);
+  doc.addEventListener('focusin', recordFocus);
   frame = win.requestAnimationFrame(tick);
   return () => {
     stopped = true; win.cancelAnimationFrame(frame); closePicker(false); setMode(false); inputs.clear();
@@ -412,6 +512,7 @@ export function installGamepadNavigation(win: Window, options: Options): () => v
     win.removeEventListener('pointermove', pointerMove, true);
     win.removeEventListener('keydown', keyboard, true);
     win.removeEventListener('blur', blur); doc.removeEventListener('visibilitychange', blur);
+    doc.removeEventListener('focusin', recordFocus);
   };
 }
 import { ui } from './i18n';

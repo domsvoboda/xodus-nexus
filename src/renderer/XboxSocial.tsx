@@ -84,10 +84,10 @@ export function XboxSocial({auth,api,voice,overlay=false,shelf=false,close,openO
  const detail=Boolean(profile||selected||choosingChat);
  return <section className={'xbox-social xbox-guide'+(overlay||shelf?' social-overlay':'')+(expanded?' social-expanded-view':'')+(profile?' has-profile':'')} aria-label={ui("social.xbox_social_9dd063")}>
   {!profile?<header className="social-guide-chrome">
-   {detail?<button className="social-circle-button social-back" onClick={back} aria-label={profile?'Close player profile':'Back to Xbox friends'}><ArrowLeft/></button>:null}
+   {detail?<button data-gamepad-cancel className="social-circle-button social-back" onClick={back} aria-label={profile?'Close player profile':'Back to Xbox friends'}><ArrowLeft/></button>:null}
    <h1 className="social-sr-only">{ui("social.xbox_social_9dd063")}</h1><span className="social-chrome-spacer"/>
    {openOverlay?<button className="social-circle-button" onClick={openOverlay} title={ui("social.open_xbox_social_desktop_window_and_party_audio_2fb371")} aria-label={ui("social.open_xbox_social_window_940467")}><ExternalLink/></button>:null}
-   {close?<button className="social-circle-button social-close" onClick={close} aria-label={ui("social.close_xbox_social_d9a718")}><XboxSocialIcon name="close"/></button>:null}
+   {close?<button data-gamepad-social-close data-gamepad-cancel={!detail || undefined} className="social-circle-button social-close" onClick={close} aria-label={ui("social.close_xbox_social_d9a718")}><XboxSocialIcon name="close"/></button>:null}
   </header>:null}
   {!identity?<p className="social-notice">{ui("social.sign_in_through_nexus_settings_to_load_friends_and_mess_134b98")}</p>:<>
    {!detail?<nav className="social-tabs" role="tablist" aria-label={ui("social.xbox_social_9dd063")}>

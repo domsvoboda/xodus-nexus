@@ -23,9 +23,9 @@ export function XboxPlayerCard({api,account,xuid,person,ownAvatar,chat,party,bac
  return <section className={'social-player-card'+(expanded?' social-player-expanded':'')} aria-label={ui("social.xbox_player_profile_b05c1d")}>
   {avatar?<div className="social-profile-backdrop" style={{backgroundImage:'url('+JSON.stringify(xboxGamerpicSource(avatar,208))+')'}}/>:null}
   <header className="social-guide-chrome">
-   <button className="social-circle-button social-back" onClick={back} aria-label={ui("social.back_to_xbox_people_607d53")}><ArrowLeft/></button><span className="social-chrome-spacer"/>
+   <button data-gamepad-cancel className="social-circle-button social-back" onClick={back} aria-label={ui("social.back_to_xbox_people_607d53")}><ArrowLeft/></button><span className="social-chrome-spacer"/>
    {!expanded?<button className="social-circle-button" onClick={()=>void api.openXboxPlayerProfile(xuid).catch(()=>setError('The full profile window could not be opened.'))} aria-label={ui("social.open_full_xbox_profile_640631")} title={ui("social.open_full_profile_e4a83a")}><ExternalLink/></button>:null}
-   {close?<button className="social-circle-button social-close" onClick={close} aria-label={ui("social.close_xbox_social_d9a718")}><XboxSocialIcon name="close"/></button>:null}
+   {close?<button data-gamepad-social-close className="social-circle-button social-close" onClick={close} aria-label={ui("social.close_xbox_social_d9a718")}><XboxSocialIcon name="close"/></button>:null}
   </header>
   <div className="social-profile-scrollable">
    {profile?<>

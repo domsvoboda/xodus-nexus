@@ -43,6 +43,7 @@
   "friends.invite_to": "Invite to {{game}}",
   "game.installed_version": "Installed version",
   "gamepad.choose_option": "Choose an option",
+  "gamepad.view_social": "View: Social",
   "home.available_updates": "Available updates: {{updates}}",
   "home.local_installation": "Local Xbox PC installation",
   "home.restart_update": "Restart to finish launcher update.",
