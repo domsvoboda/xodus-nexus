@@ -48,6 +48,17 @@ beforeEach(async () => {
 });
 afterEach(async () => { await act(async () => root.unmount()); vi.restoreAllMocks(); vi.unstubAllGlobals(); document.body.innerHTML = ''; });
 
+it('preserves the working Library card → details → B focus restoration', async () => {
+  await click('.sidebar nav button:nth-child(2)');
+  const card = get('.library-card'), id = card.dataset.gamepadDetailTarget;
+  await click('.library-card');
+  expect(document.activeElement).toBe(get('[data-gamepad-play]'));
+  expect(get('[data-gamepad-detail-back]').textContent).toContain('Back to library');
+  await press(1);
+  expect(document.querySelector('[data-gamepad-detail]')).toBeNull();
+  expect((document.activeElement as HTMLElement).dataset.gamepadDetailTarget).toBe(id);
+});
+
 it('opens Social with View, makes the background inert, and closes it with B without changing pages', async () => {
   get('.poster-card').focus(); await press(2); await press(8);
   expect(get('#nexus-social-shelf').getAttribute('aria-modal')).toBe('true');

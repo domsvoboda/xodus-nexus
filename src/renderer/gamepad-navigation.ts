@@ -75,6 +75,20 @@ export function navigationTarget<T>(from: Rect, targets: readonly { value: T; re
   return best;
 }
 
+/** Vertical grid movement follows the adjacent row even when its last columns
+ * are empty. Strict beam navigation is still used outside card grids. */
+export function gridNavigationTarget<T>(from: Rect, targets: readonly { value: T; rect: Rect }[], direction: Direction): T | undefined {
+  if (direction !== 'up' && direction !== 'down') return navigationTarget(from, targets, direction);
+  const rows = targets.filter(({ rect }) => direction === 'down' ? rect.top >= from.bottom - 1 : rect.bottom <= from.top + 1);
+  const gap = (rect: Rect) => direction === 'down' ? rect.top - from.bottom : from.top - rect.bottom;
+  rows.sort((a, b) => gap(a.rect) - gap(b.rect));
+  const first = rows[0];
+  if (!first) return;
+  const x = (from.left + from.right) / 2;
+  return rows.filter(({ rect }) => Math.min(rect.bottom, first.rect.bottom) > Math.max(rect.top, first.rect.top))
+    .sort((a, b) => Math.abs((a.rect.left + a.rect.right) / 2 - x) - Math.abs((b.rect.left + b.rect.right) / 2 - x))[0]?.value;
+}
+
 type Options = { mode: (active: boolean) => void; back: () => void; page: (delta: number) => void; social?: () => void; search?: () => void; keyboard?: (field: SteamKeyboardRequest) => Promise<unknown> };
 const controls = 'button,a[href],input:not([type="hidden"]),select,textarea,summary,[tabindex]';
 const layers = '[role="dialog"][aria-modal="true"],[data-game-menu],[data-gamepad-layer]';
@@ -378,7 +392,7 @@ export function installGamepadNavigation(win: Window, options: Options): () => v
         }
         const actionRow = direction === 'left' || direction === 'right' ? element.closest<HTMLElement>('[data-gamepad-action-row]') : undefined;
         const region = scope === doc ? actionRow ?? element.closest<HTMLElement>(regions) ?? scope : scope;
-        const choose = (root: HTMLElement | Document) => navigationTarget(focusBox(element).getBoundingClientRect(), candidates(root).filter(target => target !== element)
+        const choose = (root: HTMLElement | Document) => (root instanceof HTMLElement && root.hasAttribute('data-gamepad-grid') ? gridNavigationTarget : navigationTarget)(focusBox(element).getBoundingClientRect(), candidates(root).filter(target => target !== element)
           .map(target => ({ value: target, rect: focusBox(target).getBoundingClientRect() })), direction, root === actionRow);
         const crossRegion = (root: HTMLElement) => choose(root) ?? nearest(remember(element), root);
         let target = choose(region);

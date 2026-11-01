@@ -269,7 +269,7 @@ function StorePage({ data, toast, go, initialQuery }: { data: AppSnapshot; toast
   const pageRef=useRef<HTMLElement>(null),savedScroll=useRef(0),wasOpen=useRef(false);
   useBrowserLayoutEffect(()=>{
     const scroll=pageRef.current?.closest('.page-scroll');
-    if(detailOpen&&selected){if(scroll)scroll.scrollTop=0;pageRef.current?.querySelector<HTMLElement>('[data-gamepad-play]:not(:disabled),[data-gamepad-detail-back]')?.focus({preventScroll:true});}
+    if(detailOpen&&selected){if(scroll)scroll.scrollTop=0;(pageRef.current?.querySelector<HTMLElement>('[data-gamepad-play]:not(:disabled)')??pageRef.current?.querySelector<HTMLElement>('[data-gamepad-detail-back]'))?.focus({preventScroll:true});}
     else if(wasOpen.current){if(scroll)scroll.scrollTop=savedScroll.current;[...pageRef.current?.querySelectorAll<HTMLElement>('[data-gamepad-detail-target]')??[]].find(card=>card.getAttribute('data-gamepad-detail-target')===selected?.productId)?.focus({preventScroll:true});}
     wasOpen.current=detailOpen&&Boolean(selected);
   },[detailOpen,selected?.productId]);
@@ -357,7 +357,7 @@ function StorePage({ data, toast, go, initialQuery }: { data: AppSnapshot; toast
     <header className="page-header"><div><h1>{ui("ui.store_ee7da93")}</h1></div><span className="catalog-source"><StatusDot />Microsoft Store</span></header>
     {!catalog ? <section className="featured-catalog"><SectionTitle title={ui("ui.featured_c533caf")} />{featuredLoading ? <div className="catalog-loading"><LoaderCircle className="spin" /><span>{ui("ui.loading_live_store_collection_20763b0")}</span></div> : featured?.products.length ? <><div className="featured-rail">{featured.products.slice(0, 3).map((product) => <button className="featured-tile" key={product.productId} data-gamepad-detail-target={product.productId} onClick={() => selectProduct(product)}>{product.heroUrl || product.posterUrl ? <img src={product.heroUrl ?? product.posterUrl} alt="" /> : <div className="featured-tile-placeholder"><Gamepad2 /></div>}<span className="featured-tile-copy"><GameTitle title={product.title} /><small>{product.publisher ?? 'Microsoft Store'} · {product.installability === 'supported' ? ui('store.verified_pc') : ui("ui.check_package_support_79592da")}</small></span></button>)}</div><SectionTitle title={ui("ui.trending_pc_games_2025848")} />{productGrid(featured.products.slice(3))}</> : <div className="catalog-empty"><Store /><h2>{ui("ui.featured_games_are_temporarily_unavailable_3901a69")}</h2><p>{featuredError ?? ui("ui.search_still_works_with_live_microsoft_store_dat_b3eeb72")}</p></div>}</section> : null}
 
-    {catalog ? <><SectionTitle title={ui("ui.results_for_343a212", { query: catalog.query })} />{productGrid(catalog.products)}{catalog.products.length === 0 ? <div className="empty-state compact"><div><Search /></div><h2>{ui("ui.no_games_found_6da4c04")}</h2><p>{ui("ui.try_a_different_title_or_a_microsoft_store_produ_326af8c")}</p></div> : null}{catalog.hasMore ? <div className="load-more"><button className="secondary" disabled={loadingMore} onClick={loadMore}>{loadingMore ? <LoaderCircle className="spin" /> : <Plus />}{ui("ui.load_more_results_e03f1e4")}</button></div> : null}</> : null}
+    {catalog ? <><SectionTitle title={ui("ui.results_for_343a212", { query: catalog.query })} />{productGrid(catalog.products)}{catalog.products.length === 0 ? <div className="empty-state compact"><div><Search /></div><h2>{ui("ui.no_games_found_6da4c04")}</h2><p>{ui("ui.try_a_different_title_or_a_microsoft_store_produ_326af8c")}</p></div> : null}{catalog.hasMore ? <div className="load-more" data-gamepad-library-footer><button className="secondary" aria-disabled={loadingMore} aria-busy={loadingMore} onClick={() => { if (!loadingMore) void loadMore(); }}>{loadingMore ? <LoaderCircle className="spin" /> : <Plus />}{ui("ui.load_more_results_e03f1e4")}</button></div> : null}</> : null}
 
     <SectionTitle title={ui("ui.install_by_product_id_d863edd")} />
     <form className="manual-install" onSubmit={manualInstall}><label>{ui("ui.product_id_c76c9e7")}<input value={manualProductId} onChange={(event) => setManualProductId(event.target.value)} placeholder={ui("ui.for_example_9n4pt8hgcdhq_b6119c7")} required /></label><label>{ui("ui.queue_name_5cb7293")}{' '}<em>{ui("ui.optional_59be713")}</em><input value={manualTitle} onChange={(event) => setManualTitle(event.target.value)} /></label><label>{ui("ui.install_location_af47896")}<div className="input-action"><input value={destination} onChange={(event) => setDestination(event.target.value)} required /><button type="button" onClick={chooseDestination}><FolderOpen /></button></div></label><button className="secondary" disabled={Boolean(busy) || !data.backend.capabilities.streaming}>{busy === 'manual' ? <LoaderCircle className="spin" /> : <Terminal />}{ui("ui.install_unlisted_id_1b85f63")}</button></form>
@@ -401,7 +401,7 @@ export function LibraryPagination({ loading, hasMore, load, searching = false }:
   if (searching) return <div className="library-pagination"><span className="library-loading" role="status"><LoaderCircle className="spin" />{ui("ui.searching_all_library_games_69f22cc")}</span></div>;
   if (!loading && !hasMore) return null;
   return <div className="library-pagination">
-    {hasMore ? <button className="secondary" disabled={loading} onClick={load}>
+    {hasMore ? <button className="secondary" aria-disabled={loading} aria-busy={loading} onClick={() => { if (!loading) load(); }}>
       {loading ? <><LoaderCircle className="spin" />{ui("ui.loading_games_578df84")}</> : ui("ui.load_more_games_e0e4528")}
     </button> : <span className="library-loading" role="status"><LoaderCircle className="spin" />{ui("ui.loading_account_games_feaf422")}</span>}
   </div>;
@@ -632,7 +632,7 @@ export function LibraryPage({ data, toast, filters, onFiltersChange, selection }
     const scroll = pageRef.current?.closest('.page-scroll');
     if (detailVisible) {
       if (scroll) scroll.scrollTop = 0;
-      pageRef.current?.querySelector<HTMLElement>('[data-gamepad-play]:not(:disabled),[data-gamepad-detail-back]')?.focus({ preventScroll: true });
+      (pageRef.current?.querySelector<HTMLElement>('[data-gamepad-play]:not(:disabled)') ?? pageRef.current?.querySelector<HTMLElement>('[data-gamepad-detail-back]'))?.focus({ preventScroll: true });
     } else if (wasOpen.current) {
       if (scroll) scroll.scrollTop = savedScroll.current;
       [...pageRef.current?.querySelectorAll<HTMLElement>('[data-gamepad-detail-target]') ?? []].find(card => card.getAttribute('data-gamepad-detail-target') === returnTarget)?.focus({ preventScroll: true });

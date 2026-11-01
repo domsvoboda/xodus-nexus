@@ -40,6 +40,23 @@ describe('focus recovery', () => {
     (get('search') as HTMLInputElement).readOnly = true; harness.press(0);
     expect(callbacks.keyboard).toHaveBeenCalledTimes(1);
   });
+  it('moves a single card highlight from a remembered installed game onto an account card and the footer', () => {
+    get('one').outerHTML = '<article data-gamepad-card class="catalog-card selected"><button id="one" data-gamepad-auto-select="focus" data-gamepad-detail-target="one" data-test-rect="200,200,100,100">Installed</button></article>';
+    get('four').outerHTML = '<article data-gamepad-card class="catalog-card" data-test-rect="200,320,100,100"><button id="four" data-gamepad-detail-target="four" data-test-rect="200,320,100,100">Account card</button></article>';
+    // Card geometry comes from its wrapper, just as in the real library.
+    get('one').parentElement!.dataset.testRect = '200,200,100,100';
+    wake('one');
+    expect(document.querySelectorAll('[data-gamepad-focus]')).toHaveLength(1);
+    expect(get('one').parentElement!.hasAttribute('data-gamepad-focus')).toBe(true);
+    harness.press(13);
+    expect(document.activeElement).toBe(get('four'));
+    expect(document.querySelectorAll('[data-gamepad-focus]')).toHaveLength(1);
+    expect(get('one').parentElement!.hasAttribute('data-gamepad-focus')).toBe(false);
+    expect(get('four').parentElement!.hasAttribute('data-gamepad-focus')).toBe(true);
+    harness.press(13);
+    expect(document.activeElement).toBe(get('more'));
+    expect(document.querySelectorAll('[data-gamepad-card][data-gamepad-focus]')).toHaveLength(0);
+  });
   it('holds busy pagination focus, blocks duplicate activation, and recovers into the grid when it ends', () => {
     const load = vi.fn(); get('more').onclick = load;
     wake('more');
@@ -73,6 +90,20 @@ describe('focus recovery', () => {
 });
 
 describe('rows and region crossings', () => {
+  it('moves down from an overhanging column into the shorter next row', () => {
+    wake('three'); harness.press(13); expect(document.activeElement).toBe(get('four'));
+    harness.press(12); expect(document.activeElement).toBe(get('one'));
+  });
+  it.each(['one', 'two', 'three'])('reaches Load More from bottom-row card %s', id => {
+    get('four').remove(); wake(id); harness.press(13); expect(document.activeElement).toBe(get('more'));
+    harness.press(12); expect(document.activeElement?.closest('#grid')).toBe(get('grid'));
+  });
+  it('crosses between the Store grid and its pagination in both directions', () => {
+    const main = document.querySelector('main')!; main.className = 'store-page';
+    get('four').remove(); wake('three'); harness.press(13);
+    expect(document.activeElement).toBe(get('more'));
+    harness.press(12); expect(document.activeElement?.closest('#grid')).toBe(get('grid'));
+  });
   it('provides a directional route to Social from the sidebar and back', () => {
     wake('store'); harness.press(13); expect(document.activeElement).toBe(get('social'));
     harness.press(12); expect(document.activeElement).toBe(get('store'));
