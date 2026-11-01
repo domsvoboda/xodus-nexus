@@ -650,3 +650,11 @@ button.primary, button.secondary { border-radius: 5px; min-height: 40px; font-si
 .keyring-compact .keyring-problem { margin: 10px 0 0; font-size: 12px; line-height: 1.5; }
 .keyring-help { margin-top: 8px; font-size: 11px; color: var(--muted); }
 .keyring-help > summary { cursor: pointer; width: fit-content; }
+
+.content-shell:has(> .cloud-save-warning) { grid-template-rows: 62px auto minmax(0, 1fr); }
+.cloud-save-warning { display: flex; align-items: center; gap: 12px; max-height: 40vh; overflow: auto; margin: 12px 20px 0; padding: 12px; border: 1px solid #9c7b38; background: #332c1e; color: #f2dfb9; }
+.cloud-save-warning > div { min-width: 0; flex: 1; }
+.cloud-save-warning strong { font-size: 13px; overflow-wrap: anywhere; }
+.cloud-save-warning p { margin: 5px 0 0; font-size: 12px; line-height: 1.5; overflow-wrap: anywhere; }
+.cloud-save-warning > button { flex-shrink: 0; }
+@media (max-width: 800px) { .cloud-save-warning { margin: 8px 12px 0; flex-wrap: wrap; } .cloud-save-warning > div { flex-basis: 100%; } }

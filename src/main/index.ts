@@ -84,6 +84,7 @@ import { openDesktopTarget } from './desktop-open.js';
 import { addSteamShortcut, steamAccounts, steamRunning } from './steam-shortcuts.js';
 import { gameSteamPortrait, nexusSteamArtwork } from './steam-artwork.js';
 import { addLiveSteamShortcut } from './steam-live.js';
+import { CloudSaveDiagnostics, warnShortcutCloudFailure } from './cloud-save-diagnostics.js';
 import { DownloadCompletionNotifications } from './download-notifications.js';
 import { KeyringSupport } from './keyring.js';
 import { XboxSocialSessions } from './xbox-social.js';
@@ -1161,7 +1162,28 @@ async function prepareGameLaunch(id: string, steam?: SteamGameContext): Promise<
   };
   const verboseLogs = process.env.XODUS_NEXUS_VERBOSE_LOGS === '1' || store.settings.verboseLogs;
   const gameLog = new GameLogReducer(appendGameLog, verboseLogs);
-  const addGameLog = (line: string) => gameLog.push(line);
+  const cloudDiagnostics = new CloudSaveDiagnostics();
+  let cloudNoticeShown = false;
+  const addGameLog = (line: string) => {
+    if (cloudRuntime && !offlineLaunch && cloudDiagnostics.observe(line)
+      && gameOperation?.id === operationId) {
+      gameOperation.cloudSaveWarning = cloudDiagnostics.message!;
+      scheduleSnapshot();
+      if (!cloudNoticeShown) {
+        cloudNoticeShown = true;
+        try {
+          if (Notification.isSupported()) {
+            const notice = new Notification({ title: nativeText('Cloud saves need attention'),
+              body: `${game.title}: ${nativeText(gameOperation.cloudSaveWarning)}`, urgency: 'critical' });
+            notice.on('failed', () => {});
+            notice.on('click', () => { void showLauncher().catch(() => {}); });
+            notice.show();
+          }
+        } catch { /* The session warning remains visible without desktop notifications. */ }
+      }
+    }
+    gameLog.push(line);
+  };
   writeLaunchLog(`Game: ${game.title}`);
   writeLaunchLog(`Mode: package manifest; cloud saves: ${cloudRuntime ? 'enabled' : 'not available in active runtime'}; verbose logs: ${verboseLogs ? 'on' : 'off'}`);
   writeLaunchLog(`Backend: ${binary}`);
@@ -1340,6 +1362,11 @@ async function prepareGameLaunch(id: string, steam?: SteamGameContext): Promise<
         launchLog.end();
         emitSnapshot();
         if (gameOperation?.status === 'failed' && shortcutOnly) await shortcutError(new Error(gameOperation.error ?? 'The game exited with an error.'));
+        else await warnShortcutCloudFailure(shortcutOnly, gameOperation?.cloudSaveWarning, {
+          showLauncher,
+          warn: warning => dialog.showMessageBox(mainWindow!, { type: 'warning', title: nativeText('Cloud saves need attention'),
+            message: game.title, detail: nativeText(warning) }),
+        });
       } finally { finalizingGame = false; finishShortcutSession(); }
     }).finally(() => { if (gameFinalizations.get(id) === completion) gameFinalizations.delete(id); });
     gameFinalizations.set(id, completion);

@@ -22,7 +22,7 @@ const h = vi.hoisted(() => ({
   events: new Map<string, (...args: any[]) => any>(),
   downloads: [] as { args: string[]; progress: (paused?: boolean, phase?: string) => void; finish: (code: number) => void }[],
   installQueue: undefined as undefined | { settled(id: string): Promise<void> },
-  game: undefined as undefined | { finish: (code?: number, output?: string) => void },
+  game: undefined as undefined | { finish: (code?: number, output?: string) => void; line: (line: string) => void },
   quit: vi.fn(), maximize: vi.fn(),
   blockDisplay: vi.fn(() => 7), releaseDisplay: vi.fn(() => true),
   cleanupGate: undefined as Promise<void> | undefined, wrapperGate: undefined as Promise<void> | undefined,
@@ -34,6 +34,7 @@ const h = vi.hoisted(() => ({
   notifications: [] as { title: string; body: string }[],
   holdCancellation: false,
   holdAccountReads: false,
+  cloudSupported: false,
   contentSupported: false,
   discoverySupported: false,
   offlineRuntimeSupported: false,
@@ -98,7 +99,7 @@ vi.mock('./install-plan.js', async original => ({ ...await original<typeof impor
     schema:1,rootProductId:productId,market,status:'ready',choices:[{productId,contentId:'11111111-1111-4111-8111-111111111111',title:'Synthetic game',kind:'Game',platform:'Windows.Desktop',packageFormat:'MSIXVC',supported:true}],
   }),
 }));
-vi.mock('./xodus-service.js', () => ({ cloudSaveRuntime: async () => false, unbridgedCloudSaveRuntime: async () => false,
+vi.mock('./xodus-service.js', () => ({ cloudSaveRuntime: async () => h.cloudSupported, unbridgedCloudSaveRuntime: async () => false,
   gameInviteRuntime: async () => false,
   offlineIdentityRuntime: async () => h.offlineRuntimeSupported,
   selectedWinePath: () => h.wine, storeContentRuntime: async () => h.contentSupported, storeDiscoveryRuntime: async () => h.discoverySupported, startXodusService: async () => ({ socketPath: '/synthetic-updates', stop: h.updateStops }) }));
@@ -138,12 +139,12 @@ vi.mock('./process.js', () => ({
     return { child: { stdin: { on() {}, write: (line: string) => progress(JSON.parse(line).command === 'pause') }, kill: (signal: string) => { h.signals.push(signal); if (!h.holdCancellation) resolve({ code: 130, output: '' }); return true; } }, result };
   },
 }));
-vi.mock('./game-process.js', () => ({ spawnGameProcess: async (_command:string,_args:string[],options:{env:NodeJS.ProcessEnv}) => {
+vi.mock('./game-process.js', () => ({ spawnGameProcess: async (_command:string,_args:string[],options:{env:NodeJS.ProcessEnv; onLine: (line: string) => void}) => {
   h.launchArguments.push([..._args]);
   h.launchEnvironments.push({...options.env});
   let resolve!: (result: { code: number; output: string }) => void;
   const result = new Promise<{ code: number; output: string }>(done => { resolve = done; });
-  h.game = { finish: (code = 0, output = '') => resolve({ code, output }) };
+  h.game = { line: options.onLine, finish: (code = 0, output = '') => resolve({ code, output }) };
   return { child: {}, result, cleanup: async () => { await h.cleanupGate; }, stop: async () => { h.stops++; resolve({ code: 0, output: '' }); }, forceStop: async () => {} };
 } }));
 
@@ -821,6 +822,32 @@ it('does not start a game if Steam closes its request during launch preparation'
     expect(h.launchEnvironments).toHaveLength(count);
     expect(snapshot().gameOperation).toBeUndefined();
   } finally { ready(); h.wrapperGate = undefined; offer.close(); }
+});
+
+it('keeps cloud failure visible after exit0, outside the bounded log, without forcing upload (#297)', async () => {
+  h.cloudSupported = true;
+  const notices = h.notifications.length;
+  try {
+    await ipc('launch-game', 'sample');
+    expect(h.launchEnvironments.at(-1)?.XODUS_SAVE_SYNC).toBe('auto');
+    h.game!.line('0294:err:gdkc:initialize_provider cloud sync failed, hr 0x8083000a.');
+    h.game!.line('0294:err:gdkc:cloud_disable cloud saves disabled for this session, continuing with local saves only.');
+    h.game!.line('xodus-savesync: cloud 0 downloaded 0 uploaded 0');
+    for (let i = 0; i < 300; i++) h.game!.line(`Game line ${i}`);
+    expect(snapshot().gameOperation.cloudSaveWarning).toContain('conflict');
+    expect(h.notifications.slice(notices)).toHaveLength(1);
+    expect(h.notifications.at(-1)?.title).toBe('Cloud saves need attention');
+    h.game!.finish();
+    await vi.waitFor(() => expect(snapshot().gameOperation.status).toBe('complete'));
+    expect(snapshot().gameOperation.cloudSaveWarning).toContain('conflict');
+    await new Promise(resolve => setTimeout(resolve, 30));
+    await ipc('launch-game', 'sample');
+    h.game!.line('xodus-savesync: cloud 1 downloaded 1 uploaded 0');
+    expect(snapshot().gameOperation.cloudSaveWarning).toBeUndefined();
+    h.game!.finish();
+    await vi.waitFor(() => expect(snapshot().gameOperation.status).toBe('complete'));
+    await new Promise(resolve => setTimeout(resolve, 30));
+  } finally { h.cloudSupported = false; h.notifications.splice(notices); }
 });
 
 it('runs real queue IPC, pause/cancel/failure/restart and simultaneous play/download safely', async () => {

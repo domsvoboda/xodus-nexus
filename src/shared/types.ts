@@ -181,6 +181,7 @@ export interface GameOperation {
   startedAt: string;
   finishedAt?: string;
   error?: string;
+  cloudSaveWarning?: string;
 }
 
 export interface Settings {

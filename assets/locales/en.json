@@ -1090,5 +1090,11 @@
   "settings.close_to_tray": "Close to system tray",
   "settings.close_to_tray_help": "Keep Nexus and downloads running after closing the window. Choose Quit in the tray to exit. Desktop mode only.",
   "settings.tray_saved": "System tray preference saved.",
-  "settings.cache_limit_error": "Enter a cache limit between 0.25 and 1024 GiB."
+  "settings.cache_limit_error": "Enter a cache limit between 0.25 and 1024 GiB.",
+  "cloud.warning_title": "Cloud saves need attention",
+  "cloud.conflict": "Local and cloud saves conflict. Cloud sync is paused to protect your progress. Keep your local saves; this runtime did not offer a save-selection dialog.",
+  "cloud.unavailable": "Cloud sync is unavailable for this session. Progress may only be saved on this device. Keep your local saves.",
+  "cloud.upload": "Cloud sync reported an error while finishing. The latest progress may not be available on other devices. Keep your local saves.",
+  "cloud.view_game": "View game",
+  "cloud.conflict_retry": "Cloud sync is paused. Close the game, then start it again and choose a save in the conflict dialog. Keep your local saves until your choice succeeds."
 }
