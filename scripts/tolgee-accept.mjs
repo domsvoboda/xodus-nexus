@@ -90,9 +90,9 @@ export function createApi(key, fetcher = fetch, wait = pause, interval = 0) {
         response = await fetcher(`https://app.tolgee.io${route}`, {
           method, headers: { 'X-API-Key': key, accept: 'application/json', ...(body === undefined ? {} : { 'content-type': 'application/json' }) },
           ...(body === undefined ? {} : { body: JSON.stringify(body) }),
-          redirect: 'error', signal: AbortSignal.timeout(15000),
+          redirect: 'error', signal: AbortSignal.timeout(45000),
         });
-      } catch { throw Error(`Tolgee ${method} transport failed. No automatic retry; check the report before rerunning.`); }
+      } catch (error) { throw Error(`Tolgee ${method} ${error?.name === 'TimeoutError' ? 'timed out' : 'transport failed'}. No automatic retry; check the report before rerunning.`); }
       if (method !== 'GET' || response.status !== 429 || attempt === 2) break;
       const header = response.headers.get('retry-after');
       // Tolgee's documented translation-view window is five minutes. A missing
