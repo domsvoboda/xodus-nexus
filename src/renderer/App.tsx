@@ -3,7 +3,7 @@ import {
   ArrowDownToLine, Check, ChevronRight, CircleAlert, CircleUserRound,
   Clock3, Cog, Download, FolderOpen, Gamepad2, Github, HardDrive, Home, Library,
   LoaderCircle, LogIn, MoreHorizontal, PackageCheck, Pause, Play, Plus, RefreshCw, Rocket, Search, Settings2,
-  Store, Terminal, Trash2, UsersRound, PanelLeft, X,
+  Store, Terminal, Trash2, Copy, PanelLeft, X,
 } from 'lucide-react';
 import type { AccountLibraryPage, AppSnapshot, CatalogProduct, CatalogSearchResult, DiagnosticLog, Game, GameContentPlan, GameLaunchOptions, Page, Settings, XboxProfileRequest } from '../shared/types';
 import {OverlayShortcutRecorder} from './OverlayShortcutRecorder';
@@ -1250,7 +1250,7 @@ export default function App() {
         {socialMounted?<XboxSocial key={JSON.stringify([data.auth.username,data.backend.binaryPath])} auth={data.auth} api={window.launcher.nativeSocial} voice={data.backend.available&&data.backend.capabilities.nativeSocial?window.launcher:undefined} runtimeInvites={data.social} runtimeApi={window.launcher} shelf active={socialOpen} openChat={socialChat?.identity===JSON.stringify([data.auth.username,data.backend.binaryPath])?socialChat:undefined} readKeys={notifications.readKeys} onViewed={notifications.viewed} close={()=>setSocialOpen(false)}/>:null}
       </aside>
     </section>
-    <button data-gamepad-social-toggle data-gamepad-key="social-toggle" className={'nexus-social-toggle'+(socialOpen?' is-open':'')} aria-label={ui("social.xbox_social_9dd063")} aria-expanded={socialOpen} aria-controls="nexus-social-shelf" onClick={()=>go('social')}><UsersRound/><span>{ui("social.social_f1b750")}</span><ChevronRight/></button>
+    <button data-gamepad-social-toggle data-gamepad-key="social-toggle" className={'nexus-social-toggle'+(socialOpen?' is-open':'')} aria-label={ui("social.xbox_social_9dd063")} aria-expanded={socialOpen} aria-controls="nexus-social-shelf" onClick={()=>go('social')}><Copy aria-hidden="true"/><span>{ui("social.social_f1b750")}</span><ChevronRight/></button>
     {toast ? <div className={`toast ${toast.kind}`}>{toast.kind === 'success' ? <Check /> : toast.kind === 'error' ? <CircleAlert /> : <Terminal />}<span>{uiText(toast.message)}</span><button onClick={() => setToast(undefined)}><X /></button></div> : null}
   </div><GamepadNavigation back={() => go('home')} social={() => go('social')} search={() => { setSocialOpen(false); setSearchRequest(value => value + 1); }} page={delta => {
     const pages: Page[] = ['home', 'library', 'store'];
