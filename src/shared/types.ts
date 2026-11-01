@@ -237,9 +237,11 @@ export interface KeyringStatus {
   message: string;
 }
 
+export interface SteamKeyboardRequest { x: number; y: number; width: number; height: number; mode: 0 | 1 | 2 | 3 }
+
 export interface LauncherApi {
   onLauncherPage(callback:(page: "home"|"library"|"store"|"settings")=>void):()=>void;
-  showTouchKeyboard(): Promise<boolean>;setXboxOverlayRecording(recording:boolean):Promise<void>;}
+  showTouchKeyboard(field?: SteamKeyboardRequest): Promise<boolean>;setXboxOverlayRecording(recording:boolean):Promise<void>;}
 /** The Xbox app's "Offline permissions" setting for this device, as Microsoft reports it. */
 export interface OfflinePermissions {
   /** Local launcher check, not a licensing grant or a Microsoft response field. */
@@ -532,7 +534,7 @@ export interface XboxMessageReceipt {id:string}
 export interface XboxGameInviteAvailability {canInvite:boolean;gameId?:string;title?:string;reason?:string}
 export interface XboxChatReadState {account:string;binary:string;keys:string[]}
 export interface LauncherApi {
-  showTouchKeyboard(): Promise<boolean>;
+  showTouchKeyboard(field?: SteamKeyboardRequest): Promise<boolean>;
  closeXboxChat():Promise<void>;
  getXboxChatReads():Promise<XboxChatReadState|undefined>;
  onXboxChatReads(callback:(state:XboxChatReadState)=>void):()=>void;
