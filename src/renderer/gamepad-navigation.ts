@@ -105,7 +105,7 @@ export function revealDelta(top: number, bottom: number, viewTop: number, viewBo
 export function installGamepadNavigation(win: Window, options: Options): () => void {
   const doc = win.document;
   const inputs = new Map<string, PadInput>();
-  const returns = new WeakMap<Element, FocusMemory>();
+  const openers = new WeakMap<Element, FocusMemory>(); // Focus to restore when a layer closes.
   const parents = new WeakMap<Element, HTMLElement | Document>();
   const pageReturns = new Map<string, FocusMemory>();
   let lastFocus: FocusMemory | undefined;
@@ -203,66 +203,69 @@ export function installGamepadNavigation(win: Window, options: Options): () => v
     lastFocus = remember(element);
     if (scope === doc && element.closest('.page-scroll') && lastFocus.page) pageReturns.set(lastFocus.page, lastFocus);
   };
+  /** A dialog, menu or shelf opened or closed, so focus moves into the new top layer. */
+  const onScopeChange = (nextScope: HTMLElement | Document) => {
+    const previousScope = scope;
+    scope = nextScope;
+    // A detail drawer is its own modal scope, so no inline-detail focus
+    // request may survive it and swallow a quick reopen after B.
+    if (pendingDetail && nextScope instanceof HTMLElement && nextScope.getAttribute('data-gamepad-detail') === pendingDetail.id) pendingDetail = undefined;
+    const openerFocus = previousScope instanceof HTMLElement ? openers.get(previousScope) : undefined;
+    const restoreTarget = resolve(openerFocus, nextScope);
+    const current = focused();
+    // Refresh the opener every time a persistent shelf opens, but preserve
+    // the parent's opener when returning from a nested dialog.
+    const returningToParent = previousScope instanceof HTMLElement && parents.get(previousScope) === nextScope;
+    if (nextScope instanceof HTMLElement && !returningToParent) {
+      const opener = current && !nextScope.contains(current) && current.matches(controls) ? remember(current) : openerFocus ?? lastFocus;
+      if (opener) openers.set(nextScope, opener);
+      parents.set(nextScope, previousScope);
+    }
+    // A committed navigation request already focused its destination as the
+    // layer closed, so leave that focus alone.
+    const navigatedOnClose = returningToParent && current && nextScope.contains(current) && !previousScope.contains(current) && focusable(current) && current.matches(controls);
+    if (navigatedOnClose) return;
+    if (restoreTarget && nextScope.contains(restoreTarget) && enabled(restoreTarget)) focus(restoreTarget);
+    else if (!current || !nextScope.contains(current) || !focusable(current)) {
+      if (returningToParent && openerFocus) lastFocus = openerFocus;
+      focus(returningToParent ? recover() : initial(nextScope));
+    }
+  };
+  /** The page under the root scope changed (sidebar, bumpers, B, or an app request). */
+  const onPageChange = () => {
+    previousPage = page();
+    pendingDetail = undefined; detailReturn = undefined;
+    if (scope !== doc) return;
+    // Detail pages set their own initial Play/Back focus in a layout effect.
+    const element = focused();
+    const homePrimary = doc.querySelector<HTMLElement>('[data-gamepad-home-primary]');
+    if (previousPage === 'home' && homePrimary) {
+      // Preserve sidebar ownership and explicit Home-card returns. Ordinary
+      // Home entry starts at Play, never at a persistent Search input.
+      const explicitHomeReturn = element?.closest('.home-page') && lastFocus?.page === 'home' && lastFocus.element === element;
+      if (!element?.closest('.sidebar') && !explicitHomeReturn) focus(homePrimary);
+    } else if (!element?.closest('[data-gamepad-detail]') && !element?.matches('.sidebar .nav-item.active')) {
+      // Sidebar navigation already placed focus on the destination item.
+      // Remembered content is restored only when Right enters the page.
+      focus(pageReturn(doc) ?? initial(doc));
+    }
+  };
+  /** An activated card asked for its inline detail; focus it once React renders it. */
+  const onPendingDetail = (pending: NonNullable<typeof pendingDetail>) => {
+    const detail = [...doc.querySelectorAll<HTMLElement>('[data-gamepad-detail]')]
+      .find(element => element.getAttribute('data-gamepad-detail') === pending.id && visible(element));
+    if (detail) {
+      const play = detail.querySelector<HTMLElement>('[data-gamepad-play]');
+      const entry = play && enabled(play) ? play : candidates(detail)[0];
+      pendingDetail = undefined;
+      if (entry) { detailReturn = pending; focus(entry); }
+    } else if (!pending.origin.isConnected || Date.now() >= pending.deadline) pendingDetail = undefined;
+  };
   const ensureFocus = () => {
-    const next = currentScope();
-    if (next !== scope) {
-      const previous = scope;
-      scope = next;
-      // A detail drawer is its own modal scope, so no inline-detail focus
-      // request may survive it and swallow a quick reopen after B.
-      if (pendingDetail && next instanceof HTMLElement && next.getAttribute('data-gamepad-detail') === pendingDetail.id) pendingDetail = undefined;
-      const returning = previous instanceof HTMLElement ? returns.get(previous) : undefined;
-      const target = resolve(returning, next);
-      const origin = focused();
-      // Refresh the opener every time a persistent shelf opens, but preserve
-      // the parent's opener when returning from a nested dialog.
-      const closing = previous instanceof HTMLElement && parents.get(previous) === next;
-      if (next instanceof HTMLElement && !closing) {
-        const restore = origin && !next.contains(origin) && origin.matches(controls) ? remember(origin) : returning ?? lastFocus;
-        if (restore) returns.set(next, restore);
-        parents.set(next, previous);
-      }
-      const explicitReturn = closing && origin && next.contains(origin) && !previous.contains(origin) && focusable(origin) && origin.matches(controls);
-      // An explicit return means a committed navigation request already
-      // focused its destination, so leave that focus alone.
-      if (!explicitReturn) {
-        if (target && next.contains(target) && enabled(target)) focus(target);
-        else if (!origin || !next.contains(origin) || !focusable(origin)) {
-          if (closing && returning) lastFocus = returning;
-          focus(closing ? recover() : initial(next));
-        }
-      }
-    }
-    if (page() !== previousPage) {
-      previousPage = page();
-      pendingDetail = undefined; detailReturn = undefined;
-      if (scope === doc) {
-        // Detail pages set their own initial Play/Back focus in a layout effect.
-        const element = focused();
-        const homePrimary = doc.querySelector<HTMLElement>('[data-gamepad-home-primary]');
-        if (previousPage === 'home' && homePrimary) {
-          // Preserve sidebar ownership and explicit Home-card returns. Ordinary
-          // Home entry starts at Play, never at a persistent Search input.
-          const explicitHomeReturn = element?.closest('.home-page') && lastFocus?.page === 'home' && lastFocus.element === element;
-          if (!element?.closest('.sidebar') && !explicitHomeReturn) focus(homePrimary);
-        } else if (!element?.closest('[data-gamepad-detail]') && !element?.matches('.sidebar .nav-item.active')) {
-          // Sidebar navigation already placed focus on the destination item.
-          // Remembered content is restored only when Right enters the page.
-          focus(pageReturn(doc) ?? initial(doc));
-        }
-      }
-    }
-    if (pendingDetail && scope === doc) {
-      const pending = pendingDetail;
-      const detail = [...doc.querySelectorAll<HTMLElement>('[data-gamepad-detail]')]
-        .find(element => element.getAttribute('data-gamepad-detail') === pending.id && visible(element));
-      if (detail) {
-        const play = detail.querySelector<HTMLElement>('[data-gamepad-play]');
-        const target = play && enabled(play) ? play : candidates(detail)[0];
-        pendingDetail = undefined;
-        if (target) { detailReturn = pending; focus(target); }
-      } else if (!pending.origin.isConnected || Date.now() >= pending.deadline) pendingDetail = undefined;
-    }
+    const nextScope = currentScope();
+    if (nextScope !== scope) onScopeChange(nextScope);
+    if (page() !== previousPage) onPageChange();
+    if (pendingDetail && scope === doc) onPendingDetail(pendingDetail);
     const element = focused();
     if (!element || !scope.contains(element) || !focusable(element) || !element.matches(controls)) focus(recover());
     recordFocus();
@@ -277,7 +280,7 @@ export function installGamepadNavigation(win: Window, options: Options): () => v
   };
   const closePicker = (restore: boolean) => {
     if (!picker) return;
-    const target = resolve(returns.get(picker), doc);
+    const target = resolve(openers.get(picker), doc);
     picker.remove(); picker = undefined;
     if (restore) focus(target);
   };
@@ -324,7 +327,7 @@ export function installGamepadNavigation(win: Window, options: Options): () => v
     cancel.addEventListener('click', () => closePicker(true));
     dialog.append(cancel); backdrop.append(dialog); doc.body.append(backdrop);
     backdrop.addEventListener('pointerdown', event => { if (event.target === backdrop) closePicker(false); });
-    picker = backdrop; returns.set(backdrop, remember(select)); returns.set(dialog, remember(select)); parents.set(dialog, scope);
+    picker = backdrop; openers.set(backdrop, remember(select)); openers.set(dialog, remember(select)); parents.set(dialog, scope);
     scope = dialog; focus(initial(dialog));
   }
 
@@ -371,105 +374,125 @@ export function installGamepadNavigation(win: Window, options: Options): () => v
     options.back();
     pageFocus();
   };
+  /** A move that bypasses the ordinary directional beam. `select` permits auto-select on focus. */
+  type Exit = { target?: HTMLElement; select?: boolean };
+  /** Down from the topbar always enters the page: Home's Play, remembered content, or the first control. */
+  const fromTopbar = (element: HTMLElement, direction: Direction): Exit | undefined => {
+    if (scope !== doc || direction !== 'down' || !element.closest('.topbar')) return;
+    const content = doc.querySelector<HTMLElement>('.page-scroll');
+    return { target: content ? content.querySelector<HTMLElement>('[data-gamepad-home-primary]') ?? pageReturn(content) ?? initial(content) : undefined };
+  };
+  // The sidebar and page are separate navigation regions. Their controls
+  // need not line up vertically, so enter the page explicitly instead of
+  // applying the strict within-region directional beam across that gap.
+  const fromSidebar = (element: HTMLElement, direction: Direction): Exit | undefined => {
+    if (scope !== doc || direction !== 'right' || !element.closest('.sidebar')) return;
+    // Visit adjacent header actions (account → notification bell) before
+    // crossing from the sidebar into the page content.
+    const row = element.closest<HTMLElement>('[data-gamepad-action-row]');
+    const adjacent = row && navigationTarget(focusBox(element).getBoundingClientRect(), candidates(row).filter(target => target !== element)
+      .map(target => ({ value: target, rect: focusBox(target).getBoundingClientRect() })), direction, true);
+    if (adjacent) return { target: adjacent };
+    const content = doc.querySelector<HTMLElement>('.page-scroll');
+    if (!content) return {};
+    const targets = candidates(content);
+    const grid = targets.filter(target => target.closest('[data-gamepad-grid]'));
+    const entry = pageReturn(content) ?? targets.find(target => target.hasAttribute('data-gamepad-play'))
+      ?? grid.find(target => target.closest('[data-gamepad-card]')?.classList.contains('selected'))
+      ?? grid[0] ?? targets.find(target => target.closest('[data-gamepad-filters]')) ?? initial(content);
+    return { target: entry, select: true };
+  };
+  /** The ordinary directional search from `element`, within its region. */
+  const beamFrom = (element: HTMLElement, direction: Direction) => {
+    const actionRow = direction === 'left' || direction === 'right' ? element.closest<HTMLElement>('[data-gamepad-action-row]') : undefined;
+    const region = scope === doc ? actionRow ?? element.closest<HTMLElement>(regions) ?? scope : scope;
+    const choose = (root: HTMLElement | Document) => {
+      const settings = root instanceof HTMLElement && root.matches('.settings-page');
+      const targets = candidates(root).filter(target => target !== element)
+        .map(target => ({ value: target, rect: focusBox(target).getBoundingClientRect() }));
+      // Settings mixes full-width rows with left/right aligned controls.
+      // Follow the adjacent row vertically instead of skipping cards to
+      // stay in a column; permit offset centres within a horizontal row.
+      return root instanceof HTMLElement && (root.hasAttribute('data-gamepad-grid') || settings && (direction === 'up' || direction === 'down'))
+        ? gridNavigationTarget(focusBox(element).getBoundingClientRect(), targets, direction)
+        : navigationTarget(focusBox(element).getBoundingClientRect(), targets, direction, root === actionRow || settings);
+    };
+    // Entering another region may land off the beam, so fall back to the nearest control.
+    const crossRegion = (root: HTMLElement) => choose(root) ?? nearest(remember(element), root);
+    return { region, choose, crossRegion };
+  };
+  type Beam = ReturnType<typeof beamFrom>;
+  /** Store results grid ↔ Load More, and vertical exits from the grid. */
+  const crossStoreRegions = (element: HTMLElement, direction: Direction, { region, choose, crossRegion }: Beam) => {
+    const store = element.closest<HTMLElement>('.store-page');
+    if (!store || !(region instanceof HTMLElement)) return;
+    if (region.hasAttribute('data-gamepad-grid')) {
+      const footer = store.querySelector<HTMLElement>('[data-gamepad-library-footer]');
+      if (footer && direction === 'down') return crossRegion(footer);
+      if (direction === 'up' || direction === 'down') return choose(store);
+    } else if (region.hasAttribute('data-gamepad-library-footer') && direction === 'up') {
+      const grid = store.querySelector<HTMLElement>('[data-gamepad-grid]');
+      if (grid) return crossRegion(grid);
+    }
+  };
+  // Cross library rows explicitly, without diagonal drift into an
+  // unrelated card or control. Sidebar exit is handled separately.
+  const crossLibraryRows = (element: HTMLElement, direction: Direction, { region, crossRegion }: Beam) => {
+    const library = element.closest<HTMLElement>('.library-page');
+    if (!library || !(region instanceof HTMLElement)) return;
+    let next: string | undefined;
+    if (region.hasAttribute('data-gamepad-grid') && direction === 'up') next = '[data-gamepad-filters]';
+    else if (region.hasAttribute('data-gamepad-grid') && direction === 'down') next = '[data-gamepad-library-footer]';
+    else if (region.hasAttribute('data-gamepad-filters') && direction === 'up') next = '[data-gamepad-library-header]';
+    else if (region.hasAttribute('data-gamepad-library-header') && direction === 'down') next = '[data-gamepad-filters]';
+    else if ((region.hasAttribute('data-gamepad-filters') && direction === 'down') || (region.hasAttribute('data-gamepad-library-footer') && direction === 'up')) next = '[data-gamepad-grid]';
+    const root = next ? library.querySelector<HTMLElement>(next) : undefined;
+    const target = root ? crossRegion(root) : undefined;
+    // Nothing below the grid's last row: scroll so further cards come into view.
+    if (!target && direction === 'down' && region.hasAttribute('data-gamepad-grid')) {
+      const parent = scrollParent(focusBox(element));
+      if (parent) parent.scrollTop += Math.min(260, parent.clientHeight * 0.5);
+    }
+    return target;
+  };
+  /** Down from the bottom of the sidebar or page reaches the Social button; Up leaves it. */
+  const toSocialToggle = (element: HTMLElement, direction: Direction) => {
+    const social = doc.querySelector<HTMLElement>('[data-gamepad-social-toggle]');
+    if (scope !== doc || !social || !enabled(social)) return;
+    if (direction === 'down' && element.closest('.sidebar,.page-scroll')) return social;
+    if (element === social && direction === 'up') return candidates(doc.querySelector<HTMLElement>('.sidebar') ?? doc).at(-1);
+  };
+  /** Left from the page hands focus to the active sidebar item, remembering where it left. */
+  const toSidebar = (element: HTMLElement, direction: Direction) => {
+    if (scope !== doc || direction !== 'left' || !element.closest('.content-shell')) return;
+    const sidebar = doc.querySelector<HTMLElement>('.sidebar');
+    if (!sidebar) return;
+    const target = candidates(sidebar).find(item => item.matches('.nav-item.active'))
+      ?? candidates(sidebar).find(item => item.matches('.nav-item'));
+    if (!target) return;
+    const current = page();
+    if (current) pageReturns.set(current, remember(element));
+    // This is a focus handoff, not a page change. In particular,
+    // leaving a game detail must not reselect/reset its Library page.
+    focus(target);
+  };
+  /** Explicit exits first, then the beam, then region fallbacks in priority order. */
+  const move = (element: HTMLElement, direction: Direction) => {
+    const exit = fromTopbar(element, direction) ?? fromSidebar(element, direction);
+    if (exit) { focus(exit.target, exit.select); return; }
+    const beam = beamFrom(element, direction);
+    const target = beam.choose(beam.region)
+      ?? crossStoreRegions(element, direction, beam)
+      ?? crossLibraryRows(element, direction, beam)
+      ?? toSocialToggle(element, direction);
+    if (target) focus(target, true);
+    else toSidebar(element, direction);
+  };
   const action = (value: PadAction) => {
     ensureFocus();
     if (directions.includes(value as Direction)) {
       const element = focused();
-      if (element) {
-        const direction = value as Direction;
-        if (scope === doc && direction === 'down' && element.closest('.topbar')) {
-          const content = doc.querySelector<HTMLElement>('.page-scroll');
-          if (content) focus(content.querySelector<HTMLElement>('[data-gamepad-home-primary]') ?? pageReturn(content) ?? initial(content));
-          return;
-        }
-        // The sidebar and page are separate navigation regions. Their controls
-        // need not line up vertically, so enter the page explicitly instead of
-        // applying the strict within-region directional beam across that gap.
-        if (scope === doc && direction === 'right' && element.closest('.sidebar')) {
-          // Visit adjacent header actions (account → notification bell) before
-          // crossing from the sidebar into the page content.
-          const row = element.closest<HTMLElement>('[data-gamepad-action-row]');
-          const adjacent = row && navigationTarget(focusBox(element).getBoundingClientRect(), candidates(row).filter(target => target !== element)
-            .map(target => ({ value: target, rect: focusBox(target).getBoundingClientRect() })), direction, true);
-          if (adjacent) { focus(adjacent); return; }
-          const content = doc.querySelector<HTMLElement>('.page-scroll');
-          if (content) {
-            const targets = candidates(content);
-            const grid = targets.filter(target => target.closest('[data-gamepad-grid]'));
-            const previous = pageReturn(content);
-            const entry = previous ?? targets.find(target => target.hasAttribute('data-gamepad-play'))
-              ?? grid.find(target => target.closest('[data-gamepad-card]')?.classList.contains('selected'))
-              ?? grid[0] ?? targets.find(target => target.closest('[data-gamepad-filters]')) ?? initial(content);
-            focus(entry, true);
-          }
-          return;
-        }
-        const actionRow = direction === 'left' || direction === 'right' ? element.closest<HTMLElement>('[data-gamepad-action-row]') : undefined;
-        const region = scope === doc ? actionRow ?? element.closest<HTMLElement>(regions) ?? scope : scope;
-        const choose = (root: HTMLElement | Document) => {
-          const settings = root instanceof HTMLElement && root.matches('.settings-page');
-          const targets = candidates(root).filter(target => target !== element)
-            .map(target => ({ value: target, rect: focusBox(target).getBoundingClientRect() }));
-          // Settings mixes full-width rows with left/right aligned controls.
-          // Follow the adjacent row vertically instead of skipping cards to
-          // stay in a column; permit offset centres within a horizontal row.
-          return root instanceof HTMLElement && (root.hasAttribute('data-gamepad-grid') || settings && (direction === 'up' || direction === 'down'))
-            ? gridNavigationTarget(focusBox(element).getBoundingClientRect(), targets, direction)
-            : navigationTarget(focusBox(element).getBoundingClientRect(), targets, direction, root === actionRow || settings);
-        };
-        const crossRegion = (root: HTMLElement) => choose(root) ?? nearest(remember(element), root);
-        let target = choose(region);
-        const library = element.closest<HTMLElement>('.library-page');
-        const store = element.closest<HTMLElement>('.store-page');
-        if (!target && store && region instanceof HTMLElement) {
-          if (region.hasAttribute('data-gamepad-grid')) {
-            const footer = store.querySelector<HTMLElement>('[data-gamepad-library-footer]');
-            if (footer && direction === 'down') target = crossRegion(footer);
-            else if (direction === 'up' || direction === 'down') target = choose(store);
-          } else if (region.hasAttribute('data-gamepad-library-footer') && direction === 'up') {
-            const grid = store.querySelector<HTMLElement>('[data-gamepad-grid]');
-            if (grid) target = crossRegion(grid);
-          }
-        }
-        if (!target && library && region instanceof HTMLElement) {
-          // Cross library rows explicitly, without diagonal drift into an
-          // unrelated card or control. Sidebar exit is handled separately.
-          let next: string | undefined;
-          if (region.hasAttribute('data-gamepad-grid') && direction === 'up') next = '[data-gamepad-filters]';
-          else if (region.hasAttribute('data-gamepad-grid') && direction === 'down') next = '[data-gamepad-library-footer]';
-          else if (region.hasAttribute('data-gamepad-filters') && direction === 'up') next = '[data-gamepad-library-header]';
-          else if (region.hasAttribute('data-gamepad-library-header') && direction === 'down') next = '[data-gamepad-filters]';
-          else if ((region.hasAttribute('data-gamepad-filters') && direction === 'down') || (region.hasAttribute('data-gamepad-library-footer') && direction === 'up')) next = '[data-gamepad-grid]';
-          const root = next ? library.querySelector<HTMLElement>(next) : undefined;
-          if (root) target = crossRegion(root);
-          if (!target && direction === 'down' && region.hasAttribute('data-gamepad-grid')) {
-            const parent = scrollParent(focusBox(element));
-            if (parent) parent.scrollTop += Math.min(260, parent.clientHeight * 0.5);
-          }
-        }
-        const social = doc.querySelector<HTMLElement>('[data-gamepad-social-toggle]');
-        if (!target && scope === doc && social && enabled(social)) {
-          if (direction === 'down' && element.closest('.sidebar')) target = social;
-          else if (element === social && direction === 'up') target = candidates(doc.querySelector<HTMLElement>('.sidebar') ?? doc).at(-1);
-          else if (direction === 'down' && element.closest('.page-scroll')) target = social;
-        }
-        if (!target && scope === doc && direction === 'left') {
-          const shell = element.closest('.content-shell');
-          const sidebar = doc.querySelector<HTMLElement>('.sidebar');
-          if (shell && sidebar) {
-            target = candidates(sidebar).find(item => item.matches('.nav-item.active'))
-              ?? candidates(sidebar).find(item => item.matches('.nav-item'));
-            if (target) {
-              if (page()) pageReturns.set(page()!, remember(element));
-              // This is a focus handoff, not a page change. In particular,
-              // leaving a game detail must not reselect/reset its Library page.
-              focus(target);
-              return;
-            }
-          }
-        }
-        focus(target, true);
-      }
+      if (element) move(element, value as Direction);
     } else if (value === 'accept') activate();
     else if (value === 'back') back();
     else if (value === 'search') {
