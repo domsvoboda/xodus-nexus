@@ -1546,7 +1546,8 @@ async function acceptPartyInvite(event:Electron.IpcMainInvokeEvent,offer:string,
  return xboxParty.accept(offer,handle);
 }
 function registerIpc(): void {
-  ipcMain.handle('show-touch-keyboard',event=>steamKeyboard.show(event,mainWindow));
+  ipcMain.handle('show-touch-keyboard',(event,field:unknown)=>steamKeyboard.show(event,
+    event.sender===mainWindow?.webContents?mainWindow:chatWindows.owns(event)?BrowserWindow.fromWebContents(event.sender):null,field));
   ipcMain.handle('xbox-overlay-recording',async(event,recording:unknown)=>{
     if(event.sender!==mainWindow?.webContents||event.senderFrame!==event.sender.mainFrame||typeof recording!=='boolean')throw Error('Invalid shortcut recording request.');
     if(recording&&!mainWindow?.isFocused())throw Error('Focus Nexus to record a shortcut.');
