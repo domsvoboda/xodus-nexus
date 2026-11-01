@@ -95,7 +95,7 @@ export function XboxSocial({auth,api,voice,overlay=false,shelf=false,close,openO
     {voice?<button role="tab" data-gamepad-tab aria-selected={!profile&&tab==='party'} aria-label={ui("social.party_dfa82f")} title={ui("social.party_dfa82f")} onClick={()=>changeTab('party')}><Headset/></button>:null}
     <button role="tab" data-gamepad-tab aria-selected={!profile&&tab==='friends'} aria-label={ui("social.people_7db208")} title={ui("social.people_7db208")} onClick={()=>changeTab('friends')}><XboxSocialIcon name="people"/></button>
     <button role="tab" data-gamepad-tab aria-selected={!profile&&tab==='chats'} aria-label={ui("social.chats_ef5b40")} title={ui("social.chats_ef5b40")} onClick={()=>changeTab('chats')}><XboxSocialIcon name="chat"/></button>
-    <button role="tab" data-gamepad-tab aria-selected={profile?.xuid==='me'} aria-label={'Your Xbox profile'+(auth.gamertag?', '+auth.gamertag:'')} title={ui("social.your_xbox_profile_95979b")} onClick={()=>setProfile({xuid:'me'})}><XboxAvatar src={auth.avatarDataUrl} name={auth.gamertag}/></button>
+    <button role="tab" data-gamepad-tab aria-selected={ownProfile} aria-label={'Your Xbox profile'+(auth.gamertag?', '+auth.gamertag:'')} title={ui("social.your_xbox_profile_95979b")} onClick={()=>setProfile({xuid:'me'})}><XboxAvatar src={auth.avatarDataUrl} name={auth.gamertag}/></button>
    </nav>:null}
    <XboxRuntimeInvites state={runtimeInvites} api={runtimeApi} friends={friends}/>
    <div className={'social-guide-content'+(profile?' profile-content':'')} aria-busy={busy}>

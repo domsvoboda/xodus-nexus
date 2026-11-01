@@ -138,6 +138,11 @@ export function installGamepadNavigation(win: Window, options: Options): () => v
     if (root.contains(memory.element) && focusable(memory.element)) return memory.element;
     return memory.key ? candidates(root).find(element => key(element) === memory.key) : undefined;
   };
+  // Remembered content focus for the current page, if it is still available.
+  const pageReturn = (root: HTMLElement | Document) => {
+    const current = page();
+    return resolve(current ? pageReturns.get(current) : undefined, root);
+  };
   const nearest = (memory: FocusMemory, root: HTMLElement | Document) => candidates(root).sort((a, b) => {
     const distance = (element: HTMLElement) => { const rect = focusBox(element).getBoundingClientRect(); return Math.hypot(rect.left + rect.right - memory.rect.left - memory.rect.right, rect.top + rect.bottom - memory.rect.top - memory.rect.bottom); };
     return distance(a) - distance(b);
@@ -218,11 +223,14 @@ export function installGamepadNavigation(win: Window, options: Options): () => v
         parents.set(next, previous);
       }
       const explicitReturn = closing && origin && next.contains(origin) && !previous.contains(origin) && focusable(origin) && origin.matches(controls);
-      if (explicitReturn) { /* A committed navigation request already focused its destination. */ }
-      else if (target && next.contains(target) && enabled(target)) focus(target);
-      else if (!origin || !next.contains(origin) || !focusable(origin)) {
-        if (closing && returning) lastFocus = returning;
-        focus(closing ? recover() : initial(next));
+      // An explicit return means a committed navigation request already
+      // focused its destination, so leave that focus alone.
+      if (!explicitReturn) {
+        if (target && next.contains(target) && enabled(target)) focus(target);
+        else if (!origin || !next.contains(origin) || !focusable(origin)) {
+          if (closing && returning) lastFocus = returning;
+          focus(closing ? recover() : initial(next));
+        }
       }
     }
     if (page() !== previousPage) {
@@ -240,7 +248,7 @@ export function installGamepadNavigation(win: Window, options: Options): () => v
         } else if (!element?.closest('[data-gamepad-detail]') && !element?.matches('.sidebar .nav-item.active')) {
           // Sidebar navigation already placed focus on the destination item.
           // Remembered content is restored only when Right enters the page.
-          focus(resolve(previousPage ? pageReturns.get(previousPage) : undefined, doc) ?? initial(doc));
+          focus(pageReturn(doc) ?? initial(doc));
         }
       }
     }
@@ -371,7 +379,7 @@ export function installGamepadNavigation(win: Window, options: Options): () => v
         const direction = value as Direction;
         if (scope === doc && direction === 'down' && element.closest('.topbar')) {
           const content = doc.querySelector<HTMLElement>('.page-scroll');
-          if (content) focus(content.querySelector<HTMLElement>('[data-gamepad-home-primary]') ?? resolve(page() ? pageReturns.get(page()!) : undefined, content) ?? initial(content));
+          if (content) focus(content.querySelector<HTMLElement>('[data-gamepad-home-primary]') ?? pageReturn(content) ?? initial(content));
           return;
         }
         // The sidebar and page are separate navigation regions. Their controls
@@ -388,7 +396,7 @@ export function installGamepadNavigation(win: Window, options: Options): () => v
           if (content) {
             const targets = candidates(content);
             const grid = targets.filter(target => target.closest('[data-gamepad-grid]'));
-            const previous = resolve(page() ? pageReturns.get(page()!) : undefined, content);
+            const previous = pageReturn(content);
             const entry = previous ?? targets.find(target => target.hasAttribute('data-gamepad-play'))
               ?? grid.find(target => target.closest('[data-gamepad-card]')?.classList.contains('selected'))
               ?? grid[0] ?? targets.find(target => target.closest('[data-gamepad-filters]')) ?? initial(content);
@@ -495,8 +503,8 @@ export function installGamepadNavigation(win: Window, options: Options): () => v
     const canScroll = (element: HTMLElement) => element.scrollHeight > element.clientHeight && /auto|scroll/.test(win.getComputedStyle(element).overflowY);
     let element = focused();
     if (element && !scope.contains(element)) element = undefined;
+    // Walk up from focus, never past the active scope.
     while (element && !canScroll(element)) element = element === scope ? undefined : element.parentElement ?? undefined;
-    if (element && !scope.contains(element)) element = undefined;
     element ??= [...scope.querySelectorAll<HTMLElement>('[data-gamepad-scroll],pre,.page-scroll,.game-dialog')].find(canScroll);
     if (element) element.scrollTop += value * elapsed * 0.75;
   };

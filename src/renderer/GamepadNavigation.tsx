@@ -2,11 +2,19 @@ import { ui } from './i18n';
 import { useEffect, useRef, useState } from 'react';
 import { installGamepadNavigation } from './gamepad-navigation';
 
-export function GamepadNavigation({ back, page, social, search }: { back: () => void; page: (delta: number) => void; social: () => void; search: () => void }) {
-  const callbacks = useRef({ back, page, social, search }); callbacks.current = { back, page, social, search };
+type Callbacks = { back: () => void; page: (delta: number) => void; social: () => void; search: () => void };
+
+export function GamepadNavigation({ back, page, social, search }: Callbacks) {
+  // Install once; always call the latest props.
+  const callbacks = useRef<Callbacks>({ back, page, social, search }); callbacks.current = { back, page, social, search };
   const [active, setActive] = useState(false);
   useEffect(() => installGamepadNavigation(window, {
-    mode: setActive, back: () => callbacks.current.back(), page: delta => callbacks.current.page(delta), social: () => callbacks.current.social(), search: () => callbacks.current.search(), keyboard: field => window.launcher.showTouchKeyboard(field),
+    mode: setActive,
+    back: () => callbacks.current.back(),
+    page: delta => callbacks.current.page(delta),
+    social: () => callbacks.current.social(),
+    search: () => callbacks.current.search(),
+    keyboard: field => window.launcher.showTouchKeyboard(field),
   }), []);
   return active ? <div className="gamepad-hints" aria-label={ui("ui.gamepad_controls_2b309e8")}>
     <span>{ui("ui.d_pad_l_stick_move_83f74ed")}</span><span>{ui("ui.a_select_ca960f2")}</span><span>{ui("ui.b_back_15c6e5a")}</span><span>{ui("ui.x_options_d427788")}</span>

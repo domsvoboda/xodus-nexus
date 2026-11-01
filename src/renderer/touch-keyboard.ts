@@ -10,13 +10,19 @@ export function isTextField(element: Element | null): element is TextField {
     && (field.tagName === 'TEXTAREA' || field.tagName === 'INPUT' && textTypes.has(field.type));
 }
 
+/** Steam keyboard modes: 0 single line, 1 multiple lines, 2 email, 3 numeric. */
+function keyboardMode(field: TextField): SteamKeyboardRequest['mode'] {
+  if (field.tagName === 'TEXTAREA') return 1;
+  if (field.type === 'email') return 2;
+  return ['number', 'tel'].includes(field.type) ? 3 : 0;
+}
+
 export function requestTextKeyboard(win: Window, field: TextField, show: (field: SteamKeyboardRequest) => Promise<unknown>): Promise<unknown> {
   if (!isTextField(field) || win.document.activeElement !== field) return Promise.resolve(false);
   field.scrollIntoView({ block: 'center', inline: 'nearest' });
   const rect = field.getBoundingClientRect();
   if (!rect.width || !rect.height) return Promise.resolve(false);
-  return show({ x: Math.max(0, rect.left), y: Math.max(0, rect.top), width: rect.width, height: rect.height,
-    mode: field.tagName === 'TEXTAREA' ? 1 : field.type === 'email' ? 2 : ['number', 'tel'].includes(field.type) ? 3 : 0 });
+  return show({ x: Math.max(0, rect.left), y: Math.max(0, rect.top), width: rect.width, height: rect.height, mode: keyboardMode(field) });
 }
 
 /** Native touch release is reliable even when Chromium's compatibility click

@@ -32,12 +32,20 @@ export function createDemoSocial() {
     return value;
   };
   const relationship = (id: string) => { person(id); return copy(relationships.get(id)!); };
+  const isSelf = (id: string) => id === 'me' || id === self;
   const checkAccount = (value: string) => { if (value !== account) throw Error('Demo account changed.'); };
   const partyListeners = new Set<(state: XboxPartyState) => void>();
   const voiceListeners = new Set<(state: XboxVoiceState) => void>();
   const inviteListeners = new Set<(invites: XboxInvite[]) => void>();
-  let party: XboxPartyState = { phase: 'idle', members: [] };
-  let audio: XboxVoiceState = { connected: false, muted: true, audioBlocked: false, mutedMembers: [] };
+  const idleParty = (): XboxPartyState => ({ phase: 'idle', members: [] });
+  const idleAudio = (): XboxVoiceState => ({ connected: false, muted: true, audioBlocked: false, mutedMembers: [] });
+  let party = idleParty();
+  let audio = idleAudio();
+  // Joining an invite and creating a party produce the same simulated connected state.
+  const connect = (id: string) => {
+    party = { phase: 'connected', id, selfXuid: self, members: [{ xuid: self, role: 'owner' }, { xuid: '1001', role: 'member' }, { xuid: '1002', role: 'member' }] };
+    audio = { ...idleAudio(), connected: true };
+  };
   let existing = ['demo-existing-party'];
   let invites: XboxInvite[] = [{ id: 'demo-party-invite', kind: 'party', gamertag: 'DemoRanger', sender: '1001', sentAt: Date.now(), expiresAt: Date.now() + 86_400_000, titleId: null, titleName: null }];
   const publish = () => {
@@ -50,10 +58,10 @@ export function createDemoSocial() {
     openXboxPlayerProfile: async () => {}, // The desktop IPC adapter supplies window navigation.
     getXboxGameInviteAvailability: async () => ({ canInvite: true, gameId: 'demo-1', title: 'Forza Horizon 6' }),
     sendXboxGameInvite: async id => { person(id); },
-    getXboxPlayerProfile: async id => id === 'me' || id === self ? { xuid: self, gamertag: 'NexusPlayer', gamerscore: '12500' } : { xuid: id, gamertag: person(id).gamertag, gamerscore: '8420' },
-    getXboxPlayerDetails: async id => ({ ...await social.getXboxPlayerProfile(id), isSelf: id === 'me' || id === self,
+    getXboxPlayerProfile: async id => isSelf(id) ? { xuid: self, gamertag: 'NexusPlayer', gamerscore: '12500' } : { xuid: id, gamertag: person(id).gamertag, gamerscore: '8420' },
+    getXboxPlayerDetails: async id => ({ ...await social.getXboxPlayerProfile(id), isSelf: isSelf(id),
       bio: 'Sample profile for trying the Social menu and controller navigation.', location: 'Demo world', tenure: '5',
-      counts: { friends: 12, followers: 24, following: 18 }, relationship: id === 'me' || id === self ? undefined : relationship(id) }),
+      counts: { friends: 12, followers: 24, following: 18 }, relationship: isSelf(id) ? undefined : relationship(id) }),
     getXboxPlayerGames: async () => ({ items: [
       { titleId: 'demo-forza', name: 'Forza Horizon 6', lastPlayed: '2026-01-01T18:00:00Z', currentGamerscore: 450, totalGamerscore: 1000, achievementsUnlocked: 18, achievementsTotal: 50 },
       { titleId: 'demo-sea', name: 'Sea of Thieves', lastPlayed: '2026-01-01T12:00:00Z', currentGamerscore: 220, totalGamerscore: 1000, achievementsUnlocked: 11, achievementsTotal: 50 },
@@ -105,13 +113,9 @@ export function createDemoSocial() {
         case 'accept':
           if (!invites.some(invite => invite.id === command.inviteId)) throw Error('Unknown demo invitation.');
           invites = invites.filter(invite => invite.id !== command.inviteId);
-          // Both joining and creating produce the same simulated connected state.
-          party = { phase: 'connected', id: 'demo-party', selfXuid: self, members: [{ xuid: self, role: 'owner' }, { xuid: '1001', role: 'member' }, { xuid: '1002', role: 'member' }] };
-          audio = { connected: true, muted: true, audioBlocked: false, mutedMembers: [] }; break;
-        case 'start':
-          party = { phase: 'connected', id: command.partyId ?? 'demo-party', selfXuid: self, members: [{ xuid: self, role: 'owner' }, { xuid: '1001', role: 'member' }, { xuid: '1002', role: 'member' }] };
-          audio = { connected: true, muted: true, audioBlocked: false, mutedMembers: [] }; existing = []; break;
-        case 'leave': party = { phase: 'idle', members: [] }; audio = { connected: false, muted: true, audioBlocked: false, mutedMembers: [] }; break;
+          connect('demo-party'); break;
+        case 'start': connect(command.partyId ?? 'demo-party'); existing = []; break;
+        case 'leave': party = idleParty(); audio = idleAudio(); break;
         case 'setMuted': audio.muted = command.muted; break;
         case 'mute': audio.mutedMembers = command.muted ? [...new Set([...audio.mutedMembers, command.xuid])] : audio.mutedMembers.filter(id => id !== command.xuid); break;
         case 'resume': audio.audioBlocked = false; break;

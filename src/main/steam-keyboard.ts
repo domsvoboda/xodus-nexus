@@ -6,14 +6,11 @@ import type {SteamKeyboardRequest} from '../shared/types.js';
 export function steamKeyboardUrl(field?: unknown): string {
   if (field === undefined) return 'steam://open/keyboard';
   if (!field || typeof field !== 'object') throw Error('Invalid keyboard field.');
-  const value = field as Partial<SteamKeyboardRequest>;
-  for (const name of ['x', 'y', 'width', 'height', 'mode'] as const) {
-    const number = value[name];
-    if (typeof number !== 'number' || !Number.isFinite(number) || number < 0 || number > 100_000) throw Error('Invalid keyboard field.');
-  }
-  if (![0, 1, 2, 3].includes(value.mode!) || !value.width || !value.height) throw Error('Invalid keyboard field.');
+  const { x, y, width, height, mode } = field as SteamKeyboardRequest;
+  const valid = (value: unknown) => typeof value === 'number' && Number.isFinite(value) && value >= 0 && value <= 100_000;
+  if (![x, y, width, height, mode].every(valid) || ![0, 1, 2, 3].includes(mode) || !width || !height) throw Error('Invalid keyboard field.');
   // The same URL parameters used by SDL's Steam on-screen keyboard integration.
-  return `steam://open/keyboard?XPosition=${Math.round(value.x!)}&YPosition=${Math.round(value.y!)}&Width=${Math.max(1, Math.round(value.width))}&Height=${Math.max(1, Math.round(value.height))}&Mode=${value.mode}`;
+  return `steam://open/keyboard?XPosition=${Math.round(x)}&YPosition=${Math.round(y)}&Width=${Math.max(1, Math.round(width))}&Height=${Math.max(1, Math.round(height))}&Mode=${mode}`;
 }
 
 async function openKeyboard(url:string):Promise<void>{

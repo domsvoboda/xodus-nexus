@@ -60,6 +60,12 @@ const emptySnapshot: AppSnapshot = {
 
 type Toast = { kind: 'success' | 'error' | 'info'; message: string };
 const useBrowserLayoutEffect = typeof window === 'undefined' ? useEffect : useLayoutEffect;
+/** React 18 has no `inert` prop, so apply it through a ref. */
+const inertRef = (inert: boolean) => (element: HTMLElement | null) => { if (element) element.inert = inert; };
+/** A newly opened detail starts on Play, or on Back when Play is unavailable. */
+function focusDetailEntry(root: HTMLElement | null) {
+  (root?.querySelector<HTMLElement>('[data-gamepad-play]:not(:disabled)') ?? root?.querySelector<HTMLElement>('[data-gamepad-detail-back]'))?.focus({ preventScroll: true });
+}
 
 function errorMessage(error: unknown): string {
   const raw = error instanceof Error ? error.message : String(error);
@@ -84,7 +90,7 @@ function NavItem({ active, icon, label, badge, onClick, autoSelect = false }: {
 
 export function Sidebar({ data, page, go, openGame, openProfile, notifications, inert = false }: { data: AppSnapshot; page: Page; go: (page: Page) => void; openGame?: (id: string) => void; openProfile?: () => void; notifications?: React.ReactNode; inert?: boolean }) {
   const account = data.auth.gamertag ?? data.auth.username ?? (data.auth.stored === true ? ui("ui.microsoft_account_6c2b1f2") : ui("ui.sign_in_bfd402b"));
-  return <aside className="sidebar" ref={element => { if (element) element.inert = inert; }}>
+  return <aside className="sidebar" ref={inertRef(inert)}>
     <div className="account-header" data-gamepad-action-row><button className="account-summary" onClick={() => openProfile ? openProfile() : go('settings')}><AccountAvatar auth={data.auth} /><span><strong>{account}</strong><AccountMembership auth={data.auth} /></span></button>{notifications}</div>
     <nav><NavItem autoSelect active={page === 'home'} icon={<Home />} label={ui("ui.home_3a78695")} onClick={() => go('home')} /><NavItem autoSelect active={page === 'library'} icon={<Library />} label={ui("ui.my_library_d931dba")} onClick={() => go('library')} /><NavItem autoSelect active={page === 'store'} icon={<Store />} label={ui("ui.store_ee7da93")} onClick={() => go('store')} /></nav>
     {data.games.length > 0 ? <div className="recents"><span>{ui("ui.most_recent_7459b86")}</span>{data.games.slice(0, 5).map(game => <button key={game.id} onClick={() => openGame ? openGame(game.id) : go('library')}><Cover game={game} /><GameTitle title={game.title} /></button>)}</div> : null}
@@ -276,7 +282,7 @@ function StorePage({ data, toast, go, initialQuery }: { data: AppSnapshot; toast
   const pageRef=useRef<HTMLElement>(null),savedScroll=useRef(0),wasOpen=useRef(false);
   useBrowserLayoutEffect(()=>{
     const scroll=pageRef.current?.closest('.page-scroll');
-    if(detailOpen&&selected){if(scroll)scroll.scrollTop=0;(pageRef.current?.querySelector<HTMLElement>('[data-gamepad-play]:not(:disabled)')??pageRef.current?.querySelector<HTMLElement>('[data-gamepad-detail-back]'))?.focus({preventScroll:true});}
+    if(detailOpen&&selected){if(scroll)scroll.scrollTop=0;focusDetailEntry(pageRef.current);}
     else if(wasOpen.current){if(scroll)scroll.scrollTop=savedScroll.current;[...pageRef.current?.querySelectorAll<HTMLElement>('[data-gamepad-detail-target]')??[]].find(card=>card.getAttribute('data-gamepad-detail-target')===selected?.productId)?.focus({preventScroll:true});}
     wasOpen.current=detailOpen&&Boolean(selected);
   },[detailOpen,selected?.productId]);
@@ -648,7 +654,7 @@ export function LibraryPage({ data, toast, filters, onFiltersChange, selection, 
     const scroll = pageRef.current?.closest('.page-scroll');
     if (detailVisible) {
       if (scroll) scroll.scrollTop = 0;
-      (pageRef.current?.querySelector<HTMLElement>('[data-gamepad-play]:not(:disabled)') ?? pageRef.current?.querySelector<HTMLElement>('[data-gamepad-detail-back]'))?.focus({ preventScroll: true });
+      focusDetailEntry(pageRef.current);
     } else if (wasOpen.current) {
       if (scroll) scroll.scrollTop = savedScroll.current;
       [...pageRef.current?.querySelectorAll<HTMLElement>('[data-gamepad-detail-target]') ?? []].find(card => card.getAttribute('data-gamepad-detail-target') === returnTarget)?.focus({ preventScroll: true });
@@ -1214,11 +1220,11 @@ export default function App() {
     }}/>}/>
 
     <section className="content-shell">
-      <header className="topbar" ref={element => { if (element) element.inert = socialOpen; }}><GlobalSearch games={data.games} page={page} query={search} change={setSearch} submit={value => { setSubmittedSearch(value); go('store'); }} select={openLibraryGame} /><TopStatus data={data} go={go} /></header>
-      <div data-gamepad-page={page} ref={element => { if (element) element.inert = socialOpen; }} className={'page-scroll'+(page==='social'?' social-full-page':'')}>{page === 'home' ? <HomePage data={data} go={go} action={action} openGame={openLibraryGame} returnFocusKey={homeReturnKey} /> : null}{page === 'store' ? <StorePage data={data} toast={setToast} go={go} initialQuery={submittedSearch} /> : null}{page === 'library' ? <LibraryPage data={data} toast={setToast} filters={libraryFilters} onFiltersChange={changeLibraryFilters} selection={librarySelection} onSelectionHandled={request => setLibrarySelection(current => current === request ? undefined : current)} returnHome={key => { setHomeReturnKey(key); go('home'); }} /> : null}{page === 'downloads' ? <DownloadsPage data={data} toast={setToast} /> : null}{page === 'settings' ? <SettingsPage data={data} toast={setToast} /> : null}{page === 'social' ? <div className="nexus-social-page"><XboxSocial key={JSON.stringify([data.auth.username,data.backend.binaryPath])} auth={data.auth} api={window.launcher.nativeSocial} voice={data.backend.available&&data.backend.capabilities.nativeSocial?window.launcher:undefined} runtimeInvites={data.social} runtimeApi={window.launcher} expanded active={!socialOpen} readKeys={notifications.readKeys} onViewed={notifications.viewed} showProfile={desktopProfile}/></div> : null}</div>
+      <header className="topbar" ref={inertRef(socialOpen)}><GlobalSearch games={data.games} page={page} query={search} change={setSearch} submit={value => { setSubmittedSearch(value); go('store'); }} select={openLibraryGame} /><TopStatus data={data} go={go} /></header>
+      <div data-gamepad-page={page} ref={inertRef(socialOpen)} className={'page-scroll'+(page==='social'?' social-full-page':'')}>{page === 'home' ? <HomePage data={data} go={go} action={action} openGame={openLibraryGame} returnFocusKey={homeReturnKey} /> : null}{page === 'store' ? <StorePage data={data} toast={setToast} go={go} initialQuery={submittedSearch} /> : null}{page === 'library' ? <LibraryPage data={data} toast={setToast} filters={libraryFilters} onFiltersChange={changeLibraryFilters} selection={librarySelection} onSelectionHandled={request => setLibrarySelection(current => current === request ? undefined : current)} returnHome={key => { setHomeReturnKey(key); go('home'); }} /> : null}{page === 'downloads' ? <DownloadsPage data={data} toast={setToast} /> : null}{page === 'settings' ? <SettingsPage data={data} toast={setToast} /> : null}{page === 'social' ? <div className="nexus-social-page"><XboxSocial key={JSON.stringify([data.auth.username,data.backend.binaryPath])} auth={data.auth} api={window.launcher.nativeSocial} voice={data.backend.available&&data.backend.capabilities.nativeSocial?window.launcher:undefined} runtimeInvites={data.social} runtimeApi={window.launcher} expanded active={!socialOpen} readKeys={notifications.readKeys} onViewed={notifications.viewed} showProfile={desktopProfile}/></div> : null}</div>
       {socialOpen?<button className="nexus-social-scrim" aria-label={ui("social.close_social_shelf_09c6eb")} onClick={()=>setSocialOpen(false)}/>:null}
       <aside id="nexus-social-shelf" role="dialog" aria-modal={socialOpen || undefined} data-gamepad-layer data-gamepad-social-shelf className={'nexus-social-shelf'+(socialOpen?' is-open':'')} aria-label={ui("social.xbox_social_shelf_bb6aaf")} aria-hidden={!socialOpen}
-        ref={element=>{if(element)element.inert=!socialOpen;}}>
+        ref={inertRef(!socialOpen)}>
         {socialMounted?<XboxSocial key={JSON.stringify([data.auth.username,data.backend.binaryPath])} auth={data.auth} api={window.launcher.nativeSocial} voice={data.backend.available&&data.backend.capabilities.nativeSocial?window.launcher:undefined} runtimeInvites={data.social} runtimeApi={window.launcher} shelf active={socialOpen} openChat={socialChat?.identity===JSON.stringify([data.auth.username,data.backend.binaryPath])?socialChat:undefined} readKeys={notifications.readKeys} onViewed={notifications.viewed} close={()=>setSocialOpen(false)}/>:null}
       </aside>
     </section>
