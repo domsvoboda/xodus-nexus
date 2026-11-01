@@ -17,6 +17,7 @@ import { canonicalInstallPath, installPathsOverlap } from './install-queue.js';
 import { INCOMPLETE_UPDATE_MESSAGE } from './installation-state.js';
 import { contentLicenseFailure } from '../shared/content-license.js';
 import type { AcquiredService, ServiceSessions } from './service-sessions.js';
+import { CloudSaveDiagnostics } from './cloud-save-diagnostics.js';
 
 export async function gameLocales(game: Game): Promise<string[]> {
   return installedGameLocales(game.path);
@@ -87,12 +88,23 @@ export interface GameSessionDeps {
   onInviteAvailability?(reason: string | undefined): void;
   /** The window identity (`WINE_APPLICATION_ID`) tying the game window to its installed artwork; undefined where there is none. */
   windowIdentity?(game: Game, coverDataUrl: string | undefined): Promise<string | undefined>;
+  /** The runtime reported a cloud-save problem; called once per launch, after `operation.cloudSaveWarning` is set. */
+  onCloudSaveWarning?(game: Game, warning: string): void;
   /** The game process started; returns the matching detach for its exit. */
   attachGame?(game: Game, pid: number | undefined): () => void;
   /** `operation` is the live object (mutated in place) or undefined once a failed preparation is cleared. */
   onChange(operation: GameOperation | undefined, operationId: string, immediate: boolean): void;
   /** Stored offline data was removed before the launch, e.g. another account left it behind. */
   onOfflineRevoked?(reason: OfflineRevocation): void;
+}
+
+export interface LaunchOptions {
+  /** Base environment for this launch instead of `deps.environment()`, e.g. with a Steam shortcut's context. */
+  environment?: NodeJS.ProcessEnv;
+  /** Aborts preparation, and stops the running game, when the launch's owner (Steam) stops it. */
+  signal?: AbortSignal;
+  /** The launch came with a Steam shortcut's context. */
+  steam?: boolean;
 }
 
 export interface ActiveGame {
@@ -120,7 +132,7 @@ export class GameSession {
   /** The game currently running, if any. */
   get running(): ActiveGame | undefined { return this.active; }
 
-  async launch(id: string): Promise<ActiveGame> {
+  async launch(id: string, options: LaunchOptions = {}): Promise<ActiveGame> {
     const { deps } = this;
     const { store } = deps;
     const game = store.games.find((entry) => entry.id === id);
@@ -200,10 +212,19 @@ export class GameSession {
       operation.phase = line.length > 180 ? `${line.slice(0, 177)}…` : line;
       changed(false);
     };
-    const baseEnvironment = deps.environment();
+    const baseEnvironment = options.environment ?? deps.environment();
     const verboseLogs = baseEnvironment.XODUS_NEXUS_VERBOSE_LOGS === '1' || Boolean(store.settings.verboseLogs);
     const gameLog = new GameLogReducer(appendGameLog, verboseLogs);
-    const addGameLog = (line: string) => gameLog.push(line);
+    const cloudDiagnostics = new CloudSaveDiagnostics();
+    let cloudNoticeShown = false;
+    const addGameLog = (line: string) => {
+      if (cloudRuntime && !offlineLaunch && cloudDiagnostics.observe(line) && owns()) {
+        operation.cloudSaveWarning = cloudDiagnostics.message!;
+        changed(false);
+        if (!cloudNoticeShown) { cloudNoticeShown = true; deps.onCloudSaveWarning?.(game, operation.cloudSaveWarning); }
+      }
+      gameLog.push(line);
+    };
     writeLaunchLog(`Game: ${game.title}`);
     writeLaunchLog(`Mode: package manifest; cloud saves: ${cloudRuntime ? 'enabled' : 'not available in active runtime'}; verbose logs: ${verboseLogs ? 'on' : 'off'}`);
     writeLaunchLog(`Backend: ${binary}`);
@@ -215,7 +236,10 @@ export class GameSession {
     let launchWrapper: GameWrapper | undefined;
     let releaseDisplay = () => {};
     let detachGame = () => {};
+    let removeSteamStop = () => {};
     try {
+      if (options.steam) writeLaunchLog('Steam launch context forwarded from a shortcut.');
+      options.signal?.throwIfAborted();
       if (game.launchTools?.dualSenseCompatibility) writeLaunchLog('DualSense compatibility mode enabled for this game (054c:0ce6).');
       if (game.launchTools?.dualShock4Compatibility) writeLaunchLog('DualShock 4 compatibility mode enabled for this game (v1, v2 and wireless adapter).');
       await deps.ensureWallet();
@@ -322,6 +346,7 @@ export class GameSession {
       if (account.stored === true && account.username) environment.XODUS_ACCOUNT_HASH = accountCacheKey(account.username);
       if (protonRunner) addGameLog(`Proton prefix: ${protonRunner.compatibilityDataPath}/pfx`);
       else await fs.mkdir(legacyPrefixRoot, { recursive: true });
+      options.signal?.throwIfAborted();
       const tracked = await spawnGameProcess(binary, args, {
         cwd: game.path,
         env: environment,
@@ -329,9 +354,24 @@ export class GameSession {
         maxOutput: 8_000_000,
       }, { stopPrefix: protonRunner?.stopPrefix });
       detachGame = deps.attachGame?.(game, tracked.child.pid) ?? detachGame;
-      releaseDisplay = deps.displayGuard();
       operation.status = 'running';
       operation.phase = 'Xodus is running; waiting for the game window…';
+      const signal = options.signal;
+      if (signal) {
+        let forceTimer: ReturnType<typeof setTimeout> | undefined;
+        const stop = () => {
+          if (owns()) { operation.status = 'stopping'; operation.phase = 'Stopping Xodus and Wine…'; changed(false); }
+          void tracked.stop().catch(error => console.error('Steam shortcut stop failed:', error));
+          forceTimer = setTimeout(() => {
+            if (this.active?.process === tracked) void tracked.forceStop().catch(error => console.error('Steam shortcut force-stop failed:', error));
+          }, 8000);
+          forceTimer.unref();
+        };
+        signal.addEventListener('abort', stop, { once: true });
+        removeSteamStop = () => { signal.removeEventListener('abort', stop); clearTimeout(forceTimer); };
+        if (signal.aborted) stop();
+      }
+      releaseDisplay = deps.displayGuard();
       changed(true);
       const wrapper = launchWrapper;
       const acquired = service;
@@ -358,6 +398,7 @@ export class GameSession {
         operation.phase = operation.error;
         operation.finishedAt = new Date().toISOString();
       }).finally(async () => {
+        removeSteamStop();
         releaseDisplay(); detachGame();
         if (this.active?.operationId === operationId) this.active = undefined;
         try {
@@ -373,6 +414,7 @@ export class GameSession {
       this.active = active;
       return active;
     } catch (error) {
+      removeSteamStop();
       releaseDisplay(); detachGame();
       await inviteBridge?.stop().catch(() => undefined);
       await launchWrapper?.cleanup().catch(() => undefined);

@@ -22,7 +22,7 @@ const nativeSocial:XboxSocialApi={
 };
 const api: LauncherApi = {
   onLauncherPage:callback=>{const listener=(_event:Electron.IpcRendererEvent,page:Parameters<typeof callback>[0])=>callback(page);ipcRenderer.on('launcher-page',listener);return()=>ipcRenderer.removeListener('launcher-page',listener);},
-  showTouchKeyboard:()=>ipcRenderer.invoke('show-touch-keyboard'),
+  showTouchKeyboard:field=>ipcRenderer.invoke('show-touch-keyboard',field),
   setXboxOverlayRecording:recording=>ipcRenderer.invoke('xbox-overlay-recording',recording),
  getXboxDesktopProfile:()=>ipcRenderer.invoke('xbox-desktop-profile'),
  onXboxDesktopProfile:callback=>{const listener=(_event:Electron.IpcRendererEvent,request:Parameters<typeof callback>[0])=>callback(request);ipcRenderer.on('xbox-desktop-profile',listener);return()=>ipcRenderer.removeListener('xbox-desktop-profile',listener);},

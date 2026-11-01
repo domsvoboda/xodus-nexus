@@ -1,5 +1,6 @@
+import { useDialogFocus } from './use-dialog-focus';
 import { ui, uiText } from './i18n';
-import { useState } from 'react';
+import { useRef, useState } from 'react';
 import { Download, LoaderCircle } from 'lucide-react';
 import type { DiagnosticReport, Game } from '../shared/types';
 
@@ -7,6 +8,8 @@ export function DiagnosticReportDialog({ report, close }: { report: DiagnosticRe
   const [content, setContent] = useState(report.content);
   const [saving, setSaving] = useState(false);
   const [message, setMessage] = useState('');
+  const dialog = useRef<HTMLElement>(null);
+  useDialogFocus(dialog, close, true, saving);
   async function save() {
     setSaving(true); setMessage('');
     try { if (await window.launcher.saveDiagnosticReport(content)) setMessage(ui("ui.report_saved_attach_the_text_file_to_your_issue_3c3a3c9")); }
@@ -14,7 +17,7 @@ export function DiagnosticReportDialog({ report, close }: { report: DiagnosticRe
     finally { setSaving(false); }
   }
   return <div className="dialog-backdrop" onMouseDown={event => { if (event.target === event.currentTarget && !saving) close(); }}>
-    <section className="game-dialog diagnostic-dialog" role="dialog" aria-modal="true" aria-label={ui("ui.review_diagnostic_report_5df3e77")}>
+    <section ref={dialog} className="game-dialog diagnostic-dialog" role="dialog" aria-modal="true" aria-label={ui("ui.review_diagnostic_report_5df3e77")}>
       <h2>{ui("ui.review_diagnostic_report_5df3e77")}</h2>
       <p>{ui("ui.automatic_redaction_is_best_effort_review_and_re_a4f3856")}</p>
       <label className="diagnostic-report-editor">{ui("ui.report_contents_0c465ee")}<textarea value={content} onChange={event => setContent(event.target.value)} spellCheck={false} /></label>

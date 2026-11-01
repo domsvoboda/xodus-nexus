@@ -34,5 +34,5 @@ it('makes the full list a B-closeable modal and keeps read-only language visible
   expect(html).toContain('role="dialog"');expect(html).toContain('aria-modal="true"');expect(html).toContain('data-gamepad-cancel');expect(html).toContain('Filter achievements');
   for(const label of ['All achievements','Unlocked','Locked'])expect(html).toContain(label);
   const section=renderToStaticMarkup(<AchievementsContent title="Game" value={{status:'available',items:[item()]}} loading={false} refresh={()=>{}}/>);
-  expect(section).toContain('never unlocks or updates achievements');
+  expect(section).toContain('Read-only Xbox progress');
 });

@@ -3,8 +3,9 @@ import React from 'react';
 import ReactDOM from 'react-dom/client';
 import App from './App';
 import './styles.css';
+import './controls.css';
 const windows=import.meta.glob<{render:(route:string)=>React.ReactNode}>('./native-windows/*.tsx',{eager:true});
-installTouchKeyboard(window,()=>window.launcher.showTouchKeyboard());
+installTouchKeyboard(window,field=>window.launcher.showTouchKeyboard(field));
 function NativeView(){
  const [route,setRoute]=React.useState(window.location.hash);
  React.useEffect(()=>{const changed=()=>setRoute(window.location.hash);window.addEventListener('hashchange',changed);return()=>window.removeEventListener('hashchange',changed);},[]);

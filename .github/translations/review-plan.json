@@ -1,526 +1,642 @@
 [
   {
-    "language": "pl-PL",
-    "key": "ui.backend_35f8dc4",
-    "source": "Backend {{version}}",
-    "suggestion": "Backend {version}",
-    "translation": "Backend {{version}}",
-    "previous": "Backend {version}",
-    "previousState": "TRANSLATED",
-    "existing": true
-  },
-  {
-    "language": "fr",
-    "key": "ui.browse_game_files_3df9898",
-    "source": "Browse game files",
-    "suggestion": "Parcourir les fichier de jeu",
-    "translation": "Parcourir les fichiers du jeu",
-    "previous": "Parcourir les fichier de jeu",
-    "previousState": "TRANSLATED",
-    "existing": true
-  },
-  {
-    "language": "fr",
-    "key": "home.runtime_update",
-    "source": "Runtime {{version}}",
-    "suggestion": "Runtime {version}",
-    "translation": "Runtime {{version}}",
+    "language": "it",
+    "key": "downloads.update_validation_failed",
+    "source": "Update validation failed. Resume the update before playing.",
+    "suggestion": "Validazione dell'aggiornamento fallita. Riprendi l'aggiornamento prima di giocare.",
+    "translation": "Validazione dell'aggiornamento fallita. Riprendi l'aggiornamento prima di giocare.",
     "previous": null,
     "previousState": "UNTRANSLATED"
   },
   {
     "language": "pl-PL",
-    "key": "home.runtime_update",
-    "source": "Runtime {{version}}",
-    "suggestion": "Runtime {version}",
-    "translation": "Runtime {{version}}",
+    "key": "downloads.update_validation_failed",
+    "source": "Update validation failed. Resume the update before playing.",
+    "suggestion": "Nieudana walidacja. Ponów update zanim zaczniesz grać",
+    "translation": "Weryfikacja aktualizacji nie powiodła się. Wznów aktualizację przed rozpoczęciem gry.",
+    "previous": null,
+    "previousState": "UNTRANSLATED"
+  },
+  {
+    "language": "pt-BR",
+    "key": "downloads.update_validation_failed",
+    "source": "Update validation failed. Resume the update before playing.",
+    "suggestion": "A validação da atualização falhou. Retome a atualização antes de jogar.",
+    "translation": "Falha na validação da atualização. Retome a atualização antes de jogar.",
+    "previous": null,
+    "previousState": "UNTRANSLATED"
+  },
+  {
+    "language": "de",
+    "key": "message.microsoft_content_licensing_is_unreachable_and_the_133ca41",
+    "source": "Microsoft content licensing is unreachable and the stored offline licenses belonged to another account, so they were removed. Connect to the internet and play once with this account to enable offline play.",
+    "suggestion": "Die Microsoft Inhaltslizensierung ist nicht erreichbar und die gespeicherten Offline-Lizenzen gehörten zu einem anderen Konto, also wurden sie entfernt. Verbinde dich mit dem Internet und Spiele einmal mit diesem Konto, um Offline-Spielen zu ermöglichen.",
+    "translation": "Die Microsoft Inhaltslizensierung ist nicht erreichbar und die gespeicherten Offline-Lizenzen gehörten zu einem anderen Konto, also wurden sie entfernt. Verbinde dich mit dem Internet und Spiele einmal mit diesem Konto, um Offline-Spielen zu ermöglichen.",
+    "previous": null,
+    "previousState": "UNTRANSLATED"
+  },
+  {
+    "language": "es",
+    "key": "message.microsoft_content_licensing_is_unreachable_and_the_133ca41",
+    "source": "Microsoft content licensing is unreachable and the stored offline licenses belonged to another account, so they were removed. Connect to the internet and play once with this account to enable offline play.",
+    "suggestion": "No se puede contactar con el servicio de licencias de contenido de Microsoft. Las licencias sin conexión guardadas pertenecían a otra cuenta, así que se han eliminado. Conéctate a internet y juega una vez con esta cuenta para activar el juego sin conexión.",
+    "translation": "No se puede contactar con el servicio de licencias de contenido de Microsoft y las licencias sin conexión guardadas eran de otra cuenta, así que se han eliminado. Conéctate a internet y juega una vez con esta cuenta para activar el juego sin conexión.",
+    "previous": null,
+    "previousState": "UNTRANSLATED"
+  },
+  {
+    "language": "it",
+    "key": "message.microsoft_content_licensing_is_unreachable_and_the_133ca41",
+    "source": "Microsoft content licensing is unreachable and the stored offline licenses belonged to another account, so they were removed. Connect to the internet and play once with this account to enable offline play.",
+    "suggestion": "Il sistema di licenza dei contenuti Microsoft non è raggiungibile e le licenze offline memorizzate appartengono ad un altro account, quindi sono state rimosse. Connettiti ad internet e avvia il gioco una volta con questo account per giocare offline.",
+    "translation": "Il sistema di licenza dei contenuti Microsoft non è raggiungibile e le licenze offline memorizzate appartengono ad un altro account, quindi sono state rimosse. Connettiti ad internet e avvia il gioco una volta con questo account per giocare offline.",
+    "previous": null,
+    "previousState": "UNTRANSLATED"
+  },
+  {
+    "language": "de",
+    "key": "downloads.reused_and_network",
+    "source": "{{reused}} reused locally · {{network}} downloaded",
+    "suggestion": "{reused} lokal wiederverwendet· {network} heruntergeladen",
+    "translation": "{{reused}} lokal wiederverwendet · {{network}} heruntergeladen",
+    "previous": null,
+    "previousState": "UNTRANSLATED"
+  },
+  {
+    "language": "es",
+    "key": "downloads.reused_and_network",
+    "source": "{{reused}} reused locally · {{network}} downloaded",
+    "suggestion": "{reused} reusado localmente. {network} descargado.",
+    "translation": "{{reused}} reutilizados localmente · {{network}} descargados",
+    "previous": null,
+    "previousState": "UNTRANSLATED"
+  },
+  {
+    "language": "it",
+    "key": "downloads.reused_and_network",
+    "source": "{{reused}} reused locally · {{network}} downloaded",
+    "suggestion": "{reused} riutilizzati localmente · {network} scaricati",
+    "translation": "{{reused}} riutilizzati localmente · {{network}} scaricati",
+    "previous": null,
+    "previousState": "UNTRANSLATED"
+  },
+  {
+    "language": "pt-BR",
+    "key": "downloads.reused_and_network",
+    "source": "{{reused}} reused locally · {{network}} downloaded",
+    "suggestion": "{reused} reutilizados localmente · {network} baixados",
+    "translation": "{{reused}} reaproveitados localmente · {{network}} baixados",
     "previous": null,
     "previousState": "UNTRANSLATED"
   },
   {
     "language": "fr",
-    "key": "friends.invite_to",
-    "source": "Invite to {{game}}",
-    "suggestion": "Inviter à {game}",
-    "translation": "Inviter à {{game}}",
+    "key": "message.microsoft_returned_a_server_error_try_again_b663c23",
+    "source": "Microsoft returned a server error. Try again later.",
+    "suggestion": "Microsoft a rencontré une erreur du serveur. Réessayez plus tard.",
+    "translation": "Microsoft a rencontré une erreur du serveur. Réessayez plus tard.",
+    "previous": null,
+    "previousState": "UNTRANSLATED"
+  },
+  {
+    "language": "de",
+    "key": "message.changes_left_this_year_of_5c74aad",
+    "source": "Changes left this year: {{remaining}} of {{max}}.",
+    "suggestion": "Änderungen verbleibend dieses Jahr: {remaining} von {max}.",
+    "translation": "Änderungen verbleibend dieses Jahr: {{remaining}} von {{max}}.",
+    "previous": null,
+    "previousState": "UNTRANSLATED"
+  },
+  {
+    "language": "it",
+    "key": "message.changes_left_this_year_of_5c74aad",
+    "source": "Changes left this year: {{remaining}} of {{max}}.",
+    "suggestion": "Cambiamenti rimanenti quest'anno: {remaining} di {max}.",
+    "translation": "Cambiamenti rimanenti quest'anno: {{remaining}} di {{max}}.",
+    "previous": null,
+    "previousState": "UNTRANSLATED"
+  },
+  {
+    "language": "de",
+    "key": "message.microsoft_could_not_be_reached_check_your_31b6c73",
+    "source": "Microsoft could not be reached. Check your connection and try again.",
+    "suggestion": "Microsoft konnte nicht erreicht werden. Prüfe deine Verbindung und versuche es erneut.",
+    "translation": "Microsoft konnte nicht erreicht werden. Prüfe deine Verbindung und versuche es erneut.",
+    "previous": null,
+    "previousState": "UNTRANSLATED"
+  },
+  {
+    "language": "it",
+    "key": "message.microsoft_could_not_be_reached_check_your_31b6c73",
+    "source": "Microsoft could not be reached. Check your connection and try again.",
+    "suggestion": "Microsoft non è raggiungibile. Controlla la tua connessione e riprova.",
+    "translation": "Microsoft non è raggiungibile. Controlla la tua connessione e riprova.",
+    "previous": null,
+    "previousState": "UNTRANSLATED"
+  },
+  {
+    "language": "de",
+    "key": "downloads.update_state_unreadable",
+    "source": "The installation update state could not be checked. Check access to the game folder.",
+    "suggestion": "Der Aktualisierungsstatus konnte nicht überprüft werden. Prüfe die Berechtigungen im Spiele-Verzeichnis.",
+    "translation": "Der Aktualisierungsstatus konnte nicht überprüft werden. Prüfe die Berechtigungen im Spiele-Verzeichnis.",
+    "previous": null,
+    "previousState": "UNTRANSLATED"
+  },
+  {
+    "language": "es",
+    "key": "downloads.update_state_unreadable",
+    "source": "The installation update state could not be checked. Check access to the game folder.",
+    "suggestion": "No se puede verificar el estado de la actualizacion. Revisa el acceso a la carpeta del juego.",
+    "translation": "No se ha podido comprobar el estado de la actualización de la instalación. Comprueba el acceso a la carpeta del juego.",
+    "previous": null,
+    "previousState": "UNTRANSLATED"
+  },
+  {
+    "language": "fr",
+    "key": "downloads.update_state_unreadable",
+    "source": "The installation update state could not be checked. Check access to the game folder.",
+    "suggestion": "L'état de l'installation ne peux pas être vérifié. Verfiez l'accès au fichier du jeu.",
+    "translation": "L’état de mise à jour de l’installation n’a pas pu être vérifié. Vérifiez l’accès au dossier du jeu.",
+    "previous": null,
+    "previousState": "UNTRANSLATED"
+  },
+  {
+    "language": "it",
+    "key": "downloads.update_state_unreadable",
+    "source": "The installation update state could not be checked. Check access to the game folder.",
+    "suggestion": "Lo stato dell'installazione dell'aggiornamento non può essere controllato. Controlla gli accessi/permessi alla cartella del gioco.",
+    "translation": "Lo stato dell'installazione dell'aggiornamento non può essere controllato. Controlla gli accessi/permessi alla cartella del gioco.",
+    "previous": null,
+    "previousState": "UNTRANSLATED"
+  },
+  {
+    "language": "pt-BR",
+    "key": "downloads.update_state_unreadable",
+    "source": "The installation update state could not be checked. Check access to the game folder.",
+    "suggestion": "A instalação da atualização não pôde ser verificada. Verifique o acesso à pasta do jogo.",
+    "translation": "Não foi possível verificar o estado de atualização da instalação. Verifique o acesso à pasta do jogo.",
+    "previous": null,
+    "previousState": "UNTRANSLATED"
+  },
+  {
+    "language": "de",
+    "key": "message.changes_left_in_this_day_period_10bace0",
+    "source": "Changes left in this {{days}}-day period: {{remaining}}.",
+    "suggestion": "Änderungen verbleibend in dieser {days}-Tag(e)-Periode: {remaining}.",
+    "translation": "Änderungen verbleibend in dieser {{days}}-Tag(e)-Periode: {{remaining}}.",
+    "previous": null,
+    "previousState": "UNTRANSLATED"
+  },
+  {
+    "language": "it",
+    "key": "message.changes_left_in_this_day_period_10bace0",
+    "source": "Changes left in this {{days}}-day period: {{remaining}}.",
+    "suggestion": "Cambiamenti rimanenti in questi {days} giorni: {remaining}.",
+    "translation": "Cambiamenti rimanenti in questi {{days}} giorni: {{remaining}}.",
+    "previous": null,
+    "previousState": "UNTRANSLATED"
+  },
+  {
+    "language": "pt-BR",
+    "key": "message.changes_left_in_this_day_period_10bace0",
+    "source": "Changes left in this {{days}}-day period: {{remaining}}.",
+    "suggestion": "Alterações restantes neste período de {days} dias: {remaining}.",
+    "translation": "Alterações restantes neste período de {{days}} dias: {{remaining}}.",
+    "previous": null,
+    "previousState": "UNTRANSLATED"
+  },
+  {
+    "language": "de",
+    "key": "friends.invitation_count_many",
+    "source": "{{count}} game invitations",
+    "suggestion": "{count} Spieleinladungen",
+    "translation": "{{count}} Spieleinladungen",
+    "previous": null,
+    "previousState": "UNTRANSLATED"
+  },
+  {
+    "language": "es",
+    "key": "friends.invitation_count_many",
+    "source": "{{count}} game invitations",
+    "suggestion": "{count} invitaciones de partida",
+    "translation": "{{count}} invitaciones a partida",
+    "previous": null,
+    "previousState": "UNTRANSLATED"
+  },
+  {
+    "language": "fr",
+    "key": "friends.invitation_count_many",
+    "source": "{{count}} game invitations",
+    "suggestion": "{count} invitations à jouer",
+    "translation": "{{count}} invitations à jouer",
+    "previous": null,
+    "previousState": "UNTRANSLATED"
+  },
+  {
+    "language": "it",
+    "key": "friends.invitation_count_many",
+    "source": "{{count}} game invitations",
+    "suggestion": "{count} inviti",
+    "translation": "{{count}} inviti",
+    "previous": null,
+    "previousState": "UNTRANSLATED"
+  },
+  {
+    "language": "de",
+    "key": "friends.invitation_count_zero",
+    "source": "{{count}} game invitations",
+    "suggestion": "{count} Spieleinladungen",
+    "translation": "{{count}} Spieleinladungen",
+    "previous": null,
+    "previousState": "UNTRANSLATED"
+  },
+  {
+    "language": "fr",
+    "key": "friends.invitation_count_zero",
+    "source": "{{count}} game invitations",
+    "suggestion": "{count} invitations à jouer",
+    "translation": "{{count}} invitations à jouer",
+    "previous": null,
+    "previousState": "UNTRANSLATED"
+  },
+  {
+    "language": "it",
+    "key": "friends.invitation_count_zero",
+    "source": "{{count}} game invitations",
+    "suggestion": "{count} inviti",
+    "translation": "{{count}} inviti",
+    "previous": null,
+    "previousState": "UNTRANSLATED"
+  },
+  {
+    "language": "de",
+    "key": "controllers.dualshock4_help",
+    "source": "Use SDL input for DualShock 4 controllers in this game. Applies to both controller revisions and the wireless adapter.",
+    "suggestion": "Nutze SDL input für DualShock 4 Controller in diesem Spiel. Wird bei beiden Controller Revisionen und dem Wireless-Adapter angewandt.",
+    "translation": "Nutze SDL input für DualShock 4 Controller in diesem Spiel. Wird bei beiden Controller Revisionen und dem Wireless-Adapter angewandt.",
+    "previous": null,
+    "previousState": "UNTRANSLATED"
+  },
+  {
+    "language": "es",
+    "key": "controllers.dualshock4_help",
+    "source": "Use SDL input for DualShock 4 controllers in this game. Applies to both controller revisions and the wireless adapter.",
+    "suggestion": "Usar la entrada de SDL para los mandos DualShock 4 en este juego. Se aplica a las dos revisiones del mando y al adaptador inalámbrico.",
+    "translation": "Usa la entrada SDL para los mandos DualShock 4 en este juego. Se aplica a las dos revisiones del mando y al adaptador inalámbrico.",
+    "previous": null,
+    "previousState": "UNTRANSLATED"
+  },
+  {
+    "language": "it",
+    "key": "controllers.dualshock4_help",
+    "source": "Use SDL input for DualShock 4 controllers in this game. Applies to both controller revisions and the wireless adapter.",
+    "suggestion": "Usa gli input SDL per i controller DualShock 4 in questo gioco. L'impostazione si applica sia alle revisioni del controller che all'adattatore wireless.",
+    "translation": "Usa gli input SDL per i controller DualShock 4 in questo gioco. L'impostazione si applica sia alle revisioni del controller che all'adattatore wireless.",
+    "previous": null,
+    "previousState": "UNTRANSLATED"
+  },
+  {
+    "language": "de",
+    "key": "library.stop_update_check",
+    "source": "Stop checking updates",
+    "suggestion": "Suche nach Aktualisierungen abbrechen",
+    "translation": "Suche nach Aktualisierungen abbrechen",
+    "previous": null,
+    "previousState": "UNTRANSLATED"
+  },
+  {
+    "language": "es",
+    "key": "library.stop_update_check",
+    "source": "Stop checking updates",
+    "suggestion": "Dejar de buscar actualizaciones",
+    "translation": "Dejar de buscar actualizaciones",
+    "previous": null,
+    "previousState": "UNTRANSLATED"
+  },
+  {
+    "language": "fr",
+    "key": "library.stop_update_check",
+    "source": "Stop checking updates",
+    "suggestion": "Interrompre la vérification des mises à jour",
+    "translation": "Interrompre la vérification des mises à jour",
+    "previous": null,
+    "previousState": "UNTRANSLATED"
+  },
+  {
+    "language": "it",
+    "key": "library.stop_update_check",
+    "source": "Stop checking updates",
+    "suggestion": "Ferma la ricerca di aggiornamenti",
+    "translation": "Ferma la ricerca di aggiornamenti",
+    "previous": null,
+    "previousState": "UNTRANSLATED"
+  },
+  {
+    "language": "de",
+    "key": "friends.invitation_count_two",
+    "source": "{{count}} game invitations",
+    "suggestion": "{count} Spieleinladungen",
+    "translation": "{{count}} Spieleinladungen",
+    "previous": null,
+    "previousState": "UNTRANSLATED"
+  },
+  {
+    "language": "fr",
+    "key": "friends.invitation_count_two",
+    "source": "{{count}} game invitations",
+    "suggestion": "{count} invitations à jouer",
+    "translation": "{{count}} invitations à jouer",
+    "previous": null,
+    "previousState": "UNTRANSLATED"
+  },
+  {
+    "language": "it",
+    "key": "friends.invitation_count_two",
+    "source": "{{count}} game invitations",
+    "suggestion": "{count} inviti",
+    "translation": "{{count}} inviti",
+    "previous": null,
+    "previousState": "UNTRANSLATED"
+  },
+  {
+    "language": "de",
+    "key": "controllers.dualshock4_compatibility",
+    "source": "DualShock 4 compatibility mode",
+    "suggestion": "DualShock 4 Kompatibilitätsmodus",
+    "translation": "DualShock 4 Kompatibilitätsmodus",
+    "previous": null,
+    "previousState": "UNTRANSLATED"
+  },
+  {
+    "language": "es",
+    "key": "controllers.dualshock4_compatibility",
+    "source": "DualShock 4 compatibility mode",
+    "suggestion": "Modo de compatibilidad con DualShock 4",
+    "translation": "Modo de compatibilidad de DualShock 4",
+    "previous": null,
+    "previousState": "UNTRANSLATED"
+  },
+  {
+    "language": "fr",
+    "key": "controllers.dualshock4_compatibility",
+    "source": "DualShock 4 compatibility mode",
+    "suggestion": "Mode compatibilité avec la Dualshock 4",
+    "translation": "Mode compatibilité avec la Dualshock 4",
+    "previous": null,
+    "previousState": "UNTRANSLATED"
+  },
+  {
+    "language": "it",
+    "key": "controllers.dualshock4_compatibility",
+    "source": "DualShock 4 compatibility mode",
+    "suggestion": "Modalità di compatibilità DualShock 4",
+    "translation": "Modalità di compatibilità DualShock 4",
+    "previous": null,
+    "previousState": "UNTRANSLATED"
+  },
+  {
+    "language": "de",
+    "key": "friends.invitation_count_few",
+    "source": "{{count}} game invitations",
+    "suggestion": "{count} Spieleinladungen",
+    "translation": "{{count}} Spieleinladungen",
+    "previous": null,
+    "previousState": "UNTRANSLATED"
+  },
+  {
+    "language": "fr",
+    "key": "friends.invitation_count_few",
+    "source": "{{count}} game invitations",
+    "suggestion": "{count} invitations à jouer",
+    "translation": "{{count}} invitations à jouer",
+    "previous": null,
+    "previousState": "UNTRANSLATED"
+  },
+  {
+    "language": "it",
+    "key": "friends.invitation_count_few",
+    "source": "{{count}} game invitations",
+    "suggestion": "{count} inviti",
+    "translation": "{{count}} inviti",
+    "previous": null,
+    "previousState": "UNTRANSLATED"
+  },
+  {
+    "language": "de",
+    "key": "message.invalid_dualshock4_compatibility_setting",
+    "source": "Invalid DualShock 4 compatibility setting.",
+    "suggestion": "Ungültige DualShock 4 Kompatibilitätseinstellung.",
+    "translation": "Ungültige DualShock 4 Kompatibilitätseinstellung.",
+    "previous": null,
+    "previousState": "UNTRANSLATED"
+  },
+  {
+    "language": "es",
+    "key": "message.invalid_dualshock4_compatibility_setting",
+    "source": "Invalid DualShock 4 compatibility setting.",
+    "suggestion": "Ajuste de compatibilidad con DualShock 4 no válido.",
+    "translation": "Ajuste de compatibilidad de DualShock 4 no válido.",
+    "previous": null,
+    "previousState": "UNTRANSLATED"
+  },
+  {
+    "language": "it",
+    "key": "message.invalid_dualshock4_compatibility_setting",
+    "source": "Invalid DualShock 4 compatibility setting.",
+    "suggestion": "Impostazione di compatibilità DualShock 4 non valida.",
+    "translation": "Impostazione di compatibilità DualShock 4 non valida.",
     "previous": null,
     "previousState": "UNTRANSLATED"
   },
   {
     "language": "pl-PL",
-    "key": "ui.commit_79663c1",
-    "source": "COMMIT",
-    "suggestion": "COMMIT",
-    "translation": "COMMIT",
-    "previous": null,
-    "previousState": "UNTRANSLATED"
-  },
-  {
-    "language": "pl-PL",
-    "key": "ui.xodus_nexus_is_built_on_xodus_but_it_is_551be13",
-    "source": "Xodus Nexus is built on Xodus, but it is",
-    "suggestion": "Xodus Nexus bazuje na Xodusie, ale jest",
-    "translation": "Xodus Nexus bazuje na Xodus, ale jest",
-    "previous": null,
-    "previousState": "UNTRANSLATED"
-  },
-  {
-    "language": "fr",
-    "key": "friends.friend",
-    "source": "friend",
-    "suggestion": "ami",
-    "translation": "ami",
-    "previous": null,
-    "previousState": "UNTRANSLATED"
-  },
-  {
-    "language": "fr",
     "key": "common.remove_game",
     "source": "Remove {{game}}?",
-    "suggestion": "Supprimer {game} ?",
-    "translation": "Retirer {{game}} ?",
-    "previous": "Retirer {game} ?",
-    "previousState": "REVIEWED"
-  },
-  {
-    "language": "fr",
-    "key": "time.minutes",
-    "source": "{{count}} min",
-    "suggestion": "{count} min",
-    "translation": "{{count}} min",
-    "previous": null,
-    "previousState": "UNTRANSLATED"
+    "suggestion": "Usunąć {game}?",
+    "translation": "Usunąć {{game}}?",
+    "previous": "Usunąć {game}?",
+    "previousState": "TRANSLATED",
+    "existing": true
   },
   {
     "language": "pl-PL",
-    "key": "time.minutes",
-    "source": "{{count}} min",
-    "suggestion": "{count} min",
-    "translation": "{{count}} min",
-    "previous": null,
-    "previousState": "UNTRANSLATED"
+    "key": "common.cancel_game",
+    "source": "Cancel {{game}}?",
+    "suggestion": "Anulować {game}?",
+    "translation": "Anulować {{game}}?",
+    "previous": "Anulować {game}?",
+    "previousState": "TRANSLATED",
+    "existing": true
   },
   {
     "language": "pl-PL",
-    "key": "ui.backend_offline_5904a63",
-    "source": "Backend offline",
-    "suggestion": "Backend offline",
-    "translation": "Backend offline",
-    "previous": null,
-    "previousState": "UNTRANSLATED"
+    "key": "auth.passkey_label",
+    "source": "Xodus Nexus passkey help",
+    "suggestion": "Pomoc dotycząca kluczy dostępu Xodus Nexus",
+    "translation": "Pomoc dotycząca kluczy dostępu Xodus Nexus",
+    "previous": "Pomoc dotycząca kluczy dostępu Xodus Nexus",
+    "previousState": "TRANSLATED",
+    "existing": true
   },
   {
     "language": "pl-PL",
-    "key": "time.zero_minutes",
-    "source": "0 min",
-    "suggestion": "0 min",
-    "translation": "0 min",
-    "previous": null,
-    "previousState": "UNTRANSLATED"
-  },
-  {
-    "language": "fr",
-    "key": "common.view_all",
-    "source": "View all {{count}}",
-    "suggestion": "Voir tout {count}",
-    "translation": "Tout afficher ({{count}})",
-    "previous": null,
-    "previousState": "UNTRANSLATED"
+    "key": "auth.cancel_passkey",
+    "source": "Cancel passkey request",
+    "suggestion": "Anuluj żądanie klucza dostępu",
+    "translation": "Anuluj żądanie klucza dostępu",
+    "previous": "Anuluj żądanie klucza dostępu",
+    "previousState": "TRANSLATED",
+    "existing": true
   },
   {
     "language": "pl-PL",
-    "key": "ui.mib_dea6cb8",
-    "source": "MiB",
-    "suggestion": "MiB",
-    "translation": "MiB",
-    "previous": null,
-    "previousState": "UNTRANSLATED"
-  },
-  {
-    "language": "fr",
-    "key": "downloads.progress",
-    "source": "{{state}}, {{percent}}%",
-    "suggestion": "{state}, {percent}%",
-    "translation": "{{state}}, {{percent}}%",
-    "previous": null,
-    "previousState": "UNTRANSLATED"
+    "key": "auth.window_title",
+    "source": "Xodus sign in",
+    "suggestion": "Logowanie do Xodus",
+    "translation": "Logowanie do Xodus",
+    "previous": "Logowanie do Xodus",
+    "previousState": "TRANSLATED",
+    "existing": true
   },
   {
     "language": "pl-PL",
-    "key": "downloads.progress",
-    "source": "{{state}}, {{percent}}%",
-    "suggestion": "{state}, {percent}%",
-    "translation": "{{state}}, {{percent}}%",
-    "previous": null,
-    "previousState": "UNTRANSLATED"
-  },
-  {
-    "language": "fr",
-    "key": "downloads.current",
-    "source": "{{state}} ({{current}}/{{total}})",
-    "suggestion": "{state} ({current}/{total})",
-    "translation": "{{state}} ({{current}}/{{total}})",
-    "previous": null,
-    "previousState": "UNTRANSLATED"
+    "key": "auth.passkey_help",
+    "source": "If your account uses a passkey or security key, continue in Google Chrome. Or cancel this request to choose another method.",
+    "suggestion": "Jeśli Twoje konto korzysta z klucza dostępu lub klucza sprzętowego, kontynuuj w przeglądarce Google Chrome. Możesz też anulować to żądanie i wybrać inny sposób.",
+    "translation": "Jeśli Twoje konto korzysta z klucza dostępu lub klucza sprzętowego, kontynuuj w przeglądarce Google Chrome. Możesz też anulować to żądanie i wybrać inny sposób.",
+    "previous": "Jeśli Twoje konto korzysta z klucza dostępu lub klucza sprzętowego, kontynuuj w przeglądarce Google Chrome. Możesz też anulować to żądanie i wybrać inny sposób.",
+    "previousState": "TRANSLATED",
+    "existing": true
   },
   {
     "language": "pl-PL",
-    "key": "downloads.current",
-    "source": "{{state}} ({{current}}/{{total}})",
-    "suggestion": "{state} ({current}/{total})",
-    "translation": "{{state}} ({{current}}/{{total}})",
-    "previous": null,
-    "previousState": "UNTRANSLATED"
-  },
-  {
-    "language": "fr",
-    "key": "time.under_minute",
-    "source": "<1 min",
-    "suggestion": "<1 min",
-    "translation": "<1 min",
-    "previous": null,
-    "previousState": "UNTRANSLATED"
-  },
-  {
-    "language": "pl-PL",
-    "key": "time.under_minute",
-    "source": "<1 min",
-    "suggestion": "<1 min",
-    "translation": "<1 min",
-    "previous": null,
-    "previousState": "UNTRANSLATED"
-  },
-  {
-    "language": "fr",
-    "key": "native.which_steam_profile_should_receive_this_shortcut_25b381c",
-    "source": "Which Steam profile should receive this shortcut?",
-    "suggestion": "Quel profil Steam devrait recevoir de raccourci?",
-    "translation": "Quel profil Steam doit recevoir ce raccourci ?",
-    "previous": null,
-    "previousState": "UNTRANSLATED"
-  },
-  {
-    "language": "fr",
-    "key": "settings.system_language",
-    "source": "System default",
-    "suggestion": "Défaut de système",
-    "translation": "Langue du système",
-    "previous": null,
-    "previousState": "UNTRANSLATED"
-  },
-  {
-    "language": "pl-PL",
-    "key": "ui.not_upstream_a_problem_in_nexus_may_not_exist_in_e123052",
-    "source": ", not upstream. A problem in Nexus may not exist in upstream Xodus.",
-    "suggestion": ", nie w upstream. Problem w Nexusie może nie występować w Xodusie.",
-    "translation": ", nie w projekcie źródłowym. Problem w projekcie Nexus może nie występować w projekcie Xodus.",
-    "previous": null,
-    "previousState": "UNTRANSLATED"
-  },
-  {
-    "language": "pl-PL",
-    "key": "ui.microsoft_store_d4479a8",
-    "source": "· Microsoft Store",
-    "suggestion": "· Microsoft Store",
-    "translation": "· Microsoft Store",
-    "previous": null,
-    "previousState": "UNTRANSLATED"
-  },
-  {
-    "language": "fr",
-    "key": "message.installed_files_retained_but_no_active_account_l_fde4958",
-    "source": "Installed files retained, but no active account license was verified.",
-    "suggestion": "Fichiers d'installation maintenus, mais aucune lisence de compte est vérifiée.",
-    "translation": "Les fichiers installés ont été conservés, mais aucune licence active du compte n'a pu être vérifiée.",
-    "previous": null,
-    "previousState": "UNTRANSLATED"
-  },
-  {
-    "language": "fr",
-    "key": "ui.choose_files_to_install_4a6019d",
-    "source": "Choose files to install",
-    "suggestion": "Choisisez les fichiers à installer",
-    "translation": "Choisissez les fichiers à installer",
-    "previous": null,
-    "previousState": "UNTRANSLATED"
-  },
-  {
-    "language": "pl-PL",
-    "key": "ui.offline_5c3ce8d",
-    "source": "OFFLINE",
-    "suggestion": "OFFLINE",
-    "translation": "OFFLINE",
-    "previous": null,
-    "previousState": "UNTRANSLATED"
-  },
-  {
-    "language": "fr",
-    "key": "ui.download_cancelled_downloaded_files_were_deleted_f3814b8",
-    "source": "Download cancelled. Downloaded files were deleted.",
-    "suggestion": "Téléchargement annulé. Les fichiers téléchargés ont été supprimé.",
-    "translation": "Téléchargement annulé. Les fichiers téléchargés ont été supprimés.",
-    "previous": null,
-    "previousState": "UNTRANSLATED"
-  },
-  {
-    "language": "pl-PL",
-    "key": "ui.unsupported_7f34e93",
-    "source": " · Unsupported",
-    "suggestion": " · Nieobsługiwane",
-    "translation": " · Nieobsługiwane",
-    "previous": null,
-    "previousState": "UNTRANSLATED"
-  },
-  {
-    "language": "fr",
-    "key": "time.hours_minutes",
-    "source": "{{hours}} h {{minutes}} min",
-    "suggestion": "{hours} h {minutes} min",
-    "translation": "{{hours}} h {{minutes}} min",
-    "previous": null,
-    "previousState": "UNTRANSLATED"
-  },
-  {
-    "language": "pl-PL",
-    "key": "ui.add_on_a0e4463",
-    "source": " · Add-on",
-    "suggestion": " · Dodatek",
-    "translation": " · Dodatek",
-    "previous": null,
-    "previousState": "UNTRANSLATED"
-  },
-  {
-    "language": "fr",
-    "key": "install.not_reported",
-    "source": "Not reported",
-    "suggestion": "Non reporté",
-    "translation": "Non indiqué",
-    "previous": null,
-    "previousState": "UNTRANSLATED"
-  },
-  {
-    "language": "fr",
-    "key": "message.backend_release_check_failed_39841f4",
-    "source": "Backend release check failed: {{version}}",
-    "suggestion": "Échec de la disponibilité du Backend : {version}",
-    "translation": "Échec de la vérification de la version du backend : {{version}}",
-    "previous": null,
-    "previousState": "UNTRANSLATED"
-  },
-  {
-    "language": "fr",
-    "key": "ui.message_2f77668",
-    "source": "Message",
-    "suggestion": "Message",
-    "translation": "Message",
-    "previous": null,
-    "previousState": "UNTRANSLATED"
-  },
-  {
-    "language": "fr",
-    "key": "message.cancelled_downloaded_files_and_checkpoints_were_ad4ff00",
-    "source": "Cancelled; downloaded files and checkpoints were kept.",
-    "suggestion": "Annulé; Les fichiers et éléments téléchargés ont été gardés.",
-    "translation": "Annulé ; les fichiers téléchargés et les points de reprise ont été conservés.",
-    "previous": null,
-    "previousState": "UNTRANSLATED"
-  },
-  {
-    "language": "fr",
-    "key": "ui.conversation_ccca181",
-    "source": "Conversation",
-    "suggestion": "Conversation",
-    "translation": "Conversation",
-    "previous": null,
-    "previousState": "UNTRANSLATED"
-  },
-  {
-    "language": "pl-PL",
-    "key": "ui.preview_shows_the_most_recent_512_kib_copy_log_c_0e89f87",
-    "source": " Preview shows the most recent 512 KiB. Copy log copies the complete file.",
-    "suggestion": " Podgląd pokazuje najnowsze 512 KiB. Skopiuj log kopiuje pełny plik.",
-    "translation": " Podgląd pokazuje najnowsze 512 KiB. Skopiuj log kopiuje pełny plik.",
-    "previous": null,
-    "previousState": "UNTRANSLATED"
-  },
-  {
-    "language": "fr",
-    "key": "store.available_with",
-    "source": "Available with {{plan}}",
-    "suggestion": "Diponible avec {plan}",
-    "translation": "Disponible avec {{plan}}",
-    "previous": null,
-    "previousState": "UNTRANSLATED"
-  },
-  {
-    "language": "fr",
-    "key": "home.restart_update",
-    "source": "Restart to finish launcher update.",
-    "suggestion": "Redémarrez pour terminer la mise à jour du launcher.",
-    "translation": "Redémarrez pour terminer la mise à jour du lanceur.",
-    "previous": null,
-    "previousState": "UNTRANSLATED"
-  },
-  {
-    "language": "fr",
     "key": "auth.passkey_title",
     "source": "Passkey taking too long?",
-    "suggestion": "La clé d'accès semble prendre trop de temps ?",
-    "translation": "Votre clé d'accès prend trop de temps ?",
-    "previous": "La clé d'accès prend trop de temps ?",
-    "previousState": "REVIEWED"
-  },
-  {
-    "language": "fr",
-    "key": "ui.launcher_ba8971d",
-    "source": "Launcher {{version}}",
-    "suggestion": "Launcher {version}",
-    "translation": "Lanceur {{version}}",
-    "previous": null,
-    "previousState": "UNTRANSLATED"
+    "suggestion": "Logowanie kluczem dostępu trwa zbyt długo?",
+    "translation": "Logowanie kluczem dostępu trwa zbyt długo?",
+    "previous": "Logowanie kluczem dostępu trwa zbyt długo?",
+    "previousState": "TRANSLATED",
+    "existing": true
   },
   {
     "language": "pl-PL",
-    "key": "ui.launcher_ba8971d",
-    "source": "Launcher {{version}}",
-    "suggestion": "Launcher {version}",
-    "translation": "Launcher {{version}}",
-    "previous": null,
-    "previousState": "UNTRANSLATED"
+    "key": "auth.browser",
+    "source": "Continue in browser",
+    "suggestion": "Kontynuuj w przeglądarce",
+    "translation": "Kontynuuj w przeglądarce",
+    "previous": "Kontynuuj w przeglądarce",
+    "previousState": "TRANSLATED",
+    "existing": true
   },
   {
     "language": "pl-PL",
-    "key": "message.startservicebyname_13d1644",
-    "source": "StartServiceByName",
-    "suggestion": "StartServiceByName",
-    "translation": "StartServiceByName",
-    "previous": null,
-    "previousState": "UNTRANSLATED"
+    "key": "auth.browser_error",
+    "source": "Could not open browser sign-in. Google Chrome must be installed. Try again or choose another method.",
+    "suggestion": "Nie udało się otworzyć logowania w przeglądarce. Musi być zainstalowana przeglądarka Google Chrome. Spróbuj ponownie lub wybierz inny sposób.",
+    "translation": "Nie udało się otworzyć logowania w przeglądarce. Musi być zainstalowana przeglądarka Google Chrome. Spróbuj ponownie lub wybierz inny sposób.",
+    "previous": "Nie udało się otworzyć logowania w przeglądarce. Musi być zainstalowana przeglądarka Google Chrome. Spróbuj ponownie lub wybierz inny sposób.",
+    "previousState": "TRANSLATED",
+    "existing": true
+  },
+  {
+    "language": "zh-Hans",
+    "key": "ui.see_all_d7a8c44",
+    "source": "See all",
+    "suggestion": "查看全部",
+    "translation": "查看全部",
+    "previous": "查看全部",
+    "previousState": "TRANSLATED",
+    "existing": true
+  },
+  {
+    "language": "de",
+    "key": "friends.send_shortcut",
+    "source": "Enter to send; Shift+Enter for a new line.",
+    "suggestion": "Enter zum Senden; Shift+Enter für eine neue Zeile.",
+    "translation": "Enter zum Senden; Shift+Enter für eine neue Zeile.",
+    "previous": "Enter zum Senden; Shift+Enter für eine neue Zeile.",
+    "previousState": "TRANSLATED",
+    "existing": true
+  },
+  {
+    "language": "es",
+    "key": "friends.send_shortcut",
+    "source": "Enter to send; Shift+Enter for a new line.",
+    "suggestion": "Intro para enviar; Mayús+Intro para una nueva línea.",
+    "translation": "Intro para enviar; Mayús+Intro para una nueva línea.",
+    "previous": "Intro para enviar; Mayús+Intro para una nueva línea.",
+    "previousState": "TRANSLATED",
+    "existing": true
+  },
+  {
+    "language": "fr",
+    "key": "friends.send_shortcut",
+    "source": "Enter to send; Shift+Enter for a new line.",
+    "suggestion": "Entrée pour envoyer; Shift+Entrée pour créer une nouvelle ligne",
+    "translation": "Entrée pour envoyer; Shift+Entrée pour créer une nouvelle ligne",
+    "previous": "Entrée pour envoyer; Shift+Entrée pour créer une nouvelle ligne",
+    "previousState": "TRANSLATED",
+    "existing": true
+  },
+  {
+    "language": "it",
+    "key": "friends.send_shortcut",
+    "source": "Enter to send; Shift+Enter for a new line.",
+    "suggestion": "Enter per mandare; Shift+Enter per andare a capo.",
+    "translation": "Enter per mandare; Shift+Enter per andare a capo.",
+    "previous": "Enter per mandare; Shift+Enter per andare a capo.",
+    "previousState": "TRANSLATED",
+    "existing": true
   },
   {
     "language": "pl-PL",
-    "key": "ui.microsoft_s_pc_game_pass_recently_added_collecti_75fb3d3",
-    "source": "Microsoft's PC Game Pass recently added collection appears first. Other licensed games follow in default order.",
-    "suggestion": "Najpierw pojawia się kolekcja ostatnio dodanych gier PC Game Pass. Pozostałe gry z licencją podążają w kolejności domyślnej.",
-    "translation": "Najpierw wyświetlana jest kolekcja ostatnio dodanych gier PC Game Pass firmy Microsoft. Pozostałe gry z licencją są wyświetlane w kolejności domyślnej.",
-    "previous": null,
-    "previousState": "UNTRANSLATED"
+    "key": "friends.send_shortcut",
+    "source": "Enter to send; Shift+Enter for a new line.",
+    "suggestion": "Enter, aby wysłać; Shift+Enter, aby dodać nową linię.",
+    "translation": "Enter, aby wysłać; Shift+Enter, aby dodać nową linię.",
+    "previous": "Enter, aby wysłać; Shift+Enter, aby dodać nową linię.",
+    "previousState": "TRANSLATED",
+    "existing": true
+  },
+  {
+    "language": "pt-BR",
+    "key": "game.view_details",
+    "source": "View details for {{game}}",
+    "suggestion": "Ver detalhes de {game}",
+    "translation": "Ver detalhes de {{game}}",
+    "previous": "Ver detalhes de {game}",
+    "previousState": "TRANSLATED",
+    "existing": true
+  },
+  {
+    "language": "de",
+    "key": "downloads.update_validation_failed",
+    "source": "Update validation failed. Resume the update before playing.",
+    "suggestion": "Aktualisierungsüberprüfung fehlgeschlagen. Schließe die Aktualisierung vor dem Spielen ab.",
+    "translation": "Aktualisierungsüberprüfung fehlgeschlagen. Schließe die Aktualisierung vor dem Spielen ab.",
+    "previous": "Aktualisierungsüberprüfung fehlgeschlagen. Schließe die Aktualisierung vor dem Spielen ab.",
+    "previousState": "TRANSLATED",
+    "existing": true
+  },
+  {
+    "language": "es",
+    "key": "downloads.update_validation_failed",
+    "source": "Update validation failed. Resume the update before playing.",
+    "suggestion": "No se ha podido validar la actualización. Reanúdala antes de jugar.",
+    "translation": "No se ha podido validar la actualización. Reanúdala antes de jugar.",
+    "previous": "No se ha podido validar la actualización. Reanúdala antes de jugar.",
+    "previousState": "TRANSLATED",
+    "existing": true
   },
   {
     "language": "fr",
-    "key": "ui.lb_rb_pages_32738d0",
-    "source": "LB / RB: Pages",
-    "suggestion": "LB / RB: Pages",
-    "translation": "LB / RB: Pages",
-    "previous": null,
-    "previousState": "UNTRANSLATED"
-  },
-  {
-    "language": "fr",
-    "key": "ui.game_pass_5c83b40",
-    "source": "Game Pass",
-    "suggestion": "Game Pass",
-    "translation": "Game Pass",
-    "previous": null,
-    "previousState": "UNTRANSLATED"
-  },
-  {
-    "language": "pl-PL",
-    "key": "ui.game_pass_5c83b40",
-    "source": "Game Pass",
-    "suggestion": "Game Pass",
-    "translation": "Game Pass",
-    "previous": null,
-    "previousState": "UNTRANSLATED"
-  },
-  {
-    "language": "fr",
-    "key": "ui.launch_failed_1755d50",
-    "source": "Launch failed",
-    "suggestion": "Lancement a échoué",
-    "translation": "Échec du lancement",
-    "previous": null,
-    "previousState": "UNTRANSLATED"
-  },
-  {
-    "language": "pl-PL",
-    "key": "ui.offline_a179478",
-    "source": "Offline",
-    "suggestion": "Offline",
-    "translation": "Offline",
-    "previous": null,
-    "previousState": "UNTRANSLATED"
-  },
-  {
-    "language": "pl-PL",
-    "key": "ui.online_0d21bd5",
-    "source": "Online",
-    "suggestion": "Online",
-    "translation": "Online",
-    "previous": null,
-    "previousState": "UNTRANSLATED"
-  },
-  {
-    "language": "fr",
-    "key": "ui.loading_xodus_nexus_2e92cfd",
-    "source": "Loading Xodus Nexus",
-    "suggestion": "Chargement de Xbox Nexus",
-    "translation": "Chargement de Xodus Nexus",
-    "previous": null,
-    "previousState": "UNTRANSLATED"
-  },
-  {
-    "language": "fr",
-    "key": "ui.choose_folder_3db7410",
-    "source": "Choose folder",
-    "suggestion": "Choisisez un dossier",
-    "translation": "Choisissez un dossier",
-    "previous": null,
-    "previousState": "UNTRANSLATED"
-  },
-  {
-    "language": "pl-PL",
-    "key": "ui.package_id_70f5ce2",
-    "source": " · Package ID {{name}}",
-    "suggestion": " · Identyfikator pakietu {name}",
-    "translation": " · Identyfikator pakietu {{name}}",
-    "previous": null,
-    "previousState": "UNTRANSLATED"
-  },
-  {
-    "language": "fr",
-    "key": "ui.account_status_unavailable_3b97a47",
-    "source": "Account status unavailable",
-    "suggestion": "Status de compte indisponible",
-    "translation": "Statut du compte indisponible",
-    "previous": null,
-    "previousState": "UNTRANSLATED"
-  },
-  {
-    "language": "fr",
-    "key": "downloads.active_summary",
-    "source": "Install Queue, {{count}} active installations, {{state}}, {{game}}",
-    "suggestion": "File d'attente, {count} installations actives, {state}, {game}",
-    "translation": "File d'attente d'installation, {{count}} installations actives, {{state}}, {{game}}",
-    "previous": "File d'installation, {count} installations actives, {state}, {game}",
-    "previousState": "REVIEWED"
-  },
-  {
-    "language": "fr",
-    "key": "ui.next_screenshot_fd250fd",
-    "source": "Next screenshot",
-    "suggestion": "Capture décran suivante",
-    "translation": "Capture d'écran suivante",
-    "previous": null,
-    "previousState": "UNTRANSLATED"
-  },
-  {
-    "language": "fr",
-    "key": "message.xbox_requires_sign_in_again_open_settings_to_che_081afa3",
-    "source": "Xbox requires sign-in again. Open Settings to check your account.",
-    "suggestion": "Xbox a besoin de de re-connecter. Accèdez aux Paramêtres pour vérifier votre compte.",
-    "translation": "Xbox vous demande de vous reconnecter. Ouvrez les paramètres pour vérifier votre compte.",
-    "previous": null,
-    "previousState": "UNTRANSLATED"
+    "key": "downloads.update_validation_failed",
+    "source": "Update validation failed. Resume the update before playing.",
+    "suggestion": "La validation de la mise à jour a échoué. Reprenez la mise à jour avant de jouer.",
+    "translation": "La validation de la mise à jour a échoué. Reprenez la mise à jour avant de jouer.",
+    "previous": "La validation de la mise à jour a échoué. Reprenez la mise à jour avant de jouer.",
+    "previousState": "TRANSLATED",
+    "existing": true
   }
 ]

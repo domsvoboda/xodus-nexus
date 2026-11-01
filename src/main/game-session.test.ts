@@ -8,6 +8,8 @@ const h = vi.hoisted(() => ({
   inspected: {} as Partial<Game>,
   spawnCalls: [] as { command: string; args: string[]; env: NodeJS.ProcessEnv; cwd?: string }[],
   finish: undefined as ((result: { code: number | null; output: string }) => void) | undefined,
+  onLine: undefined as ((line: string) => void) | undefined,
+  stop: vi.fn(async () => {}),
   cleanup: vi.fn(async () => {}),
   wrapperCleanup: vi.fn(async () => {}),
   serviceRelease: vi.fn(async () => {}),
@@ -42,10 +44,11 @@ vi.mock('./vc-runtime.js', () => ({ installedVcRuntimeVersion: async () => '14.4
 vi.mock('./game-wrapper.js', () => ({ prepareGameWrapper: async (wine: string) => ({ command: wine, cleanup: h.wrapperCleanup }) }));
 vi.mock('./install-queue.js', () => ({ canonicalInstallPath: async (p: string) => p, installPathsOverlap: (a: string, b: string) => a === b }));
 vi.mock('./game-process.js', () => ({
-  spawnGameProcess: async (command: string, args: string[], options: { env: NodeJS.ProcessEnv; cwd?: string }) => {
+  spawnGameProcess: async (command: string, args: string[], options: { env: NodeJS.ProcessEnv; cwd?: string; onLine?: (line: string) => void }) => {
     h.spawnCalls.push({ command, args, env: options.env, cwd: options.cwd });
+    h.onLine = options.onLine;
     const result = new Promise<{ code: number | null; output: string }>((resolve) => { h.finish = resolve; });
-    return { child: { pid: 4242 }, result, stop: async () => {}, forceStop: async () => {}, cleanup: h.cleanup };
+    return { child: { pid: 4242 }, result, stop: h.stop, forceStop: async () => {}, cleanup: h.cleanup };
   },
 }));
 
@@ -254,6 +257,37 @@ describe('GameSession', () => {
     expect(h.spawnCalls[1].env.NEXUS_GAME_BRIDGE_PORT).toBeUndefined();
     h.finish!({ code: 0, output: '' });
     await older.finished;
+  });
+
+  it('launches with a Steam shortcut context, stops the game on Steam Stop and refuses a stopped context', async () => {
+    h.stop.mockClear();
+    const steam = new AbortController();
+    const session = new GameSession(deps());
+    const active = await session.launch('g', { environment: { PATH: '/usr/bin', SteamAppId: '123' }, signal: steam.signal, steam: true });
+    expect(h.spawnCalls[0].env.SteamAppId).toBe('123');
+    steam.abort();
+    expect(active.operation.status).toBe('stopping');
+    expect(h.stop).toHaveBeenCalledTimes(1);
+    h.finish!({ code: 130, output: '' });
+    await active.finished;
+    expect(active.operation.status).toBe('complete');
+
+    const stopped = new AbortController(); stopped.abort();
+    await expect(new GameSession(deps()).launch('g', { signal: stopped.signal, steam: true })).rejects.toThrow();
+    expect(h.spawnCalls).toHaveLength(1);
+  });
+
+  it('warns once about a cloud-save problem the runtime reports', async () => {
+    h.cloud = true;
+    const onCloudSaveWarning = vi.fn();
+    const active = await new GameSession(deps({ onCloudSaveWarning })).launch('g');
+    h.onLine!('gdkc:cloud_disable cloud saves disabled for this session');
+    h.onLine!('gdkc:cloud_disable cloud saves disabled for this session');
+    expect(active.operation.cloudSaveWarning).toMatch(/Cloud sync is unavailable/);
+    expect(onCloudSaveWarning).toHaveBeenCalledTimes(1);
+    expect(onCloudSaveWarning).toHaveBeenCalledWith(expect.objectContaining({ id: 'g' }), active.operation.cloudSaveWarning);
+    h.finish!({ code: 0, output: '' });
+    await active.finished;
   });
 
   it('ties the game window to its artwork and still launches when the identity fails', async () => {
