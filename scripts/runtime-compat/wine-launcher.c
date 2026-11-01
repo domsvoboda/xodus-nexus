@@ -44,14 +44,14 @@ static size_t rva(const unsigned char *p, size_t size, size_t sections, unsigned
     }
     return SIZE_MAX;
 }
-/* Fail closed: unknown exports/ordinals must not disappear behind a proxy. */
+/* 1: original SDK, 2: adapter. Unknown exports/ordinals remain unsupported. */
 static int sdk_contract(int fd)
 {
     struct stat st;
     unsigned char *p;
     size_t pe, optional, sections, exports, names, ordinals, functions;
     unsigned count, n;
-    int ok = 0;
+    int ok = 0, adapter = 0;
     if (fstat(fd, &st) || !S_ISREG(st.st_mode) || st.st_size < 256 || st.st_size > 268435456) return 0;
     size_t size = (size_t)st.st_size;
     p = mmap(NULL, size, PROT_READ, MAP_PRIVATE, fd, 0);
@@ -75,8 +75,17 @@ static int sdk_contract(int fd)
         size_t name = rva(p, size, sections, count, u32(p + names + i * 4), length);
         if (name == SIZE_MAX || memcmp(p + name, pgs_exports[i], length) ||
             u16(p + ordinals + i * 2) != i || !u32(p + functions + i * 4)) goto done;
+        /* A proxy has the same public exports as the SDK. Never preserve it
+         * as the original: its forwards would recursively load itself. */
+        uint32_t function = u32(p + functions + i * 4), start = u32(p + optional + 112);
+        if (function >= start && function - start < u32(p + optional + 116)) {
+            static const char prefix[] = "nexus_pgs_native.";
+            size_t forward = rva(p, size, sections, count, function, sizeof(prefix) - 1);
+            if (forward == SIZE_MAX) goto done;
+            if (!strncasecmp((const char *)p + forward, prefix, sizeof(prefix) - 1)) adapter = 1;
+        }
     }
-    ok = 1;
+    ok = adapter ? 2 : 1;
 done:
     munmap(p, size); return ok;
 }
@@ -160,13 +169,23 @@ static int visit(int directory, const char *path, int proxy, unsigned depth)
             if (asprintf(&sdkPath, "%s/%s", path, item->d_name) < 0) { result = -1; break; }
             int mapped = mapped_fd(getenv("WINE_DLL_FILE_MAP"), sdkPath);
             int source = mapped < 0 ? openat(directory, item->d_name, O_RDONLY | O_CLOEXEC | O_NONBLOCK) : mapped;
-            if (source >= 0 && sdk_contract(source)) {
-                int alias = openat(directory, "nexus_pgs_native.dll", O_RDONLY | O_NOFOLLOW | O_CLOEXEC);
+            int contract = source >= 0 ? sdk_contract(source) : 0;
+            int adapter = contract == 2;
+            if (contract) {
+                /* Backend launch views link unchanged package files. Read
+                 * the owner's alias, then replace only the private link. */
+                int alias = openat(directory, "nexus_pgs_native.dll", O_RDONLY | O_NONBLOCK | O_CLOEXEC);
                 if (staged == 64) result = -1;
                 else if (alias >= 0) {
-                    int current = openat(directory, item->d_name, O_RDONLY | O_NOFOLLOW | O_CLOEXEC);
-                    if (!sdk_contract(alias) || current < 0 || !same_file(current, proxy)) result = -1;
+                    int current = openat(directory, item->d_name, O_RDONLY | O_NONBLOCK | O_CLOEXEC);
+                    if (sdk_contract(alias) != 1 || current < 0 || sdk_contract(current) != 2 ||
+                        (!adapter && !same_file(source, alias))) result = -1;
+                    else if (copy_fd(alias, directory, "nexus_pgs_native.dll") ||
+                        copy_fd(proxy, directory, item->d_name)) result = -1;
                     if (current >= 0) close(current);
+                } else if (adapter) {
+                    fprintf(stderr, "Nexus runtime: original PlayFab SDK is missing; restore the game's original PlayFabGameSave.dll before launching.\n");
+                    result = -1;
                 } else if (errno != ENOENT || copy_fd(source, directory, "nexus_pgs_native.dll") ||
                     copy_fd(proxy, directory, item->d_name)) result = -1;
                 if (alias >= 0) close(alias);

@@ -20,6 +20,7 @@ import { downloadLimitArgs, downloadLimitKiB } from '../shared/download-bandwidt
 import { DownloadBandwidthControls, isBandwidthOnlyPatch } from './download-bandwidth.js';
 import { isShaderCacheOnlyPatch, shaderCacheLimits } from '../shared/shader-cache.js';
 import { demoAccountLibrary, demoAccountProducts, demoDownloads, demoGames, demoLaunchOptions, demoLocales, demoSnapshot, type DemoArtwork } from '../shared/demo-data.js';
+import { registerDemoSocialIpc } from './demo-social-ipc.js';
 import { backendLock } from './backend-package.js';
 import {XboxGameGuide,checkGuideHost} from './xbox-game-guide.js';
 import {XboxGuideParty} from './xbox-guide-party.js';
@@ -60,6 +61,8 @@ import { InstallQueue, assertActivityCompatible, assertInstallDestination, canon
 import { GameDisplayBlocker } from './game-display.js';
 import { GameShortcuts, shortcutArguments, shortcutInstanceData, shortcutInstanceRequest, shortcutLauncherPath, type ShortcutDestination } from './game-shortcuts.js';
 import { ShortcutLaunch } from './shortcut-launch.js';
+import { acceptSteamHandoff, captureSteamLaunchEnvironment, offerSteamHandoff, steamGameEnvironment, steamHandoffRequest,
+  type SteamHandoff, type SteamLaunchEnvironment, type SteamLaunchLease } from './steam-launch-context.js';
 import { loadShortcutIcon } from './shortcut-icon.js';
 import { AccountProfile } from './account-profile.js';
 import { AccountRefresh, readAccount } from './account-refresh.js';
@@ -82,6 +85,7 @@ import { openDesktopTarget } from './desktop-open.js';
 import { addSteamShortcut, steamAccounts, steamRunning } from './steam-shortcuts.js';
 import { gameSteamPortrait, nexusSteamArtwork } from './steam-artwork.js';
 import { addLiveSteamShortcut } from './steam-live.js';
+import { CloudSaveDiagnostics, warnShortcutCloudFailure } from './cloud-save-diagnostics.js';
 import { DownloadCompletionNotifications } from './download-notifications.js';
 import { KeyringSupport } from './keyring.js';
 import { XboxSocialSessions } from './xbox-social.js';
@@ -164,6 +168,11 @@ let runtime: RuntimeManager;
 let connectivity: ConnectivityMonitor | undefined;
 const operations = new Map<string, ChildProcessWithoutNullStreams>();
 const gameProcesses = new Map<string, GameProcess>();
+const gameFinalizations = new Map<string, Promise<void>>();
+const steamLeases = new Set<SteamLaunchLease>();
+let steamLauncherSession: { environment: SteamLaunchEnvironment; lease: SteamLaunchLease } | undefined;
+interface SteamGameContext { environment: SteamLaunchEnvironment; signal: AbortSignal }
+interface LaunchRequest { gameId?: string; steam?: SteamHandoff }
 const cancelledDownloads = new Set<string>();
 const downloadCancellations = new Map<string, Promise<void>>();
 let downloadCleanup: DownloadCleanup;
@@ -252,7 +261,7 @@ let finalizingGame = false;
 let shortcutOnly = false;
 let launchReady = false;
 let windowOpening: Promise<void> | undefined;
-const pendingRequests: (string | undefined)[] = [];
+const pendingRequests: LaunchRequest[] = [];
 const pendingShortcutErrors: unknown[] = [];
 let startupRequest: ReturnType<typeof shortcutArguments> = {};
 let startupError: Error | undefined;
@@ -267,18 +276,26 @@ if (process.platform === 'linux') {
   } catch (error) { console.warn('Launcher fallback font unavailable:', (error as Error).message); }
 }
 // Electron's lock is scoped to userData, so independent profiles stay isolated.
-const primaryInstance = demoMode || app.requestSingleInstanceLock(shortcutInstanceData(startupRequest, Boolean(startupError)));
-if (!primaryInstance) app.quit();
-else if (!demoMode) app.on('second-instance', (_event, _argv, _workingDirectory, additionalData) => {
-  try { receiveLaunchRequest(shortcutInstanceRequest(additionalData, app.getPath('userData')).gameId); }
+let steamOffer: ReturnType<typeof offerSteamHandoff> | undefined;
+try {
+  const environment = !demoMode && !startupError ? captureSteamLaunchEnvironment(process.env) : undefined;
+  if (environment) steamOffer = offerSteamHandoff(environment, () => app.quit());
+} catch (error) { startupError = error as Error; }
+const primaryInstance = demoMode || app.requestSingleInstanceLock({ ...shortcutInstanceData(startupRequest, Boolean(startupError)),
+  ...(steamOffer ? { nexusSteam: steamOffer.handoff } : {}) });
+if (primaryInstance) steamOffer?.close();
+if (!primaryInstance && !steamOffer) app.quit();
+else if (primaryInstance && !demoMode) app.on('second-instance', (_event, _argv, _workingDirectory, additionalData) => {
+  try { receiveLaunchRequest({ gameId: shortcutInstanceRequest(additionalData, app.getPath('userData')).gameId,
+    steam: steamHandoffRequest(additionalData) }); }
   catch (error) {
     if (launchReady) void shortcutError(error);
     else pendingShortcutErrors.push(error);
   }
 });
-const shortcutLaunch = new ShortcutLaunch(
+const shortcutLaunch = new ShortcutLaunch<SteamGameContext>(
   () => gameOperation?.kind === 'launch' && ['preparing', 'running', 'stopping'].includes(gameOperation.status) ? gameOperation.gameId : undefined,
-  (id) => launchGame(id),
+  (id, context) => launchGame(id, context),
 );
 
 async function showLauncher(): Promise<void> {
@@ -299,10 +316,36 @@ function finishShortcutSession(): void {
   // Account service and game-process cleanup must finish before normal quit.
   if (launchReady && (shortcutOnly || !mainWindow || mainWindow.isDestroyed()) && !nativeSocialKeepAlive.some(active=>active()) && !shortcutLaunch.preparing && !preparingLaunch && !finalizingGame && downloadCancellations.size === 0 && installQueue.size === 0 && operations.size === 0 && serviceSessions.size === 0) app.quit();
 }
-function receiveLaunchRequest(id?: string): void {
-  if (!launchReady) { pendingRequests.push(id); return; }
-  if (!id) { void showLauncher(); return; }
-  void shortcutLaunch.request(id).catch(shortcutError).finally(finishShortcutSession);
+function receiveLaunchRequest(request: LaunchRequest): void {
+  if (!launchReady) { pendingRequests.push(request); return; }
+  void handleLaunchRequest(request).catch(shortcutError).finally(finishShortcutSession);
+}
+async function handleLaunchRequest({ gameId, steam }: LaunchRequest): Promise<void> {
+  let lease: SteamLaunchLease | undefined;
+  try {
+    if (steam) { lease = await acceptSteamHandoff(steam); steamLeases.add(lease); }
+    if (!gameId) {
+      await showLauncher();
+      if (lease && steam) {
+        lease.signal.throwIfAborted();
+        // Opening another alias must not detach or stop an existing session.
+        if (steamLauncherSession && !steamLauncherSession.lease.signal.aborted) return;
+        const session = { environment: steam.environment, lease };
+        steamLauncherSession = session;
+        const owned = lease;
+        owned.signal.addEventListener('abort', () => {
+          steamLeases.delete(owned);
+          if (steamLauncherSession === session) steamLauncherSession = undefined;
+        }, { once: true });
+        lease = undefined; // Launcher lifetime, released on shutdown or Steam Stop.
+      }
+      return;
+    }
+    await shortcutLaunch.request(gameId, steam && lease ? { environment: steam.environment, signal: lease.signal } : undefined);
+    // Preparation returning is not game exit. Steam must keep its tracked
+    // secondary alive through account-service and process cleanup too.
+    if (lease) await gameFinalizations.get(gameId);
+  } finally { if (lease) { steamLeases.delete(lease); lease.close(); } }
 }
 
 function snapshot(): AppSnapshot {
@@ -1042,15 +1085,15 @@ async function gameTitleId(game: Game): Promise<string | undefined> {
   return installedGameTitleId(game.path);
 }
 
-async function launchGame(id: string): Promise<void> {
+async function launchGame(id: string, steam?: SteamGameContext): Promise<void> {
   await stopGameUpdateCheck();
   ensureIdle('launch');
   preparingLaunch = true;
-  try { await prepareGameLaunch(id); }
+  try { await prepareGameLaunch(id, steam); }
   finally { preparingLaunch = false; }
 }
 
-async function prepareGameLaunch(id: string): Promise<void> {
+async function prepareGameLaunch(id: string, steam?: SteamGameContext): Promise<void> {
   const game = store.games.find((entry) => entry.id === id);
   if (!game) throw new Error('Game not found.');
   const target = await canonicalInstallPath(game.path);
@@ -1131,7 +1174,28 @@ async function prepareGameLaunch(id: string): Promise<void> {
   };
   const verboseLogs = process.env.XODUS_NEXUS_VERBOSE_LOGS === '1' || store.settings.verboseLogs;
   const gameLog = new GameLogReducer(appendGameLog, verboseLogs);
-  const addGameLog = (line: string) => gameLog.push(line);
+  const cloudDiagnostics = new CloudSaveDiagnostics();
+  let cloudNoticeShown = false;
+  const addGameLog = (line: string) => {
+    if (cloudRuntime && !offlineLaunch && cloudDiagnostics.observe(line)
+      && gameOperation?.id === operationId) {
+      gameOperation.cloudSaveWarning = cloudDiagnostics.message!;
+      scheduleSnapshot();
+      if (!cloudNoticeShown) {
+        cloudNoticeShown = true;
+        try {
+          if (Notification.isSupported()) {
+            const notice = new Notification({ title: nativeText('Cloud saves need attention'),
+              body: `${game.title}: ${nativeText(gameOperation.cloudSaveWarning)}`, urgency: 'critical' });
+            notice.on('failed', () => {});
+            notice.on('click', () => { void showLauncher().catch(() => {}); });
+            notice.show();
+          }
+        } catch { /* The session warning remains visible without desktop notifications. */ }
+      }
+    }
+    gameLog.push(line);
+  };
   writeLaunchLog(`Game: ${game.title}`);
   writeLaunchLog(`Mode: package manifest; cloud saves: ${cloudRuntime ? 'enabled' : 'not available in active runtime'}; verbose logs: ${verboseLogs ? 'on' : 'off'}`);
   writeLaunchLog(`Backend: ${binary}`);
@@ -1142,14 +1206,19 @@ async function prepareGameLaunch(id: string): Promise<void> {
   let inviteBridge: GameInviteBridge | undefined;
   let launchWrapper: GameWrapper | undefined;
   let releaseDisplay = () => {};
+  const launchEnvironment = steamGameEnvironment(process.env, steam?.environment ?? steamLauncherSession?.environment);
+  const steamSignal = steam?.signal ?? steamLauncherSession?.lease.signal;
+  let removeSteamStop = () => {};
   try {
+    if (steam || steamLauncherSession) writeLaunchLog('Steam launch context forwarded from a shortcut.');
+    steamSignal?.throwIfAborted();
     if (game.launchTools?.dualSenseCompatibility) writeLaunchLog('DualSense compatibility mode enabled for this game (054c:0ce6).');
     if (game.launchTools?.dualShock4Compatibility) writeLaunchLog('DualShock 4 compatibility mode enabled for this game (v1, v2 and wireless adapter).');
     await prepareSystemWallet();
     const legacyPrefixRoot = path.join(dataRoot, 'prefixes', game.id);
     const compatibilityDataPath = path.join(dataRoot, 'compatdata', game.id);
     const steamRoot = path.join(app.getPath('home'), '.steam', 'root');
-    launchWrapper = await prepareGameWrapper(wine, game.launchTools, path.join(dataRoot, 'launch-wrappers'), process.env, game.path);
+    launchWrapper = await prepareGameWrapper(wine, game.launchTools, path.join(dataRoot, 'launch-wrappers'), launchEnvironment, game.path);
     const protonRunner = await prepareProtonRunner(wine, compatibilityDataPath, steamRoot, launchWrapper.command, store.settings.shaderCacheLimitGiB);
     const wineCommand = protonRunner?.command ?? wine;
     args[2] = preparedGameWine(protonRunner, launchWrapper.command);
@@ -1162,8 +1231,8 @@ async function prepareGameLaunch(id: string): Promise<void> {
       addGameLog(`VC++ runtime ${installed} verified; launching the original package executable from a temporary decrypted launch view.`);
     }
     const environment = antiCheatEnvironment(gameLocaleEnvironment(gameWindowEnvironment(gameLoggingEnvironment(protonRunner
-      ? { ...process.env }
-      : { ...process.env, WINEPREFIX: legacyPrefixRoot, WINEARCH: 'win64' }, verboseLogs)), locale));
+      ? launchEnvironment
+      : { ...launchEnvironment, WINEPREFIX: legacyPrefixRoot, WINEARCH: 'win64' }, verboseLogs)), locale));
     if (process.platform === 'linux' && shortcuts.available) {
       try {
         const png = await loadShortcutIcon({ coverDataUrl: inspected.coverDataUrl ?? game.coverDataUrl }, bytes => {
@@ -1236,6 +1305,7 @@ async function prepareGameLaunch(id: string): Promise<void> {
     if (authState.stored === true && authState.username) environment.XODUS_ACCOUNT_HASH = accountCacheKey(authState.username);
     if (protonRunner) addGameLog(`Proton prefix: ${protonRunner.compatibilityDataPath}/pfx`);
     else await fs.mkdir(legacyPrefixRoot, { recursive: true });
+    steamSignal?.throwIfAborted();
     const tracked = await spawnGameProcess(binary, args, {
       cwd: game.path,
       env: environment,
@@ -1245,11 +1315,27 @@ async function prepareGameLaunch(id: string): Promise<void> {
     operations.set(operationId, tracked.child);
     gameProcesses.set(operationId, tracked);
     gameGuide?.bind(id,game.title,tracked.child.pid);
-    releaseDisplay = gameDisplay.acquire();
     gameOperation.status = 'running';
     gameOperation.phase = 'Xodus is running; waiting for the game window…';
+    if (steamSignal) {
+      let forceTimer: ReturnType<typeof setTimeout> | undefined;
+      const stop = () => {
+        if (gameOperation?.id === operationId) {
+          gameOperation.status = 'stopping'; gameOperation.phase = 'Stopping Xodus and Wine…'; scheduleSnapshot();
+        }
+        void tracked.stop().catch(error => console.error('Steam shortcut stop failed:', error));
+        forceTimer = setTimeout(() => {
+          if (gameProcesses.get(operationId) === tracked) void tracked.forceStop().catch(error => console.error('Steam shortcut force-stop failed:', error));
+        }, 8000);
+        forceTimer.unref();
+      };
+      steamSignal.addEventListener('abort', stop, { once: true });
+      removeSteamStop = () => { steamSignal.removeEventListener('abort', stop); clearTimeout(forceTimer); };
+      if (steamSignal.aborted) stop();
+    }
+    releaseDisplay = gameDisplay.acquire();
     emitSnapshot();
-    void tracked.result.then((result) => {
+    const completion = tracked.result.then((result) => {
       addGameLog(`The Xodus process exited with code ${result.code}.`);
       if (!gameOperation || gameOperation.id !== operationId) return;
       gameOperation.finishedAt = new Date().toISOString();
@@ -1271,6 +1357,7 @@ async function prepareGameLaunch(id: string): Promise<void> {
       gameOperation.phase = gameOperation.error;
       gameOperation.finishedAt = new Date().toISOString();
     }).finally(async () => {
+      removeSteamStop();
       releaseDisplay();gameGuide?.unbind(id);
       finalizingGame = true;
       try {
@@ -1287,9 +1374,17 @@ async function prepareGameLaunch(id: string): Promise<void> {
         launchLog.end();
         emitSnapshot();
         if (gameOperation?.status === 'failed' && shortcutOnly) await shortcutError(new Error(gameOperation.error ?? 'The game exited with an error.'));
+        else await warnShortcutCloudFailure(shortcutOnly, gameOperation?.cloudSaveWarning, {
+          showLauncher,
+          warn: warning => dialog.showMessageBox(mainWindow!, { type: 'warning', title: nativeText('Cloud saves need attention'),
+            message: game.title, detail: nativeText(warning) }),
+        });
       } finally { finalizingGame = false; finishShortcutSession(); }
-    });
+    }).finally(() => { if (gameFinalizations.get(id) === completion) gameFinalizations.delete(id); });
+    gameFinalizations.set(id, completion);
+    void completion.catch(error => console.error('Game finalization failed:', error));
   } catch (error) {
+    removeSteamStop();
     releaseDisplay();gameGuide?.unbind(id);
     await inviteBridge?.stop().catch(()=>{});gameInviteBridges.delete(operationId);
     await launchWrapper?.cleanup().catch(() => undefined);
@@ -1531,6 +1626,18 @@ function registerDemoIpc(catalogMarket: () => string): void {
   ipcMain.handle('xbox-party-accept',acceptPartyInvite);
  ipcMain.handle('xbox-invites',async event=>{socialSender(event);return (await xboxInvites.list()).filter(invite=>invite.kind==='party');});
   ipcMain.handle('open-path', () => {});
+  registerDemoSocialIpc(ipcMain, {
+    authorize: event => {
+      if (event.senderFrame !== event.sender.mainFrame || event.sender !== mainWindow?.webContents && !chatWindows.owns(event)) throw Error('Demo Social requests must come from Nexus.');
+    },
+    emit: (channel, value) => { mainWindow?.webContents.send(channel, value); for (const contents of chatWindows.contents) contents.send(channel, value); },
+    openProfile: async xuid => {
+      if (xuid !== 'me' && !/^100[0-7]$/.test(xuid)) throw Error('Unknown demo player.');
+      desktopProfileRequest = { id: randomUUID(), xuid }; await showLauncher();
+      mainWindow?.webContents.send('xbox-desktop-profile', desktopProfileRequest);
+    },
+    popOutChat: xuid => chatWindows.show(xuid),
+  });
 }
 
 function socialSender(event:Electron.IpcMainInvokeEvent):void{
@@ -1544,7 +1651,12 @@ async function acceptPartyInvite(event:Electron.IpcMainInvokeEvent,offer:string,
  return xboxParty.accept(offer,handle);
 }
 function registerIpc(): void {
-  ipcMain.handle('show-touch-keyboard',event=>steamKeyboard.show(event,mainWindow));
+  ipcMain.handle('show-touch-keyboard',(event,field:unknown)=>{
+    // Only the launcher and its own pop-out chat windows may request the keyboard.
+    const window=event.sender===mainWindow?.webContents?mainWindow
+      :chatWindows.owns(event)?BrowserWindow.fromWebContents(event.sender):null;
+    return steamKeyboard.show(event,window,field);
+  });
   ipcMain.handle('xbox-overlay-recording',async(event,recording:unknown)=>{
     if(event.sender!==mainWindow?.webContents||event.senderFrame!==event.sender.mainFrame||typeof recording!=='boolean')throw Error('Invalid shortcut recording request.');
     if(recording&&!mainWindow?.isFocused())throw Error('Focus Nexus to record a shortcut.');
@@ -2404,7 +2516,7 @@ app.whenReady().then(async () => {
     // Only now: the account refresh resets the party, whose idle event would
     // otherwise end a shortcut session before its launch is registered.
     launchReady = true;
-    receiveLaunchRequest(startupRequest.gameId);
+    receiveLaunchRequest({ gameId: startupRequest.gameId });
   } else {
     launchReady = true;
     await showBeforeAccountCheck(showLauncher, refreshInitialAccount, () => {
@@ -2413,7 +2525,7 @@ app.whenReady().then(async () => {
       emitSnapshot();
     });
   }
-  for (const id of pendingRequests.splice(0)) receiveLaunchRequest(id);
+  for (const request of pendingRequests.splice(0)) receiveLaunchRequest(request);
   for (const error of pendingShortcutErrors.splice(0)) void shortcutError(error);
   app.on('activate', () => { void showLauncher(); });
 }).catch((error) => {
@@ -2426,9 +2538,13 @@ app.on('window-all-closed', () => {
   if (process.platform !== 'darwin' && !shortcutOnly) app.quit();
 });
 
-app.on('will-quit', () => {gameDisplay.stop();});
+app.on('will-quit', () => {
+  gameDisplay.stop(); steamOffer?.close();
+  for (const lease of steamLeases) lease.close();
+});
 
 app.on('before-quit', (event) => {
+  if (!primaryInstance) return;
   launcherTray.quit();
   connectivity?.stop();
   xboxSocial.close();

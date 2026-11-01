@@ -136,3 +136,78 @@ test('backend default 0755 view is sealed before SDK staging', async () => {
     assert.equal((await fs.lstat(path.join(f.view, 'PlayFabGameSave.dll'))).isSymbolicLink(), false);
   } finally { await f.close(); }
 });
+
+
+test('manual adapter and linked original are materialized only inside the private view', async () => {
+  const f = await fixture();
+  try {
+    const originalBytes = await fs.readFile(sdk);
+    await fs.unlink(path.join(f.view, 'PlayFabGameSave.dll'));
+    await fs.symlink(path.join(components, 'PlayFabGameSave.dll'), path.join(f.view, 'PlayFabGameSave.dll'));
+    await fs.symlink(sdk, path.join(f.view, 'nexus_pgs_native.dll'));
+    const result = f.run({ WINE_DLL_FILE_MAP: '42:unrelated.dll', NEXUS_BOOTSTRAP_DIAGNOSTICS: '1' });
+    assert.equal(result.status, 23, result.stderr);
+    assert.match(result.stderr, /NEXUS_BOOTSTRAP sdk=1 appLocal=0/);
+    assert.deepEqual(await fs.readFile(path.join(f.view, 'nexus_pgs_native.dll')), originalBytes);
+    assert.equal((await fs.lstat(path.join(f.view, 'nexus_pgs_native.dll'))).isSymbolicLink(), false);
+    assert.equal((await fs.lstat(path.join(f.view, 'PlayFabGameSave.dll'))).isSymbolicLink(), false);
+    assert.deepEqual(await fs.readFile(sdk), originalBytes);
+    assert.equal(f.run({ WINE_DLL_FILE_MAP: '42:unrelated.dll' }).status, 23);
+  } finally { await f.close(); }
+});
+test('adapter without the original SDK fails before loader instead of aliasing itself', async () => {
+  const f = await fixture();
+  try {
+    await fs.unlink(path.join(f.view, 'PlayFabGameSave.dll'));
+    await fs.symlink(path.join(components, 'PlayFabGameSave.dll'), path.join(f.view, 'PlayFabGameSave.dll'));
+    const result = f.run({ WINE_DLL_FILE_MAP: '42:unrelated.dll' });
+    assert.equal(result.status, 70, result.stderr);
+    assert.equal(result.stdout, '', 'target loader was never started');
+    assert.match(result.stderr, /original PlayFab SDK/);
+    await assert.rejects(fs.access(path.join(f.view, 'nexus_pgs_native.dll')));
+    assert.equal((await fs.lstat(path.join(f.view, 'PlayFabGameSave.dll'))).isSymbolicLink(), true);
+  } finally { await f.close(); }
+});
+test('an adapter can never be accepted as its own original SDK', async () => {
+  const f = await fixture();
+  try {
+    await fs.unlink(path.join(f.view, 'PlayFabGameSave.dll'));
+    const proxy = path.join(components, 'PlayFabGameSave.dll');
+    await fs.copyFile(proxy, path.join(f.view, 'PlayFabGameSave.dll'));
+    await fs.copyFile(proxy, path.join(f.view, 'nexus_pgs_native.dll'));
+    const result = f.run({ WINE_DLL_FILE_MAP: '42:unrelated.dll' });
+    assert.equal(result.status, 70, result.stderr);
+    assert.equal(result.stdout, '');
+  } finally { await f.close(); }
+});
+
+
+test('a previous adapter build is refreshed from the preserved original without a file map', async () => {
+  const f = await fixture();
+  try {
+    const old = path.join(f.view, 'previous-adapter.dll');
+    const proxyBytes = await fs.readFile(path.join(components, 'PlayFabGameSave.dll'));
+    await fs.writeFile(old, Buffer.concat([proxyBytes, Buffer.from('previous build fixture')]));
+    await fs.unlink(path.join(f.view, 'PlayFabGameSave.dll'));
+    await fs.symlink(old, path.join(f.view, 'PlayFabGameSave.dll'));
+    await fs.symlink(sdk, path.join(f.view, 'nexus_pgs_native.dll'));
+    const result = f.run({ WINE_DLL_FILE_MAP: '42:unrelated.dll' });
+    assert.equal(result.status, 23, result.stderr);
+    assert.deepEqual(await fs.readFile(path.join(f.view, 'PlayFabGameSave.dll')), proxyBytes);
+    assert.deepEqual(await fs.readFile(old), Buffer.concat([proxyBytes, Buffer.from('previous build fixture')]));
+  } finally { await f.close(); }
+});
+test('a conflicting original SDK alias is retained and never selected over a different mapped SDK', async () => {
+  const f = await fixture();
+  try {
+    const alias = path.join(f.view, 'nexus_pgs_native.dll');
+    const conflicting = Buffer.concat([await fs.readFile(sdk), Buffer.from('different SDK fixture')]);
+    await fs.writeFile(alias, conflicting);
+    await fs.unlink(path.join(f.view, 'PlayFabGameSave.dll'));
+    await fs.copyFile(path.join(components, 'PlayFabGameSave.dll'), path.join(f.view, 'PlayFabGameSave.dll'));
+    const result = f.run();
+    assert.equal(result.status, 70, result.stderr);
+    assert.equal(result.stdout, '');
+    assert.deepEqual(await fs.readFile(alias), conflicting);
+  } finally { await f.close(); }
+});

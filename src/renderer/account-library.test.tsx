@@ -18,7 +18,7 @@ it('offers the explicit recent PC Game Pass order only within the Game Pass acce
 
 it('offers a configurable four-GiB driver shader cache limit with a separate save action',()=>{
   const data=demoSnapshot();let html=renderToStaticMarkup(<SettingsPage data={data} toast={()=>{}} />);
-  expect(html).toContain('Driver cache limit (GiB)');expect(html).toContain('Default: 4 GiB');expect(html).toContain('Save cache limit');expect(html).toContain('next game launch');
+  expect(html).toContain('Cache limit (GiB)');expect(html).toContain('Default: 4 GiB');expect(html).toContain('Save limit');expect(html).toContain('next game launch');
   data.settings.shaderCacheLimitGiB=8.5;html=renderToStaticMarkup(<SettingsPage data={data} toast={()=>{}} />);expect(html).toContain('value="8.5"');
 });
 

@@ -6,7 +6,9 @@ import { randomUUID } from 'node:crypto';
 import { demoSnapshot } from '../shared/demo-data.js';
 import { StateStore } from './store.js';
 import { GameContent } from './game-content.js';
+import { ContentCatalog } from './content-catalog.js';
 import { DownloadCleanup } from './download-cleanup.js';
+import { offerSteamHandoff } from './steam-launch-context.js';
 
 // Run the real IPC/admission/download lifecycle with synthetic child processes.
 // No account, executable, network, installed game or production profile is used.
@@ -20,9 +22,11 @@ const h = vi.hoisted(() => ({
   events: new Map<string, (...args: any[]) => any>(),
   downloads: [] as { args: string[]; progress: (paused?: boolean, phase?: string) => void; finish: (code: number) => void }[],
   installQueue: undefined as undefined | { settled(id: string): Promise<void> },
-  game: undefined as undefined | { finish: (code?: number, output?: string) => void },
+  game: undefined as undefined | { finish: (code?: number, output?: string) => void; line: (line: string) => void },
   quit: vi.fn(), maximize: vi.fn(),
   blockDisplay: vi.fn(() => 7), releaseDisplay: vi.fn(() => true),
+  cleanupGate: undefined as Promise<void> | undefined, wrapperGate: undefined as Promise<void> | undefined,
+  errors: [] as string[], stops: 0,
   steamProfiles: [] as string[], steamIsRunning: true,
   liveImport: vi.fn(), offlineImport: vi.fn(), showMessage: vi.fn(),
   showSave: vi.fn(),
@@ -30,6 +34,7 @@ const h = vi.hoisted(() => ({
   notifications: [] as { title: string; body: string }[],
   holdCancellation: false,
   holdAccountReads: false,
+  cloudSupported: false,
   contentSupported: false,
   discoverySupported: false,
   offlineRuntimeSupported: false,
@@ -57,7 +62,7 @@ vi.mock('electron', () => ({
     on() {} once() {} show() {} hide() {} isVisible() {return true;} focus() {} maximize = h.maximize; isDestroyed() { return false; } async loadFile() {} },
   screen: { getPrimaryDisplay: () => ({ workArea: { x: 0, y: 0, width: 1440, height: 900 } }) },
   globalShortcut:{register:vi.fn(()=>false),unregister:vi.fn()},
-  dialog: { showMessageBox: h.showMessage, showSaveDialog: h.showSave }, nativeImage: {createFromPath:()=>({isEmpty:()=>false})}, Menu:{buildFromTemplate:(items:unknown)=>items}, Tray:class {constructor(){h.trayCreated();}setToolTip(){}on(){}setContextMenu(){}destroy(){h.trayDestroyed();}}, shell: { trashItem: h.trash }, powerSaveBlocker: { start: h.blockDisplay, stop: h.releaseDisplay },
+  dialog: { showMessageBox: (...args:any[]) => { h.errors.push(args[1]?.message); return h.showMessage(...args); }, showSaveDialog: h.showSave }, nativeImage: {createFromPath:()=>({isEmpty:()=>false})}, Menu:{buildFromTemplate:(items:unknown)=>items}, Tray:class {constructor(){h.trayCreated();}setToolTip(){}on(){}setContextMenu(){}destroy(){h.trayDestroyed();}}, shell: { trashItem: h.trash }, powerSaveBlocker: { start: h.blockDisplay, stop: h.releaseDisplay },
 }));
 vi.mock('./backend.js', () => ({ LINUX_RUN_PATCH: 'test-patch', BackendManager: class {
   get current() { return h.backend; } async refresh() {h.backendRefreshes++;} async checkUpdate() {} async externalDownloadRunning() { return false; }
@@ -81,7 +86,7 @@ vi.mock('./install-queue.js', async original => {
 // Deletion is restricted to disposable fixture directories, never real games.
 vi.mock('./game-delete.js', () => ({ deleteGameDirectory: (target: { path: string }) => h.deleteFiles(target.path) }));
 vi.mock('./session-environment.js', () => ({ prepareGameModeKeyring: async () => 'skipped' }));
-vi.mock('./game-shortcuts.js', () => ({ shortcutArguments: () => ({}), shortcutInstanceData: () => ({}), shortcutInstanceRequest: () => ({}),
+vi.mock('./game-shortcuts.js', () => ({ shortcutArguments: () => ({}), shortcutInstanceData: () => ({}), shortcutInstanceRequest: (data:any) => data.nexusShortcut?.request ?? {},
   GameShortcuts: class { async initialize() {} remove = h.removeShortcut; async steamDesktop() { return { file: path.join(h.root, 'game.desktop'),
     launch: { icon: h.wine, title: 'Sample game', executable: '/bin/sh', options: 'fixture', directory: h.root, identity: 'fixture' } }; } } }));
 vi.mock('./steam-shortcuts.js', async original => ({ ...await original<typeof import('./steam-shortcuts.js')>(),
@@ -94,7 +99,7 @@ vi.mock('./install-plan.js', async original => ({ ...await original<typeof impor
     schema:1,rootProductId:productId,market,status:'ready',choices:[{productId,contentId:'11111111-1111-4111-8111-111111111111',title:'Synthetic game',kind:'Game',platform:'Windows.Desktop',packageFormat:'MSIXVC',supported:true}],
   }),
 }));
-vi.mock('./xodus-service.js', () => ({ cloudSaveRuntime: async () => false, unbridgedCloudSaveRuntime: async () => false,
+vi.mock('./xodus-service.js', () => ({ cloudSaveRuntime: async () => h.cloudSupported, unbridgedCloudSaveRuntime: async () => false,
   gameInviteRuntime: async () => false,
   offlineIdentityRuntime: async () => h.offlineRuntimeSupported,
   selectedWinePath: () => h.wine, storeContentRuntime: async () => h.contentSupported, storeDiscoveryRuntime: async () => h.discoverySupported, startXodusService: async () => ({ socketPath: '/synthetic-updates', stop: h.updateStops }) }));
@@ -112,7 +117,7 @@ vi.mock('./connectivity.js',()=>({ConnectivityMonitor:class {
   async check(){return this.current;}
 }}));
 vi.mock('./proton.js', () => ({ prepareProtonRunner: async () => undefined, syncPrefixUserLocale: async (_wine: string, _prefix: string, locale: string | undefined) => { h.prefixLocales.push(locale); }, syncUnrealCultureGameIni: async () => {} }));
-vi.mock('./game-wrapper.js', () => ({ prepareGameWrapper: async () => ({ command: h.wine, cleanup: async () => {} }) }));
+vi.mock('./game-wrapper.js', () => ({ prepareGameWrapper: async () => { await h.wrapperGate; return { command: h.wine, cleanup: async () => {} }; } }));
 vi.mock('./process.js', () => ({
   run: async (_command: string, args: string[]) => ({ code: 0, output: args[0] === 'account' ? JSON.stringify({ stored: true, username: 'sample@example.test' }) : '' }),
   spawnTracked: (_command: string, args: string[], options: any) => {
@@ -134,13 +139,13 @@ vi.mock('./process.js', () => ({
     return { child: { stdin: { on() {}, write: (line: string) => progress(JSON.parse(line).command === 'pause') }, kill: (signal: string) => { h.signals.push(signal); if (!h.holdCancellation) resolve({ code: 130, output: '' }); return true; } }, result };
   },
 }));
-vi.mock('./game-process.js', () => ({ spawnGameProcess: async (_command:string,_args:string[],options:{env:NodeJS.ProcessEnv}) => {
+vi.mock('./game-process.js', () => ({ spawnGameProcess: async (_command:string,_args:string[],options:{env:NodeJS.ProcessEnv; onLine: (line: string) => void}) => {
   h.launchArguments.push([..._args]);
   h.launchEnvironments.push({...options.env});
   let resolve!: (result: { code: number; output: string }) => void;
   const result = new Promise<{ code: number; output: string }>(done => { resolve = done; });
-  h.game = { finish: (code = 0, output = '') => resolve({ code, output }) };
-  return { child: {}, result, cleanup: async () => {}, stop: async () => resolve({ code: 0, output: '' }), forceStop: async () => {} };
+  h.game = { line: options.onLine, finish: (code = 0, output = '') => resolve({ code, output }) };
+  return { child: {}, result, cleanup: async () => { await h.cleanupGate; }, stop: async () => { h.stops++; resolve({ code: 0, output: '' }); }, forceStop: async () => {} };
 } }));
 
 const ipc = (name: string, ...args: any[]) => h.handlers.get(name)!(undefined, ...args);
@@ -207,6 +212,7 @@ it.each(['market','winePath','externalXodusRoot','runtimeRoot'] as const)
 });
 
 beforeAll(async () => {
+  vi.stubEnv('SteamGameId', '');
   h.root = await fs.mkdtemp(path.join(os.tmpdir(), 'nexus-install-integration-'));
   h.wine = path.join(h.root, 'runtime', 'wine'); await fs.mkdir(path.dirname(h.wine)); await fs.writeFile(h.wine, 'fixture', { mode: 0o700 });
   const data = demoSnapshot(); h.backend = { ...data.backend, capabilities: { ...data.backend.capabilities, packageSelection: true, streamingUpdateRecovery: true }, binaryPath: path.join(h.root, 'synthetic-cli'), linuxRunPatch: 'test-patch' }; h.runtime = data.runtime;
@@ -249,6 +255,7 @@ afterAll(async () => {
   h.game?.finish(); for (const job of h.downloads) job.finish(130);
   await new Promise(resolve => setTimeout(resolve, 50));
   await fs.rm(h.root, { recursive: true, force: true });
+  vi.unstubAllEnvs();
 });
 
 it('diagnostic IPC previews without a save/upload, saves exactly reviewed text and honors cancellation', async () => {
@@ -471,6 +478,45 @@ it('routes a direct Durable through real managed-content admission and completio
       expect.objectContaining({ title: 'Content download complete', body: `${task.title} has finished downloading.` }),
     ]));
   }finally{releaseCleanup();cleanup.mockRestore();globalThis.fetch=fetcher;h.contentSupported=false;h.downloads.splice(0);h.notifications.splice(0);}
+});
+
+it('passes installed DLC into the real launch environment when public discovery fails after installation', async () => {
+  const task = snapshot().downloads.find((task: any) => task.kind === 'content' && task.productId === '9MMMMMMMMMMM');
+  expect(task.status).toBe('complete');
+  const manifest = path.join(h.root, 'installed-game/MicrosoftGame.config');
+  const original = await fs.readFile(manifest, 'utf8');
+  expect(original).not.toContain('9MMMMMMMMMMM');
+  const discovery = vi.spyOn(ContentCatalog.prototype, 'discover');
+  const old = process.env.NEXUS_RELATED_PRODUCT_IDS;
+  process.env.NEXUS_RELATED_PRODUCT_IDS = '9FFFFFFFFFFF';
+  h.discoverySupported = true;
+  try {
+    for (const error of [Error('catalog 503 private.invalid/signed?secret'), new DOMException('optional discovery deadline', 'TimeoutError')]) {
+      discovery.mockRejectedValueOnce(error);
+      await ipc('launch-game', 'sample');
+      expect(snapshot().gameOperation.status).toBe('running');
+      const environment = h.launchEnvironments.at(-1)!;
+      expect(environment.NEXUS_RELATED_PRODUCT_IDS).toBe('9MMMMMMMMMMM');
+      expect(environment.XODUS_CONTENT_ROOTS).toContain('Z:' + task.destination.replaceAll('/', '\\'));
+      expect(snapshot().gameOperation.log.join('\n')).not.toContain('secret');
+      h.game!.finish();
+      await vi.waitFor(() => expect(snapshot().gameOperation.status).toBe('complete'));
+      await new Promise(resolve => setTimeout(resolve, 10));
+    }
+    expect(discovery).toHaveBeenCalledTimes(2);
+    expect(await fs.readFile(manifest, 'utf8')).toBe(original);
+    expect((await fs.readdir(task.destination))).toContain('.nexus-content-complete.json');
+  } finally {
+    if (snapshot().gameOperation.status === 'running') {
+      h.game!.finish();
+      await vi.waitFor(() => expect(snapshot().gameOperation.status).toBe('complete'));
+      await new Promise(resolve => setTimeout(resolve, 10));
+    }
+    discovery.mockRestore(); h.discoverySupported = false;
+    h.blockDisplay.mockClear(); h.releaseDisplay.mockClear();
+    if (old === undefined) delete process.env.NEXUS_RELATED_PRODUCT_IDS;
+    else process.env.NEXUS_RELATED_PRODUCT_IDS = old;
+  }
 });
 
 it('gates runtime DLC hints, clears inherited foreign hints and still launches after optional discovery fails without reading accounts',async()=>{
@@ -710,7 +756,102 @@ it('queues an installed-game update behind another download and keeps duplicate 
   await ipc('remove-download', update); await ipc('remove-download', first); h.downloads.splice(0);
 });
 
+async function steamRequest(gameId?: string) {
+  const finished = vi.fn();
+  const environment = { SteamGameId:'16968485195965530112', SteamAppId:'3950780123', SDL_GAMECONTROLLERCONFIG:'Steam Controller gamepad mapping' };
+  const offer = offerSteamHandoff(environment, finished);
+  await vi.waitFor(async () => expect((await fs.stat(offer.handoff.lease.socket)).mode & 0o777).toBe(0o600));
+  h.events.get('second-instance')!(undefined, [], '', { nexusShortcut:{ schema:1, request:{ gameId } }, nexusSteam:offer.handoff });
+  return { ...offer, finished, environment };
+}
+
+it('hands Steam context to the real launch IPC path and retains the secondary through game finalization', async () => {
+  let finishCleanup!: () => void;
+  h.cleanupGate = new Promise<void>(resolve => { finishCleanup = resolve; });
+  const original = { ...process.env };
+  const offer = await steamRequest('sample');
+  try {
+    await vi.waitFor(() => expect(snapshot().gameOperation?.status).toBe('running'));
+    expect(h.launchEnvironments.at(-1)).toMatchObject(offer.environment);
+    expect(process.env).toEqual(original);
+    expect(offer.finished).not.toHaveBeenCalled();
+    h.game!.finish();
+    await vi.waitFor(() => expect(snapshot().gameOperation.status).toBe('complete'));
+    expect(offer.finished).not.toHaveBeenCalled();
+    finishCleanup();
+    await vi.waitFor(() => expect(offer.finished).toHaveBeenCalledTimes(1));
+  } finally { finishCleanup(); h.cleanupGate = undefined; offer.close(); }
+});
+
+it('supports Steam opening an existing launcher, Steam Stop and subsequent ordinary desktop launches', async () => {
+  const offer = await steamRequest();
+  try {
+    await vi.waitFor(() => expect(offer.finished).not.toHaveBeenCalled());
+    // Wait for authenticated handoff/showLauncher to install its context.
+    await new Promise(resolve => setTimeout(resolve, 80));
+    await ipc('launch-game', 'sample');
+    expect(h.launchEnvironments.at(-1)).toMatchObject(offer.environment);
+    const stops = h.stops;
+    const duplicate = await steamRequest();
+    try {
+      await vi.waitFor(() => expect(duplicate.finished).toHaveBeenCalledTimes(1));
+      expect(offer.finished).not.toHaveBeenCalled(); expect(h.stops).toBe(stops);
+    } finally { duplicate.close(); }
+    offer.close();
+    await vi.waitFor(() => expect(h.stops).toBe(stops + 1));
+    await vi.waitFor(() => expect(snapshot().gameOperation.status).toBe('complete'));
+    await new Promise(resolve => setTimeout(resolve, 30));
+    await ipc('launch-game', 'sample');
+    expect(h.launchEnvironments.at(-1)?.SteamGameId).toBe('');
+    expect(h.launchEnvironments.at(-1)?.SDL_GAMECONTROLLERCONFIG).toBe(process.env.SDL_GAMECONTROLLERCONFIG);
+    h.game!.finish();
+    await vi.waitFor(() => expect(snapshot().gameOperation.status).toBe('complete'));
+    await new Promise(resolve => setTimeout(resolve, 30));
+  } finally { offer.close(); }
+});
+
+it('does not start a game if Steam closes its request during launch preparation', async () => {
+  let ready!: () => void;
+  h.wrapperGate = new Promise<void>(resolve => { ready = resolve; });
+  const count = h.launchEnvironments.length, errors = h.errors.length;
+  const offer = await steamRequest('sample');
+  try {
+    await vi.waitFor(() => expect(snapshot().gameOperation?.status).toBe('preparing'));
+    offer.close(); await new Promise(resolve => setTimeout(resolve, 30)); ready();
+    await vi.waitFor(() => expect(h.errors.length).toBe(errors + 1));
+    expect(h.launchEnvironments).toHaveLength(count);
+    expect(snapshot().gameOperation).toBeUndefined();
+  } finally { ready(); h.wrapperGate = undefined; offer.close(); }
+});
+
+it('keeps cloud failure visible after exit0, outside the bounded log, without forcing upload (#297)', async () => {
+  h.cloudSupported = true;
+  const notices = h.notifications.length;
+  try {
+    await ipc('launch-game', 'sample');
+    expect(h.launchEnvironments.at(-1)?.XODUS_SAVE_SYNC).toBe('auto');
+    h.game!.line('0294:err:gdkc:initialize_provider cloud sync failed, hr 0x8083000a.');
+    h.game!.line('0294:err:gdkc:cloud_disable cloud saves disabled for this session, continuing with local saves only.');
+    h.game!.line('xodus-savesync: cloud 0 downloaded 0 uploaded 0');
+    for (let i = 0; i < 300; i++) h.game!.line(`Game line ${i}`);
+    expect(snapshot().gameOperation.cloudSaveWarning).toContain('conflict');
+    expect(h.notifications.slice(notices)).toHaveLength(1);
+    expect(h.notifications.at(-1)?.title).toBe('Cloud saves need attention');
+    h.game!.finish();
+    await vi.waitFor(() => expect(snapshot().gameOperation.status).toBe('complete'));
+    expect(snapshot().gameOperation.cloudSaveWarning).toContain('conflict');
+    await new Promise(resolve => setTimeout(resolve, 30));
+    await ipc('launch-game', 'sample');
+    h.game!.line('xodus-savesync: cloud 1 downloaded 1 uploaded 0');
+    expect(snapshot().gameOperation.cloudSaveWarning).toBeUndefined();
+    h.game!.finish();
+    await vi.waitFor(() => expect(snapshot().gameOperation.status).toBe('complete'));
+    await new Promise(resolve => setTimeout(resolve, 30));
+  } finally { h.cloudSupported = false; h.notifications.splice(notices); }
+});
+
 it('runs real queue IPC, pause/cancel/failure/restart and simultaneous play/download safely', async () => {
+  h.blockDisplay.mockClear(); h.releaseDisplay.mockClear();
   const first = await install('A'); await vi.waitFor(() => expect(h.downloads).toHaveLength(1));
   expect(h.blockDisplay).not.toHaveBeenCalled();
   await ipc('launch-game', 'sample'); expect(snapshot().gameOperation.status).toBe('running');
