@@ -240,3 +240,28 @@ it('renders and operates the demo party invitation, connected controls and leave
   await act(async () => { leave.click(); });
   expect(document.querySelectorAll('.social-party-member')).toHaveLength(0);
 });
+
+it('follows Settings rows across columns instead of skipping the tray and launcher controls', async () => {
+  await click('.sidebar-bottom .nav-item');
+  // Match the staggered rows in Settings: language left/save right, then a
+  // small checkbox left, launcher buttons right, and account actions below.
+  document.querySelectorAll<HTMLElement>('.settings-page button,.settings-page input,.settings-page select,.settings-page summary').forEach((element, index) => {
+    element.dataset.testRect = `400,${2000 + index * 100},100,40`;
+  });
+  const language = get('.settings-language select'), save = get('.settings-language button');
+  const tray = get('.tray-toggle input');
+  const [updates, steam] = [...document.querySelectorAll<HTMLElement>('.launcher-card .button-row button')];
+  const signIn = get('.account-card .button-row button');
+  language.dataset.testRect = '430,270,330,56'; save.dataset.testRect = '1720,269,164,56';
+  tray.dataset.testRect = '427,413,22,22'; updates.dataset.testRect = '1400,551,227,56';
+  steam.dataset.testRect = '1639,551,244,56'; signIn.dataset.testRect = '427,987,186,56';
+  language.focus(); await press(2);
+  await press(15); expect(document.activeElement).toBe(save);
+  await press(14); expect(document.activeElement).toBe(language);
+  await press(15); await press(13); expect(document.activeElement).toBe(tray);
+  await press(13); expect(document.activeElement).toBe(updates);
+  await press(15); expect(document.activeElement).toBe(steam);
+  await press(14); expect(document.activeElement).toBe(updates);
+  await press(12); expect(document.activeElement).toBe(tray);
+  await press(12); expect(document.activeElement).toBe(language);
+});

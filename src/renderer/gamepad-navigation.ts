@@ -92,7 +92,7 @@ export function gridNavigationTarget<T>(from: Rect, targets: readonly { value: T
 type Options = { mode: (active: boolean) => void; back: () => void; page: (delta: number) => void; social?: () => void; search?: () => void; keyboard?: (field: SteamKeyboardRequest) => Promise<unknown> };
 const controls = 'button,a[href],input:not([type="hidden"]),select,textarea,summary,[tabindex]';
 const layers = '[role="dialog"][aria-modal="true"],[data-game-menu],[data-gamepad-layer]';
-const regions = '[data-gamepad-grid],[data-gamepad-filters],[data-gamepad-library-header],[data-gamepad-library-footer],[data-gamepad-detail],.page-scroll,.topbar,.sidebar';
+const regions = '[data-gamepad-grid],[data-gamepad-filters],[data-gamepad-library-header],[data-gamepad-library-footer],[data-gamepad-detail],.settings-page,.page-scroll,.topbar,.sidebar';
 type FocusMemory = { element: HTMLElement; key?: string; page?: string; region?: HTMLElement; rect: Rect };
 
 export function revealDelta(top: number, bottom: number, viewTop: number, viewBottom: number): number {
@@ -398,8 +398,17 @@ export function installGamepadNavigation(win: Window, options: Options): () => v
         }
         const actionRow = direction === 'left' || direction === 'right' ? element.closest<HTMLElement>('[data-gamepad-action-row]') : undefined;
         const region = scope === doc ? actionRow ?? element.closest<HTMLElement>(regions) ?? scope : scope;
-        const choose = (root: HTMLElement | Document) => (root instanceof HTMLElement && root.hasAttribute('data-gamepad-grid') ? gridNavigationTarget : navigationTarget)(focusBox(element).getBoundingClientRect(), candidates(root).filter(target => target !== element)
-          .map(target => ({ value: target, rect: focusBox(target).getBoundingClientRect() })), direction, root === actionRow);
+        const choose = (root: HTMLElement | Document) => {
+          const settings = root instanceof HTMLElement && root.matches('.settings-page');
+          const targets = candidates(root).filter(target => target !== element)
+            .map(target => ({ value: target, rect: focusBox(target).getBoundingClientRect() }));
+          // Settings mixes full-width rows with left/right aligned controls.
+          // Follow the adjacent row vertically instead of skipping cards to
+          // stay in a column; permit offset centres within a horizontal row.
+          return root instanceof HTMLElement && (root.hasAttribute('data-gamepad-grid') || settings && (direction === 'up' || direction === 'down'))
+            ? gridNavigationTarget(focusBox(element).getBoundingClientRect(), targets, direction)
+            : navigationTarget(focusBox(element).getBoundingClientRect(), targets, direction, root === actionRow || settings);
+        };
         const crossRegion = (root: HTMLElement) => choose(root) ?? nearest(remember(element), root);
         let target = choose(region);
         const library = element.closest<HTMLElement>('.library-page');
