@@ -20,6 +20,7 @@ import { downloadLimitArgs, downloadLimitKiB } from '../shared/download-bandwidt
 import { DownloadBandwidthControls, isBandwidthOnlyPatch } from './download-bandwidth.js';
 import { isShaderCacheOnlyPatch, shaderCacheLimits } from '../shared/shader-cache.js';
 import { demoAccountLibrary, demoAccountProducts, demoDownloads, demoGames, demoLaunchOptions, demoLocales, demoSnapshot, type DemoArtwork } from '../shared/demo-data.js';
+import { registerDemoSocialIpc } from './demo-social-ipc.js';
 import { backendLock } from './backend-package.js';
 import {XboxGameGuide,checkGuideHost} from './xbox-game-guide.js';
 import {XboxGuideParty} from './xbox-guide-party.js';
@@ -1520,6 +1521,18 @@ function registerDemoIpc(catalogMarket: () => string): void {
   ipcMain.handle('xbox-party-accept',acceptPartyInvite);
  ipcMain.handle('xbox-invites',async event=>{socialSender(event);return (await xboxInvites.list()).filter(invite=>invite.kind==='party');});
   ipcMain.handle('open-path', () => {});
+  registerDemoSocialIpc(ipcMain, {
+    authorize: event => {
+      if (event.senderFrame !== event.sender.mainFrame || event.sender !== mainWindow?.webContents && !chatWindows.owns(event)) throw Error('Demo Social requests must come from Nexus.');
+    },
+    emit: (channel, value) => { mainWindow?.webContents.send(channel, value); for (const contents of chatWindows.contents) contents.send(channel, value); },
+    openProfile: async xuid => {
+      if (xuid !== 'me' && !/^100[0-7]$/.test(xuid)) throw Error('Unknown demo player.');
+      desktopProfileRequest = { id: randomUUID(), xuid }; await showLauncher();
+      mainWindow?.webContents.send('xbox-desktop-profile', desktopProfileRequest);
+    },
+    popOutChat: xuid => chatWindows.show(xuid),
+  });
 }
 
 function socialSender(event:Electron.IpcMainInvokeEvent):void{
