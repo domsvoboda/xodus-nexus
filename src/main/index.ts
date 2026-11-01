@@ -169,7 +169,6 @@ const gameProcesses = new Map<string, GameProcess>();
 const gameFinalizations = new Map<string, Promise<void>>();
 const steamLeases = new Set<SteamLaunchLease>();
 let steamLauncherSession: { environment: SteamLaunchEnvironment; lease: SteamLaunchLease } | undefined;
-interface SteamGameContext { environment: SteamLaunchEnvironment; signal: AbortSignal }
 interface LaunchRequest extends ShortcutRequest { steam?: SteamHandoff }
 const cancelledDownloads = new Set<string>();
 const downloadCancellations = new Map<string, Promise<void>>();
@@ -297,7 +296,7 @@ else if (primaryInstance && !demoMode) app.on('second-instance', (_event, _argv,
     else pendingShortcutErrors.push(error);
   }
 });
-const shortcutLaunch = new ShortcutLaunch<SteamGameContext>(
+const shortcutLaunch = new ShortcutLaunch<LaunchOptions>(
   () => gameOperation?.kind === 'launch' && ['preparing', 'running', 'stopping'].includes(gameOperation.status) ? gameOperation.gameId : undefined,
   (id, options) => launchGame(id, options),
 );
@@ -1157,7 +1156,7 @@ async function launchGame(id: string, options: LaunchOptions = {}): Promise<void
   operations.set(active.operationId, active.process.child);
   gameProcesses.set(active.operationId, active.process);
   // The session's own cleanup is already queued on `result`; this runs after it starts.
-  const completion = active.result.catch(() => undefined).finally(async () => {
+  const completion = active.result.then(() => {}, () => {}).finally(async () => {
     finalizingGame = true;
     try {
       operations.delete(active.operationId);
