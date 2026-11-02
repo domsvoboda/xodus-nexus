@@ -5,7 +5,7 @@
   "commit": "53ea781dcd073e31d7ea68e894134e9c959bff04",
   "rust": "1.99.0",
   "cargoLockSha256": "2259b343e00dadc263018beb7664b12e9d58a0b73bff502ad566f5f8619ce28a",
-  "patchId": "linux-run-v75",
+  "patchId": "linux-run-v76",
   "compatibility": "linux-run-v25",
   "patches": [
     {
@@ -311,6 +311,10 @@
     {
       "file": "xodus-dlc-mount-workspace.patch",
       "sha256": "e19556947f556c7d507801c09d024bd70020dc3f8534c30a38fb5d47c684b251"
+    },
+    {
+      "file": "xodus-multi-account.patch",
+      "sha256": "e8e26d9c1c2c9d0c58e219d0026e539a74d39ffc9e80d5be9239ffbfca46f797"
     }
   ]
 }

@@ -88,6 +88,14 @@ export class BackendManager {
           && designation?.code === 0 && /(?:^|\s)--license-cache(?:\s|$)/m.test(designation.output);
         capabilities.offlineLaunch = Boolean(capabilities.licenseCache && /(?:^|\s)--offline(?:\s|$)/m.test(launch.output));
       }
+      if (capabilities.login) {
+        const login = await run(binaryPath, ['login', '--help'], { maxOutput: 100_000 });
+        capabilities.playerAccount = login.code === 0 && /(?:^|\s)--player(?:\s|$)/m.test(login.output);
+        const profileHelp = await run(binaryPath, ['profile', '--help']);
+        capabilities.licenseProfile = profileHelp.code === 0 && /(?:^|\s)--license(?:\s|$)/m.test(profileHelp.output);
+        const saved = await run(binaryPath, ['saved-accounts', '--help']);
+        capabilities.savedAccounts = saved.code === 0;
+      }
       return capabilities.login && capabilities.streaming ? capabilities : null;
     } catch (error) { if (error instanceof BackendPrerequisiteError) throw error; return null; }
   }

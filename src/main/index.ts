@@ -65,6 +65,7 @@ import { acceptSteamHandoff, captureSteamLaunchEnvironment, offerSteamHandoff, s
   type SteamHandoff, type SteamLaunchEnvironment, type SteamLaunchLease } from './steam-launch-context.js';
 import { loadShortcutIcon } from './shortcut-icon.js';
 import { AccountProfile } from './account-profile.js';
+import { forgetSavedAccount, listSavedAccounts, useSavedAccount } from './saved-accounts.js';
 import { AccountRefresh, readAccount } from './account-refresh.js';
 import { AccountLibrary } from './account-library.js';
 import { RecentPcGamePass } from './gamepass-recent.js';
@@ -147,7 +148,8 @@ let overlayShortcut:XboxOverlayShortcut|undefined;
 const nativeSocialSnapshots:(()=>void)[]=[];
 function nativeSocialConnection(){
  const status=backend?.current;
- return !demoMode&&!authState.running&&authState.stored===true&&authState.username&&status?.available&&status.binaryPath&&status.capabilities.nativeSocial?{account:authState.username,binary:status.binaryPath}:undefined;
+ // Xbox Live sees the player account when one is stored, otherwise the license account.
+ return !demoMode&&!authState.running&&authState.stored===true&&authState.username&&status?.available&&status.binaryPath&&status.capabilities.nativeSocial?{account:authState.player??authState.username,binary:status.binaryPath}:undefined;
 }
 function resetNativeSocial(){for(const reset of nativeSocialResets)reset();xboxNativeSocial?.clear();resetSocialTransport();}
 let nativeSocialBackend:string|undefined;
@@ -225,7 +227,7 @@ const xboxSocial = new XboxSocialSessions(() => {
   const status = backend?.current;
   return !shutdownStarted && !authState.running && authState.stored === true && authState.username
     && status?.available && status.binaryPath && status.capabilities.commands.includes('social')
-    ? { account: authState.username, binary: status.binaryPath } : undefined;
+    ? { account: authState.player ?? authState.username, binary: status.binaryPath } : undefined;
 });
 const keyringSupport = new KeyringSupport(process.env, undefined, process.platform, undefined, {
   diagnostic: value => backendDiagnostic({ operation: 'keyring', event: 'diagnostic', keyring: value, elapsedMs: value.elapsedMs }),
@@ -254,6 +256,8 @@ let gameUpdateJob: Promise<void> | undefined;
 let snapshotTimer: ReturnType<typeof setTimeout> | undefined;
 let shortcuts: GameShortcuts;
 let accountProfile: AccountProfile;
+let licenseProfile: AccountProfile | undefined;
+let savedAccounts: string[] = [];
 let preparingLaunch = false;
 let preparingInstall = false;
 let preparingContent = false;
@@ -359,7 +363,7 @@ function snapshot(): AppSnapshot {
     downloads: structuredClone(store.downloads.map(task => downloadCancellations.has(task.id)
       ? { ...task, cancelling: true, canPause: false, phase: 'Cancelling download and checking files…' } : task)),
     settings: structuredClone(store.settings),
-    auth: structuredClone({ ...authState, gamertag: accountProfile?.value?.gamertag, avatarDataUrl: accountProfile?.value?.avatarDataUrl, subscription: accountProfile?.value?.subscription }),
+    auth: structuredClone({ ...authState, gamertag: accountProfile?.value?.gamertag, avatarDataUrl: accountProfile?.value?.avatarDataUrl, saved: savedAccounts, licenseAvatarDataUrl: authState.player ? licenseProfile?.value?.avatarDataUrl : undefined, subscription: accountProfile?.value?.subscription }),
     launcherUpdate: structuredClone(launcherUpdater.state),
     gameUpdates: structuredClone(gameUpdates),
     overlayShortcut:overlayShortcut?.current,
@@ -502,7 +506,7 @@ async function refreshAccount(emit = true, afterAuth = false): Promise<AuthStatu
   const status = backend.current;
   const key = accountRefreshKey();
   await accountRefresh.run(key, async signal => {
-    let next: Pick<AuthStatus, 'stored' | 'username' | 'note'>;
+    let next: Pick<AuthStatus, 'stored' | 'username' | 'player' | 'note'>;
     if (!status.available || !status.binaryPath) {
       next = { stored: null, username: undefined, note: 'Account status is unavailable because the Xodus backend is offline.' };
     } else if (!status.capabilities.account) {
@@ -520,11 +524,13 @@ async function refreshAccount(emit = true, afterAuth = false): Promise<AuthStatu
       } else {
         try {
           const line = result.output.split('\n').map((entry) => entry.trim()).reverse().find((entry) => entry.startsWith('{'));
-          const account = JSON.parse(line ?? '') as { stored?: unknown; username?: unknown };
+          const account = JSON.parse(line ?? '') as { stored?: unknown; username?: unknown; player?: { username?: unknown } | null };
           if (account.stored === true && typeof account.username === 'string' && account.username.trim()) {
+            const player = typeof account.player?.username === 'string' ? account.player.username.trim() : '';
             next = {
               stored: true,
               username: account.username.trim(),
+              player: player || undefined,
               note: runtime?.current.name?.includes('-xgamesave-pr28-')
                 ? 'Credentials are stored by Xodus. The experimental PR #28 runtime can try in-game Xbox sign-in and two-way cloud save sync; this account status alone does not verify either.'
                 : 'Credentials are stored by Xodus in the system keychain. This does not mean in-game Xbox platform sign-in is implemented.',
@@ -541,17 +547,21 @@ async function refreshAccount(emit = true, afterAuth = false): Promise<AuthStatu
     }
     return next;
   }, async next => {
-    if (authState.username !== next.username || next.stored !== true) xboxSocial.close();
-    if(next.username!==authState.username||next.stored!==true)resetNativeSocial();
-    authState = { ...authState, ...next };
+    if (authState.username !== next.username || authState.player !== next.player || next.stored !== true) xboxSocial.close();
+    if(next.username!==authState.username||next.player!==authState.player||next.stored!==true)resetNativeSocial();
+    // An error result carries no player, so a stale one must never survive it.
+    authState = { ...authState, player: undefined, ...next };
     accountLibrary.select(authState.stored === true ? authState.username : undefined,
       status.capabilities.library ? status.binaryPath : undefined, currentMarket());
-    gameActivities.select(authState.stored === true ? authState.username : undefined,
+    gameActivities.select(authState.stored === true ? authState.player ?? authState.username : undefined,
       status.capabilities.gameActivity ? status.binaryPath : undefined);
-    gameAchievements.select(authState.stored === true ? authState.username : undefined,
+    gameAchievements.select(authState.stored === true ? authState.player ?? authState.username : undefined,
       status.capabilities.achievements ? status.binaryPath : undefined);
-    await accountProfile?.select(authState.stored === true ? authState.username : undefined,
+    await accountProfile?.select(authState.stored === true ? authState.player ?? authState.username : undefined,
       status.capabilities.profile ? status.binaryPath : undefined, emit);
+    savedAccounts = status.capabilities.savedAccounts && status.binaryPath ? (await listSavedAccounts(status.binaryPath).catch(() => null))?.accounts ?? [] : [];
+    await licenseProfile?.select(authState.stored === true && authState.player ? authState.username : undefined,
+      status.capabilities.licenseProfile ? status.binaryPath : undefined, emit);
   }, () => key === accountRefreshKey() && (!authState.running || afterAuth));
   if (emit) emitSnapshot();
   return structuredClone(authState);
@@ -650,11 +660,12 @@ function verifyOfflineDesignation(): void {
     .finally(() => { designationCheck = undefined; });
 }
 
-async function runAuth(command: 'login' | 'logout'): Promise<void> {
+async function runAuth(command: 'login' | 'logout', player = false): Promise<void> {
   ensureIdle();
   for(const prepare of nativeSocialBeforeAuth)await prepare();
   resetNativeSocial();
   const binary = requireBackend(command);
+  if (player && !backend.current.capabilities.playerAccount) throw Error('Update the Nexus backend in Settings before using a separate player account.');
   const id = `auth-${randomUUID()}`;
   accountRefresh.invalidate();
   accountLibrary.reset();
@@ -672,15 +683,16 @@ async function runAuth(command: 'login' | 'logout'): Promise<void> {
     if (shutdownStarted) throw Error('The launcher is closing.');
     await accountProfile.select(undefined);
     if (shutdownStarted) throw Error('The launcher is closing.');
-    const tracked = command === 'login' ? startAuthTransport(binary, view)
+    const tracked = command === 'login' ? (player ? startAuthTransport(binary, view, process.env, undefined, true) : startAuthTransport(binary, view))
       // Explicit sign-out removes the local device registration too. Ordinary
       // sign-in must keep it, including when renewing an existing account.
-      : spawnTracked(binary, ['logout', '--device'], { onLine: (line) => emitLog('auth', line) });
+      // Signing out only the player account never touches the license account or the device.
+      : spawnTracked(binary, player ? ['logout', '--player'] : ['logout', '--device'], { onLine: (line) => emitLog('auth', line) });
     operations.set(id, tracked.child);
     const result = await tracked.result;
     accountRefresh.invalidate();
     // Another account signing in is caught before its first launch (bindOfflineAccess).
-    if (command === 'logout') await revokeOffline('sign-out');
+    if (command === 'logout' && !player) await revokeOffline('sign-out');
     if (result.code === 0) await refreshAccount(false, true);
     authState = {
       ...authState,
@@ -696,9 +708,9 @@ async function runAuth(command: 'login' | 'logout'): Promise<void> {
   }
 }
 
-function requestAuth(command: 'login' | 'logout'): Promise<void> {
+function requestAuth(command: 'login' | 'logout', player = false): Promise<void> {
   if (authJob) return Promise.reject(Error('A sign-in operation is already in progress.'));
-  const job = runAuth(command); authJob = job;
+  const job = player ? runAuth(command, true) : runAuth(command); authJob = job;
   const clear = () => { if (authJob === job) authJob = undefined; };
   void job.then(clear, clear); return job;
 }
@@ -935,7 +947,7 @@ async function runDownload(task: DownloadTask, binary: string, market: string, u
             delete gameUpdates[updateGame.id];
           }
         }
-        else await store.upsertGame({ ...inspected, offerProductId: /^[A-Z0-9]{12}$/.test(task.productId) ? task.productId : undefined });
+        else await store.upsertGame({ ...inspected, licenseAccount: authState.username, offerProductId: /^[A-Z0-9]{12}$/.test(task.productId) ? task.productId : undefined });
       } catch (error) {
         if (updateGame) await refreshIncompleteUpdate(updateGame).catch(() => {});
         if (updateGame && task.status === 'complete') {
@@ -1090,6 +1102,13 @@ async function prepareGameLaunch(id: string, steam?: SteamGameContext): Promise<
     if (task.gameId === id || installPathsOverlap(target, await canonicalInstallPath(task.destination))) throw Error('Finish or cancel this game\'s installation before playing it.');
   }
   if (await refreshIncompleteUpdate(game)) { emitSnapshot(); throw Error(INCOMPLETE_UPDATE_MESSAGE); }
+  if (game.licenseAccount && authState.username && game.licenseAccount !== authState.username
+      && savedAccounts.includes(game.licenseAccount) && backend.current.binaryPath && backend.current.capabilities.savedAccounts) {
+    // The game was installed with another saved Store account: use that one, no sign-in needed.
+    await useSavedAccount(backend.current.binaryPath, game.licenseAccount);
+    accountRefresh.invalidate();
+    await refreshAccount(false, true);
+  }
   const inspected = await inspectGameDirectory(game.path);
   await store.patchGame(id, {
     installState: inspected.installState,
@@ -1279,8 +1298,8 @@ async function prepareGameLaunch(id: string, steam?: SteamGameContext): Promise<
     const inviteRuntime=await gameInviteRuntime(wine);
     gameInviteUnavailableReason=!inviteRuntime?'The selected runtime does not support game invitations. Update the runtime and restart the game.':!titleId?'The game has no Xbox title information for invitations.':undefined;
     if(titleId&&/^[a-f0-9]{1,8}$/i.test(titleId)&&inviteRuntime){
-      const account=authState.username,epoch=xboxSocial.epoch;
-      const current=()=>!shutdownStarted&&authState.stored===true&&authState.username===account&&xboxSocial.epoch===epoch;
+      const account=authState.player??authState.username,epoch=xboxSocial.epoch;
+      const current=()=>!shutdownStarted&&authState.stored===true&&(authState.player??authState.username)===account&&xboxSocial.epoch===epoch;
       inviteBridge=new GameInviteBridge(operationId,game.title,String(parseInt(titleId,16)),current,emitSnapshot,()=>{void showFriends().catch(()=>{});},Date.now,sender=>{
         if(!Notification.isSupported())return;
         try{const notice=new Notification({title:nativeText('Game invitation'),body:nativeText(`${sender} invited you to ${game.title}. Open Friends to accept.`),urgency:'normal'});notice.on('click',()=>{void showFriends().catch(()=>{});});notice.on('failed',()=>{});notice.show();}catch{/* The dock remains available without desktop notifications. */}
@@ -1563,6 +1582,8 @@ function registerDemoIpc(catalogMarket: () => string): void {
   ipcMain.handle('save-diagnostic-report', (_event, content: unknown) => saveReviewedReport(content));
   ipcMain.handle('login', () => {});
   ipcMain.handle('logout', () => {});
+  ipcMain.handle('use-account', () => {});
+  ipcMain.handle('forget-account', () => {});
   ipcMain.handle('offline-permissions', () => ({ enabled: false, requestSuccess: true, remainingToggles: 2, maxToggles: 3, periodDays: 365, checkedAt: new Date().toISOString() }));
   ipcMain.handle('set-offline-permissions', (_event, enabled: boolean) => ({ enabled: Boolean(enabled), requestSuccess: true, remainingToggles: 1, maxToggles: 3, periodDays: 365, checkedAt: new Date().toISOString() }));
   ipcMain.handle('catalog-search', (_event, query: string, cursor?: string) => catalog.search(query, catalogMarket(), cursor));
@@ -1788,8 +1809,22 @@ function registerIpc(): void {
     if (!gameOperation?.logPath || gameOperation.id !== id) throw new Error('This diagnostic log is no longer available.');
     await copyDiagnosticFile(gameOperation.logPath, path.join(path.dirname(store.settings.runtimeRoot), 'logs'), text => clipboard.writeText(text));
   });
-  ipcMain.handle('login', () => requestAuth('login'));
-  ipcMain.handle('logout', () => requestAuth('logout'));
+  ipcMain.handle('use-account', async (_event, name: unknown) => {
+    if (typeof name !== 'string' || !backend.current.binaryPath || !backend.current.capabilities.savedAccounts) throw new Error('Saved accounts are not available.');
+    ensureIdle();
+    await useSavedAccount(backend.current.binaryPath, name);
+    accountRefresh.invalidate();
+    await refreshAccount(true, true);
+  });
+  ipcMain.handle('forget-account', async (_event, name: unknown) => {
+    if (typeof name !== 'string' || !backend.current.binaryPath || !backend.current.capabilities.savedAccounts) throw new Error('Saved accounts are not available.');
+    ensureIdle();
+    await forgetSavedAccount(backend.current.binaryPath, name);
+    accountRefresh.invalidate();
+    await refreshAccount(true, true);
+  });
+  ipcMain.handle('login', (_event, player?: unknown) => player === true ? requestAuth('login', true) : requestAuth('login'));
+  ipcMain.handle('logout', (_event, player?: unknown) => player === true ? requestAuth('logout', true) : requestAuth('logout'));
   ipcMain.handle('offline-permissions', async () => {
     if (offlinePermissionChanging) throw Error('Wait for the offline-permission change to finish.');
     if (authState.running || authState.stored !== true || !authState.username) throw Error('Sign in before changing offline permissions.');
@@ -2370,7 +2405,7 @@ app.whenReady().then(async () => {
   nativeSocialShutdown.push(async()=>{clearInterval(partyInvitesTimer);await voiceHost.shutdown();});
 
   downloadCleanup = new DownloadCleanup(app.getPath('userData'));
-  accountProfile = new AccountProfile(app.getPath('userData'), scheduleSnapshot, dataUrl => {
+  const normalizeAvatar = (dataUrl: string): string | undefined => {
     try {
       const picture = nativeImage.createFromDataURL(dataUrl);
       if (picture.isEmpty()) return;
@@ -2379,7 +2414,9 @@ app.whenReady().then(async () => {
       const scale = Math.min(1, 256 / Math.max(width, height));
       return picture.resize({ width: Math.max(1, Math.round(width * scale)), height: Math.max(1, Math.round(height * scale)), quality: 'best' }).toDataURL();
     } catch { return undefined; }
-  });
+  };
+  accountProfile = new AccountProfile(app.getPath('userData'), scheduleSnapshot, normalizeAvatar);
+  licenseProfile = new AccountProfile(app.getPath('userData'), scheduleSnapshot, normalizeAvatar, undefined, true);
   launcherUpdater = new LauncherUpdater(app.getVersion(), app.isPackaged ? process.env.APPIMAGE : undefined, app.getPath('userData'), scheduleSnapshot);
   await launcherUpdater.initialize();
   const dataHome = process.env.XDG_DATA_HOME && path.isAbsolute(process.env.XDG_DATA_HOME)
@@ -2539,6 +2576,7 @@ app.on('before-quit', (event) => {
   installQueue.stop();
   accountLibrary.reset();
   accountProfile?.cancel();
+  licenseProfile?.cancel();
   accountRefresh.invalidate();
   if (shutdownStarted || (!xboxNativeSocial && nativeSocialShutdown.length===0 && !xboxSocial.busy && !walletUnlocker.busy && !backendDiagnostics?.pendingWrites && !authJob && !preparingInstall && downloadCancellations.size === 0 && installQueue.size === 0 && operations.size === 0 && serviceSessions.size === 0 && gameInviteBridges.size === 0 && !checkingGameUpdates && !launcherUpdater?.state.updating)) return;
   event.preventDefault();
