@@ -1,6 +1,36 @@
 {
   "schema": 1,
   "approvals": [
+    {
+      "kind": "runtime",
+      "repository": "domsvoboda/nexus-runtime",
+      "arch": "x64",
+      "runId": "41365673812",
+      "commit": "76c6dd1374bd7417f6e1aaf6afefc9a1209008d4",
+      "manifestSha256": "bee80a3f996c8c178b83771f59b8718d67f2e19c180c905c0b9079d68cfaabc5",
+      "notesSha256": "ecfac7cc9a0f6d0157a1f89831ce064a1fc768b2ce3e1a3548d547b17051c5de",
+      "notesPath": ".github/release-notes/launcher-0.4.2.md",
+      "approved": true,
+      "approvedBy": "domsvoboda",
+      "realGameTest": false,
+      "exactCandidateGameTestWaived": true,
+      "evidence": "Owner explicitly authorized automatic publication after successful runtime CI with the approved complete notes, caution and Steam Deck purchase request, and refused further manual/game testing. Exact successful main run 41365673812 at 76c6dd1374bd7417f6e1aaf6afefc9a1209008d4 has original binary and corresponding-source archives verified by size, SHA256 and SHA512. All 12 existing native CI group logs, result proof, built/fixture bindings and source graph match the candidate manifest. The earlier failed candidate remains rejected; this candidate passed with the missing runner i386 X11 dependencies installed. No additional tests were executed. Publish only these unchanged CI bytes with digest-bound approved notes, retain original manifest/source identity and filenames, and do not activate installed production components."
+    },
+    {
+      "kind": "runtime",
+      "repository": "domsvoboda/nexus-runtime",
+      "arch": "arm64",
+      "runId": "41357126085",
+      "commit": "fb9b0ec8161f0d3648c11aeaca13de83550acda1",
+      "manifestSha256": "3cb2b84f790761d189f4a7ca586e8fe31bcd1d32ed83009ed93bcec212c73229",
+      "notesSha256": "ecfac7cc9a0f6d0157a1f89831ce064a1fc768b2ce3e1a3548d547b17051c5de",
+      "notesPath": ".github/release-notes/launcher-0.4.2.md",
+      "approved": true,
+      "approvedBy": "domsvoboda",
+      "realGameTest": false,
+      "exactCandidateGameTestWaived": true,
+      "evidence": "Owner explicitly authorized automatic publication after successful runtime CI with the approved complete notes, caution and Steam Deck purchase request, and refused further manual/game testing. Exact successful main run 41357126085 at fb9b0ec8161f0d3648c11aeaca13de83550acda1 has original binary and corresponding-source archives verified by size, SHA256 and SHA512. All 16 existing native CI group logs, result proof, built/fixture bindings and source graph match the candidate manifest. ARM64 remains experimental; no real ARM game or handheld compatibility is claimed. No additional tests were executed. Publish only these unchanged CI bytes with digest-bound approved notes, retain original manifest/source identity and filenames, and do not activate installed production components."
+    },
       {
         "kind": "launcher",
         "runId": "41359527999",
