@@ -1514,12 +1514,18 @@ async function enrichLibraryCovers(): Promise<void> {
   const missing = store.games.filter((game) => game.storeId && (!game.coverUrl || !game.heroUrl));
   if (missing.length === 0) return;
   const artwork = await catalog.artwork(missing.map((game) => game.storeId!), currentMarket());
-  for (const game of missing) {
+  const requested = new Map(missing.map(game => [game.id, game.storeId]));
+  const updates: { id: string; patch: Partial<Game> }[] = [];
+  // Recheck the live entries after the fetch: games can be removed or changed
+  // while artwork is in flight, and existing art must not be replaced.
+  for (const game of store.games) {
+    if (!game.storeId || requested.get(game.id) !== game.storeId) continue;
     const images = artwork.get(game.storeId!.toUpperCase());
-    if (images) await store.patchGame(game.id, {
-      coverUrl: images.coverUrl ?? game.coverUrl, heroUrl: images.heroUrl ?? game.heroUrl,
-    });
+    if (images && ((!game.coverUrl && images.coverUrl) || (!game.heroUrl && images.heroUrl))) updates.push({ id: game.id, patch: {
+      coverUrl: game.coverUrl || images.coverUrl, heroUrl: game.heroUrl || images.heroUrl,
+    } });
   }
+  await store.patchGames(updates);
 }
 
 async function loadDemoCovers(): Promise<void> {
@@ -2406,10 +2412,11 @@ app.whenReady().then(async () => {
     app.on('activate', () => { if (BrowserWindow.getAllWindows().length === 0) void createWindow(); });
     return;
   }
+  const inspectedGames: { id: string; patch: Partial<Game> }[] = [];
   for (const game of [...store.games]) {
     try {
       const inspected = await inspectGameDirectory(game.path);
-      await store.patchGame(game.id, {
+      inspectedGames.push({ id: game.id, patch: {
         installState: inspected.installState,
         installMessage: inspected.installMessage,
         updateIncomplete: inspected.updateIncomplete,
@@ -2420,12 +2427,13 @@ app.whenReady().then(async () => {
         storeId: inspected.storeId ?? game.storeId,
         installedVersion: inspected.installedVersion,
         packageName: inspected.packageName,
-      });
+      } });
     } catch {
       await refreshIncompleteUpdate(game).catch(() => {});
       // Keep unavailable entries visible, without clearing any update barrier.
     }
   }
+  await store.patchGames(inspectedGames);
   runtime = new RuntimeManager(store.settings.runtimeRoot, emitLog, () => downloadCancellations.size > 0 || operations.size > 0 || installQueue.size > 0 || preparingInstall || backend?.current.updating === true);
   backend = new BackendManager(app.getPath('userData'), store.settings.externalXodusRoot, emitLog, () => keyringSupport.busy || downloadCancellations.size > 0 || operations.size > 0 || installQueue.size > 0 || preparingInstall || runtime?.current.updating === true);
   await backend.refresh();

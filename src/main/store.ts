@@ -113,6 +113,21 @@ export class StateStore {
     return game;
   }
 
+  async patchGames(updates: readonly { id: string; patch: Partial<Game> }[]): Promise<void> {
+    if (!updates.length) return;
+    const games = new Map(this.state.games.map(game => [game.id, game]));
+    // Validate the complete batch before changing any in-memory entry.
+    const targets = updates.map(update => {
+      const game = games.get(update.id);
+      if (!game) throw new Error('Game not found.');
+      return { game, patch: update.patch };
+    });
+    for (const { game, patch } of targets) Object.assign(game, patch);
+    // Keep the same awaited durability/error semantics as patchGame, including
+    // retry after a failed write even if the in-memory values already match.
+    await this.save();
+  }
+
   async removeGame(id: string): Promise<void> {
     this.state.games = this.state.games.filter((entry) => entry.id !== id);
     await this.save();
