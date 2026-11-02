@@ -1,4 +1,5 @@
 {
+  "runtime.build_changed": "La versione installata è cambiata o non è stata approvata. Verificala e scegli esplicitamente un nuovo prefisso separato. I salvataggi locali restano nel vecchio prefisso.",
   "runtime.game_runtime": "Ambiente del gioco",
   "runtime.use_default": "Usa l’ambiente predefinito",
   "runtime.unavailable": "{{name}} (non disponibile)",

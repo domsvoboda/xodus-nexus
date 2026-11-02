@@ -1,6 +1,6 @@
 import {promises as fs} from 'node:fs';
 import path from 'node:path';
-import {gameRuntimeSelection,type GameRuntimeSelection} from '../shared/runtime-selection.js';
+import {gameRuntimeSelection,sameRuntimeBuild,type GameRuntimeSelection} from '../shared/runtime-selection.js';
 import {resolveRuntimeFamily,type ResolvedRuntimeFamily} from './runtime-families.js';
 export interface GameRuntimeContext {
   readonly selection:GameRuntimeSelection;readonly family:'default'|'nexus'|'nexus-cachyos';
@@ -9,7 +9,7 @@ export interface GameRuntimeContext {
 }
 /** Capture once before prerequisite staging or launch. Later setting/pointer
  * changes cannot redirect this session, its prefix or its captured Stop runner. */
-export async function resolveGameRuntime(options:{runtimeRoot:string;dataRoot:string;gameId:string;selection:unknown;separatePrefix:unknown;defaultWine:string|undefined;arch?:string}):Promise<Readonly<GameRuntimeContext>> {
+export async function resolveGameRuntime(options:{runtimeRoot:string;dataRoot:string;gameId:string;selection:unknown;separatePrefix:unknown;approvedBuild?:unknown;defaultWine:string|undefined;arch?:string}):Promise<Readonly<GameRuntimeContext>> {
   const selection=gameRuntimeSelection(options.selection);
   if(!/^[A-Za-z0-9_-]{1,128}$/.test(options.gameId))throw Error('Invalid game prefix identity.');
   if(selection==='default') {
@@ -23,6 +23,7 @@ export async function resolveGameRuntime(options:{runtimeRoot:string;dataRoot:st
   }
   if(options.separatePrefix!==true)throw Error('Choose a separate runtime prefix before using this family. Existing local saves remain in the old prefix.');
   const managed=await resolveRuntimeFamily(options.runtimeRoot,selection,options.arch);
+  if(!sameRuntimeBuild(options.approvedBuild,managed))throw Error('The selected runtime build changed or has not been approved. Explicitly choose the installed build in Game settings. Existing prefix and local saves were preserved.');
   const root=path.join(options.dataRoot,'runtime-prefixes',selection,managed.buildId,options.gameId);
   return Object.freeze({selection,family:selection,winePath:managed.winePath,dataRoot:options.dataRoot,managed,
     compatibilityDataPath:path.join(root,'compatdata'),legacyPrefixRoot:path.join(root,'wine')});

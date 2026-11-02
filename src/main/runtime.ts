@@ -104,6 +104,14 @@ export class RuntimeManager {
     return false;
   }
 
+  async refreshFamilies() {
+    const root=this.status.runtimeRoot;
+    const variants=await installedRuntimeFamilies(root,this.hostArch);
+    if(root!==this.status.runtimeRoot)throw Error('Runtime location changed. Check installed families again.');
+    this.status.variants=variants;
+    return structuredClone(variants);
+  }
+
   async refresh(): Promise<RuntimeStatus> {
     const [gh, authenticated, tar, sha512sum] = await Promise.all([
       this.commandOk('gh', ['--version']),
@@ -112,7 +120,7 @@ export class RuntimeManager {
       this.commandOk('sha512sum', ['--version']),
     ]);
     this.status.prerequisites = { gh, authenticated, tar, sha512sum };
-    this.status.variants = await installedRuntimeFamilies(this.status.runtimeRoot, this.hostArch);
+    await this.refreshFamilies();
     const pointer = await this.readPointer();
     if (pointer && await this.validateWine(pointer.winePath)) {
       Object.assign(this.status, {

@@ -1,4 +1,5 @@
 {
+  "runtime.build_changed": "已安裝的執行環境版本已變更或尚未獲准。請檢查後明確選擇新的獨立前綴。現有本機存檔保留在舊前綴中。",
   "runtime.game_runtime": "遊戲執行環境",
   "runtime.use_default": "使用預設執行環境",
   "runtime.unavailable": "{{name}}（無法使用）",

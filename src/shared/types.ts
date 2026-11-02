@@ -1,4 +1,4 @@
-import type {GameRuntimeSelection,InstalledRuntimeFamily} from './runtime-selection.js';
+import type {GameRuntimeSelection,InstalledRuntimeFamily,RuntimeBuildApproval} from './runtime-selection.js';
 export type Page = 'home' | 'store' | 'library' | 'downloads' | 'settings' | 'social';
 
 export interface BackendCapabilities {
@@ -118,6 +118,7 @@ export interface Game {
   winePath?: string; // Legacy saved field; ignored for launch.
   runtime?: GameRuntimeSelection;
   runtimeSeparatePrefix?: boolean;
+  runtimeBuild?: RuntimeBuildApproval;
   launchArgs?: string;
   launchTools?: GameLaunchTools;
   locale?: string;
@@ -562,6 +563,7 @@ export interface LauncherApi {
   updateBackend(): Promise<void>;
   rebuildBackend(): Promise<void>;
   refreshRuntime(): Promise<RuntimeStatus>;
+  getRuntimeFamilies(): Promise<InstalledRuntimeFamily[]>;
   checkRuntimeUpdate(): Promise<RuntimeStatus>;
   checkNexusRuntime(): Promise<RuntimeStatus>;
   installRuntime(): Promise<void>;
@@ -603,7 +605,7 @@ export interface LauncherApi {
   removeDownload(id: string): Promise<void>;
   clearFinishedDownloads(): Promise<void>;
   importGame(path?: string): Promise<Game | null>;
-  updateGame(id: string, patch: Partial<Pick<Game, 'title' | 'executable' | 'launchArgs' | 'locale' | 'launchTools' | 'runtime' | 'runtimeSeparatePrefix'>>): Promise<Game>;
+  updateGame(id: string, patch: Partial<Pick<Game, 'title' | 'executable' | 'launchArgs' | 'locale' | 'launchTools' | 'runtime' | 'runtimeSeparatePrefix'>> & {runtimeApproveBuild?:boolean;runtimeExpectedBuild?:RuntimeBuildApproval}): Promise<Game>;
   getGameLocales(id: string): Promise<string[]>;
   removeGame(id: string, mode: 'library' | 'delete-files'): Promise<void>;
   getGameLaunchOptions(id: string): Promise<GameLaunchOptions>;

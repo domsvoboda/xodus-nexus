@@ -83,6 +83,7 @@ const api: LauncherApi = {
   updateBackend: () => ipcRenderer.invoke('backend-update'),
   rebuildBackend: () => ipcRenderer.invoke('backend-rebuild'),
   refreshRuntime: () => ipcRenderer.invoke('runtime-refresh'),
+  getRuntimeFamilies: () => ipcRenderer.invoke('runtime-families'),
   checkRuntimeUpdate: () => ipcRenderer.invoke('runtime-check-update'),
   checkNexusRuntime: () => ipcRenderer.invoke('runtime-check-nexus'),
   installRuntime: () => ipcRenderer.invoke('runtime-install'),

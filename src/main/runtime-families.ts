@@ -136,7 +136,7 @@ export async function resolveRuntimeFamily(runtimeRoot:string,selection:unknown,
 }
 export async function installedRuntimeFamilies(runtimeRoot:string,arch:string=process.arch):Promise<InstalledRuntimeFamily[]> {
   const results=await Promise.all(runtimeFamilies.map(async id=>{
-    try{const value=await resolveRuntimeFamily(runtimeRoot,id,arch);return {id:value.id,label:value.label,buildId:value.buildId,sourceCommit:value.sourceCommit};}catch{return undefined;}
+    try{const value=await resolveRuntimeFamily(runtimeRoot,id,arch);return {id:value.id,label:value.label,buildId:value.buildId,sourceCommit:value.sourceCommit,manifestSha256:value.manifestSha256};}catch{return undefined;}
   }));
   return results.filter((value):value is InstalledRuntimeFamily=>Boolean(value));
 }

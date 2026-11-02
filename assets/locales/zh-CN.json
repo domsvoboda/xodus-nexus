@@ -1,4 +1,5 @@
 {
+  "runtime.build_changed": "已安装的运行环境版本已更改或尚未获准。请检查后明确选择新的独立前缀。现有本地存档保留在旧前缀中。",
   "runtime.game_runtime": "游戏运行环境",
   "runtime.use_default": "使用默认运行环境",
   "runtime.unavailable": "{{name}}（不可用）",

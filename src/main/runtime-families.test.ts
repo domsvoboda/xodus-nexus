@@ -4,6 +4,8 @@ import path from 'node:path';
 import os from 'node:os';
 import {execFile as execFileCallback} from 'node:child_process';
 import {promisify} from 'node:util';
+import {approvedRuntimeSettings} from './runtime-settings';
+import type {Game} from '../shared/types';
 import {prepareProtonRunner} from './proton';
 import {createHash} from 'node:crypto';
 import {resolveRuntimeFamily,installedRuntimeFamilies,runtimeFamilyVerificationStats} from './runtime-families';
@@ -11,6 +13,7 @@ import {resolveGameRuntime,bindRuntimePrefix} from './runtime-prefix-binding';
 import {gameRuntimeSelection} from '../shared/runtime-selection';
 let root:string,release:string;
 const hash=(value:string|Buffer)=>createHash('sha256').update(value).digest('hex');
+async function approval(){const value=JSON.parse(await fs.readFile(path.join(root,'variants',family,'current.json'),'utf8'));return {buildId:value.buildId,manifestSha256:value.manifestSha256,sourceCommit:value.sourceCommit};}
 const family='nexus-cachyos',buildId='b'.repeat(64),sourceCommit='a'.repeat(40),sourceRepository='domsvoboda/nexus-runtime-cachyos';
 async function fixture() {
   const files:Record<string,string>={};
@@ -49,7 +52,7 @@ it('rejects executable symlink redirection even to matching bytes',async()=>{
  await expect(resolveRuntimeFamily(root,family,'x64')).rejects.toThrow();
 });
 it('captures immutable independent sessions and preserves the default prefix path',async()=>{
- await fixture();const options={runtimeRoot:root,dataRoot:root,gameId:'test',defaultWine:'/default/wine',arch:'x64'};
+ await fixture();const options={runtimeRoot:root,dataRoot:root,gameId:'test',defaultWine:'/default/wine',arch:'x64',approvedBuild:await approval()};
  const legacy=await resolveGameRuntime({...options,selection:undefined,separatePrefix:false});
  const variant=await resolveGameRuntime({...options,selection:family,separatePrefix:true});
  expect(legacy.compatibilityDataPath).toBe(path.join(root,'compatdata','test'));
@@ -61,7 +64,7 @@ it('captures immutable independent sessions and preserves the default prefix pat
 });
 it('requires explicit separate prefix consent without mutating the legacy prefix or copying saves',async()=>{
  await fixture();await fs.mkdir(path.join(root,'compatdata','test'),{recursive:true});await fs.writeFile(path.join(root,'compatdata','test','save'),'original');
- const options={runtimeRoot:root,dataRoot:root,gameId:'test',selection:family,defaultWine:'/default/wine',arch:'x64'};
+ const options={runtimeRoot:root,dataRoot:root,gameId:'test',selection:family,defaultWine:'/default/wine',arch:'x64',approvedBuild:await approval()};
  await expect(resolveGameRuntime({...options,separatePrefix:false})).rejects.toThrow('local saves');
  const context=await resolveGameRuntime({...options,separatePrefix:true});await bindRuntimePrefix(context);
  expect(await fs.readdir(context.compatibilityDataPath)).toEqual(['.nexus-runtime-family.json']);
@@ -71,7 +74,7 @@ it('requires explicit separate prefix consent without mutating the legacy prefix
  await expect(bindRuntimePrefix(context)).rejects.toThrow('mismatch');
 });
 it('does not adopt an unbound experimental prefix or another family in the default path',async()=>{
- await fixture();const context=await resolveGameRuntime({runtimeRoot:root,dataRoot:root,gameId:'test',selection:family,separatePrefix:true,defaultWine:'/default/wine',arch:'x64'});
+ await fixture();const context=await resolveGameRuntime({runtimeRoot:root,dataRoot:root,gameId:'test',selection:family,separatePrefix:true,approvedBuild:await approval(),defaultWine:'/default/wine',arch:'x64'});
  await fs.mkdir(context.compatibilityDataPath,{recursive:true});await fs.writeFile(path.join(context.compatibilityDataPath,'save'),'keep');
  await expect(bindRuntimePrefix(context)).rejects.toThrow('no runtime binding');
  const legacy=await resolveGameRuntime({runtimeRoot:root,dataRoot:root,gameId:'test',selection:'default',separatePrefix:false,defaultWine:'/default/wine'});
@@ -79,7 +82,7 @@ it('does not adopt an unbound experimental prefix or another family in the defau
  await expect(bindRuntimePrefix(legacy)).rejects.toThrow('another runtime');
 });
 it('rejects prefix symlinks and never writes into their target',async()=>{
- await fixture();const context=await resolveGameRuntime({runtimeRoot:root,dataRoot:root,gameId:'test',selection:family,separatePrefix:true,defaultWine:'/default/wine',arch:'x64'});
+ await fixture();const context=await resolveGameRuntime({runtimeRoot:root,dataRoot:root,gameId:'test',selection:family,separatePrefix:true,approvedBuild:await approval(),defaultWine:'/default/wine',arch:'x64'});
  const other=path.join(root,'untouched');await fs.mkdir(other);await fs.mkdir(path.dirname(context.compatibilityDataPath),{recursive:true});await fs.symlink(other,context.compatibilityDataPath);
  await expect(bindRuntimePrefix(context)).rejects.toThrow('symlinks');expect(await fs.readdir(other)).toEqual([]);
 });
@@ -104,7 +107,7 @@ it('Stop uses its captured runtime and prefix after another launch is selected',
  const manifest=JSON.parse(await fs.readFile(manifestFile,'utf8'));manifest.files['files/bin/wineserver']=hash(await fs.readFile(server));
  const bytes=JSON.stringify(manifest);await fs.writeFile(manifestFile,bytes);
  const pointer=JSON.parse(await fs.readFile(pointerFile,'utf8'));pointer.manifestSha256=hash(bytes);await fs.writeFile(pointerFile,JSON.stringify(pointer));
- const options={runtimeRoot:root,dataRoot:root,gameId:'test',defaultWine:'/default/wine',arch:'x64'};
+ const options={runtimeRoot:root,dataRoot:root,gameId:'test',defaultWine:'/default/wine',arch:'x64',approvedBuild:await approval()};
  const captured=await resolveGameRuntime({...options,selection:family,separatePrefix:true});await bindRuntimePrefix(captured);
  const system32=path.join(captured.compatibilityDataPath,'pfx/drive_c/windows/system32');await fs.mkdir(system32,{recursive:true});
  for(const name of ['libvkd3d-utils-1.dll','dxgi.dll','d3d12.dll'])await fs.writeFile(path.join(system32,name),'synthetic');
@@ -204,4 +207,58 @@ it('rejects a changed cached fingerprint and forces a fresh full pass on retry',
 it('rejects a release-root symlink even when its external payload has matching hashes',async()=>{
  await fixture();const moved=path.join(root,'outside-release');await fs.rename(release,moved);await fs.symlink(moved,release);
  await expect(resolveRuntimeFamily(root,family,'x64')).rejects.toThrow();
+});
+
+async function switchBuild(id:string) {
+ const next=path.join(root,'variants',family,'releases',id);await fs.cp(release,next,{recursive:true});
+ const file=path.join(next,'nexus-family.json');const manifest=JSON.parse(await fs.readFile(file,'utf8'));manifest.buildId=id;
+ const bytes=JSON.stringify(manifest);await fs.writeFile(file,bytes);
+ await fs.writeFile(path.join(root,'variants',family,'current.json'),JSON.stringify({schema:1,family,buildId:id,sourceRepository,sourceCommit,manifestSha256:hash(bytes)}));
+ return {buildId:id,sourceCommit,manifestSha256:hash(bytes)};
+}
+const savedGame=():Game=>({id:'test',path:'/synthetic/game',title:'Synthetic',installState:'ready',addedAt:'2026-01-01'});
+it('pins explicit build approval: A to B never creates a fresh prefix from old consent and preserves A local progress',async()=>{
+ await fixture();let game=savedGame();const approvedA=await approval();
+ Object.assign(game,await approvedRuntimeSettings(game,{runtime:family,runtimeSeparatePrefix:true,runtimeApproveBuild:true,runtimeExpectedBuild:approvedA},root));
+ const options=()=>({runtimeRoot:root,dataRoot:root,gameId:game.id,selection:game.runtime,separatePrefix:game.runtimeSeparatePrefix,approvedBuild:game.runtimeBuild,defaultWine:'/default/wine',arch:'x64'});
+ const a=await resolveGameRuntime(options());await bindRuntimePrefix(a);const progress=path.join(a.compatibilityDataPath,'synthetic-progress');await fs.writeFile(progress,'A progress');
+ const approvedB=await switchBuild('d'.repeat(64));const bRoot=path.join(root,'runtime-prefixes',family,approvedB.buildId,game.id);
+ await expect(resolveGameRuntime(options())).rejects.toThrow('build changed');
+ expect(await fs.readFile(progress,'utf8')).toBe('A progress');await expect(fs.stat(bRoot)).rejects.toMatchObject({code:'ENOENT'});
+ const noResolve=vi.fn(()=>{throw Error('Ordinary settings Save must not approve a new build');});
+ const ordinary=await approvedRuntimeSettings(game,{runtime:family,runtimeSeparatePrefix:true},root,noResolve);
+ expect(ordinary.runtimeBuild).toEqual(approvedA);expect(noResolve).not.toHaveBeenCalled();
+ await expect(approvedRuntimeSettings(game,{runtime:family,runtimeSeparatePrefix:true,runtimeApproveBuild:true,runtimeExpectedBuild:approvedA},root)).rejects.toThrow('settings were open');
+ const forged=await approvedRuntimeSettings(game,{runtime:family,runtimeSeparatePrefix:true,runtimeBuild:approvedB} as never,root);
+ expect(forged.runtimeBuild).toEqual(approvedA);
+ Object.assign(game,await approvedRuntimeSettings(game,{runtime:family,runtimeSeparatePrefix:true,runtimeApproveBuild:true,runtimeExpectedBuild:approvedB},root));
+ expect(game.runtimeBuild).toEqual(approvedB);await expect(fs.stat(bRoot)).rejects.toMatchObject({code:'ENOENT'}); // Saving the choice still does not create a prefix.
+ const b=await resolveGameRuntime(options());await bindRuntimePrefix(b);
+ expect(await fs.readdir(b.compatibilityDataPath)).toEqual(['.nexus-runtime-family.json']);expect(await fs.readFile(progress,'utf8')).toBe('A progress');
+});
+it('does not adopt a legacy family-wide consent or rebind on unrelated title/locale Save',async()=>{
+ await fixture();const game={...savedGame(),runtime:family,runtimeSeparatePrefix:true} as Game;
+ await expect(approvedRuntimeSettings(game,{runtime:family,runtimeSeparatePrefix:true},root)).rejects.toThrow('explicitly approve');
+ await expect(resolveGameRuntime({runtimeRoot:root,dataRoot:root,gameId:game.id,selection:family,separatePrefix:true,defaultWine:'/default/wine',arch:'x64'})).rejects.toThrow('not been approved');
+ const trusted=await approval();Object.assign(game,await approvedRuntimeSettings(game,{runtime:family,runtimeSeparatePrefix:true,runtimeApproveBuild:true,runtimeExpectedBuild:trusted},root));
+ await switchBuild('d'.repeat(64));
+ const {StateStore}=await import('./store');const store=new StateStore(path.join(root,'profile'));await store.upsertGame(game);
+ await store.patchGame(game.id,{...await approvedRuntimeSettings(game,{runtime:family,runtimeSeparatePrefix:true},root),title:'New title',locale:'de-DE'});
+ const loaded=new StateStore(path.join(root,'profile'));await loaded.load();expect(loaded.games[0]).toMatchObject({title:'New title',locale:'de-DE',runtimeBuild:trusted});
+});
+it('captures the approved descriptor once and cannot authorize C if pointer changes after resolving B',async()=>{
+ await fixture();const game=savedGame();const expectedB=await approval();
+ const resolve=vi.fn(async()=>{const b=await resolveRuntimeFamily(root,family,'x64');await switchBuild('d'.repeat(64));return b;});
+ const patch=await approvedRuntimeSettings(game,{runtime:family,runtimeSeparatePrefix:true,runtimeApproveBuild:true,runtimeExpectedBuild:expectedB},root,resolve);
+ expect(resolve).toHaveBeenCalledOnce();expect(patch.runtimeBuild).toEqual(expectedB);
+ await expect(resolveGameRuntime({runtimeRoot:root,dataRoot:root,gameId:game.id,selection:patch.runtime,separatePrefix:patch.runtimeSeparatePrefix,approvedBuild:patch.runtimeBuild,defaultWine:'/default/wine',arch:'x64'})).rejects.toThrow('build changed');
+ await expect(fs.stat(path.join(root,'runtime-prefixes'))).rejects.toMatchObject({code:'ENOENT'});
+});
+it('requires a fresh transient approval and exact expected descriptor, and clears the binding only when default is chosen',async()=>{
+ await fixture();const game=savedGame(),expected=await approval();
+ await expect(approvedRuntimeSettings(game,{runtime:family,runtimeSeparatePrefix:true},root)).rejects.toThrow('Fresh explicit');
+ await expect(approvedRuntimeSettings(game,{runtime:family,runtimeSeparatePrefix:true,runtimeApproveBuild:true,runtimeExpectedBuild:{...expected,manifestSha256:'f'.repeat(64)}},root)).rejects.toThrow('settings were open');
+ const approved=await approvedRuntimeSettings(game,{runtime:family,runtimeSeparatePrefix:true,runtimeApproveBuild:true,runtimeExpectedBuild:expected},root);
+ expect(approved.runtimeBuild).toEqual(expected);
+ expect(await approvedRuntimeSettings({...game,...approved},{runtime:'default'},root)).toEqual({runtime:'default',runtimeSeparatePrefix:false,runtimeBuild:undefined});
 });

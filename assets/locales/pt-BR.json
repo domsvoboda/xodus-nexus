@@ -1,4 +1,5 @@
 {
+  "runtime.build_changed": "A compilação instalada mudou ou não foi aprovada. Revise-a e escolha explicitamente um novo prefixo separado. Os salvamentos locais permanecem no prefixo antigo.",
   "runtime.game_runtime": "Ambiente do jogo",
   "runtime.use_default": "Usar o ambiente padrão",
   "runtime.unavailable": "{{name}} (indisponível)",

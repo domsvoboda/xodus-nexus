@@ -10,8 +10,19 @@ export function gameRuntimeSelection(value: unknown): GameRuntimeSelection {
 export const runtimeFamilyLabels: Record<RuntimeFamily, string> = {
   nexus: 'Nexus Runtime', 'nexus-cachyos': 'Nexus Runtime (CachyOS, experimental)',
 };
+export interface RuntimeBuildApproval {
+  buildId:string; manifestSha256:string; sourceCommit:string;
+}
+export function runtimeBuildApproval(value:unknown):Readonly<RuntimeBuildApproval> {
+  const item=value as RuntimeBuildApproval|undefined;
+  if(!item||typeof item!=='object'||typeof item.buildId!=='string'||typeof item.manifestSha256!=='string'||typeof item.sourceCommit!=='string'||!/^[a-f0-9]{64}$/.test(item.buildId??'')||!/^[a-f0-9]{64}$/.test(item.manifestSha256??'')||!/^[a-f0-9]{40}$/.test(item.sourceCommit??''))throw Error('Choose and explicitly approve an installed runtime build.');
+  return Object.freeze({buildId:item.buildId,manifestSha256:item.manifestSha256,sourceCommit:item.sourceCommit});
+}
+export function sameRuntimeBuild(a:unknown,b:unknown):boolean {
+  try{const left=runtimeBuildApproval(a),right=runtimeBuildApproval(b);return left.buildId===right.buildId&&left.manifestSha256===right.manifestSha256&&left.sourceCommit===right.sourceCommit;}catch{return false;}
+}
 export interface InstalledRuntimeFamily {
-  id: RuntimeFamily; label: string; buildId: string; sourceCommit: string;
+  id: RuntimeFamily; label: string; buildId: string; sourceCommit: string; manifestSha256:string;
 }
 /** A chosen managed family never borrows the global runtime's availability. */
 export function gameRuntimeAvailable(selection:unknown,separatePrefix:unknown,defaultAvailable:boolean,installed:readonly InstalledRuntimeFamily[]):boolean {

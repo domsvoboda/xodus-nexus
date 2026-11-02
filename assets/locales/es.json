@@ -1,4 +1,5 @@
 {
+  "runtime.build_changed": "La compilación del entorno cambió o no se ha aprobado. Revísala y elige explícitamente un nuevo prefijo independiente. Las partidas locales permanecen en el prefijo anterior.",
   "runtime.game_runtime": "Entorno del juego",
   "runtime.use_default": "Usar el entorno predeterminado",
   "runtime.unavailable": "{{name}} (no disponible)",

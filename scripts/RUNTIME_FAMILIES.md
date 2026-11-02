@@ -32,8 +32,23 @@ A receipt is an installer contract, not a substitute for native candidate gates.
 
 ## Prefix and session rules
 
-Selecting a managed family requires an explicit separate-prefix choice. Its
-prefix lives under `runtime-prefixes/<family>/<buildId>/<gameId>/`, separately
+Selecting a managed family requires an explicit separate-prefix choice and a
+server-captured per-game build approval (`buildId`, `manifestSha256`, and
+`sourceCommit`). Approval requires a fresh transient action plus an expected
+build precondition matching the once-resolved verified descriptor. Expected
+renderer hashes are compared for staleness, never persisted as authority.
+Ordinary title or locale Save preserves the existing approval without rebinding.
+Opening Game settings refreshes only the local verified-family listing, without
+changing the default Wine path or refreshing an account.
+
+This model resolves the current family receipt only. If the installed family
+pointer changes, the prior game's approval fails closed before any new prefix is
+created. Old build files, prefixes and saves remain intact. Game settings offer
+explicit same-family approval for the current build; fresh consent resets when
+that displayed build changes. Automatic updates never authorize empty prefixes
+for an already configured game.
+
+Each approved build uses its own prefix. That prefix lives under `runtime-prefixes/<family>/<buildId>/<gameId>/`, separately
 from default `compatdata/<gameId>` and `prefixes/<gameId>`. Existing local saves
 stay in their old prefix. No copying, transfer or prefix initialization occurs
 when saving the selection. Unknown or mismatched prefix bindings fail closed.
