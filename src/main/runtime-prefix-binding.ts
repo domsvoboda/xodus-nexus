@@ -14,8 +14,10 @@ export async function resolveGameRuntime(options:{runtimeRoot:string;dataRoot:st
   if(!/^[A-Za-z0-9_-]{1,128}$/.test(options.gameId))throw Error('Invalid game prefix identity.');
   if(selection==='default') {
     if(!options.defaultWine)throw Error('Select a default Wine / Proton runtime in Settings.');
-    const relative=path.relative(path.join(options.runtimeRoot,'variants'),options.defaultWine);
-    if(relative&&!relative.startsWith('..'+path.sep)&&relative!=='..'&&!path.isAbsolute(relative))throw Error('Select managed runtime families per game with a separate prefix.');
+    const canonical=async(file:string)=>fs.realpath(file).catch(error=>{if(error.code==='ENOENT')return path.resolve(file);throw error;});
+    const managed=path.join(options.runtimeRoot,'variants');
+    const inside=(root:string,file:string)=>{const relative=path.relative(root,file);return Boolean(relative)&&!relative.startsWith('..'+path.sep)&&relative!=='..'&&!path.isAbsolute(relative);};
+    if(inside(managed,options.defaultWine)||inside(await canonical(managed),await canonical(options.defaultWine)))throw Error('Select managed runtime families per game with a separate prefix.');
     return Object.freeze({selection,family:'default',winePath:options.defaultWine,dataRoot:options.dataRoot,
       compatibilityDataPath:path.join(options.dataRoot,'compatdata',options.gameId),legacyPrefixRoot:path.join(options.dataRoot,'prefixes',options.gameId)});
   }

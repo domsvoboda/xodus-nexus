@@ -1,4 +1,4 @@
-import {afterEach,beforeEach,describe,expect,it} from 'vitest';
+import {afterEach,beforeEach,describe,expect,it,vi} from 'vitest';
 import {promises as fs} from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
@@ -6,7 +6,7 @@ import {execFile as execFileCallback} from 'node:child_process';
 import {promisify} from 'node:util';
 import {prepareProtonRunner} from './proton';
 import {createHash} from 'node:crypto';
-import {resolveRuntimeFamily,installedRuntimeFamilies} from './runtime-families';
+import {resolveRuntimeFamily,installedRuntimeFamilies,runtimeFamilyVerificationStats} from './runtime-families';
 import {resolveGameRuntime,bindRuntimePrefix} from './runtime-prefix-binding';
 import {gameRuntimeSelection} from '../shared/runtime-selection';
 let root:string,release:string;
@@ -129,5 +129,79 @@ it('verifies inventoried internal directory symlinks while rejecting external ta
  const bytes=JSON.stringify(manifest);await fs.writeFile(file,bytes);const pointer=JSON.parse(await fs.readFile(pointerFile,'utf8'));pointer.manifestSha256=hash(bytes);await fs.writeFile(pointerFile,JSON.stringify(pointer));
  expect((await resolveRuntimeFamily(root,family,'x64')).id).toBe(family);
  await fs.unlink(path.join(release,'files/shared-link'));await fs.symlink(root,path.join(release,'files/shared-link'));
+ await expect(resolveRuntimeFamily(root,family,'x64')).rejects.toThrow();
+});
+
+async function reseal(change:(manifest:any)=>void) {
+ const file=path.join(release,'nexus-family.json'),pointerFile=path.join(root,'variants',family,'current.json');
+ const manifest=JSON.parse(await fs.readFile(file,'utf8'));change(manifest);const bytes=JSON.stringify(manifest);await fs.writeFile(file,bytes);
+ const pointer=JSON.parse(await fs.readFile(pointerFile,'utf8'));pointer.manifestSha256=hash(bytes);await fs.writeFile(pointerFile,JSON.stringify(pointer));
+}
+it('accepts only the exact inventoried default-template Z mapping without dereferencing it',async()=>{
+ await fixture();const link='files/share/default_pfx/dosdevices/z:';await fs.mkdir(path.dirname(path.join(release,link)));await fs.symlink('/',path.join(release,link));
+ await reseal(manifest=>{manifest.symlinks={[link]:'/'};});
+ expect((await resolveRuntimeFamily(root,family,'x64')).id).toBe(family);
+ await fs.unlink(path.join(release,link));await fs.symlink('/tmp',path.join(release,link));
+ await reseal(manifest=>{manifest.symlinks[link]='/tmp';});await expect(resolveRuntimeFamily(root,family,'x64')).rejects.toThrow();
+});
+it('rejects the same absolute target at another path and an escaped intermediate template directory',async()=>{
+ await fixture();const link='files/share/default_pfx/z:';await fs.symlink('/',path.join(release,link));
+ await reseal(manifest=>{manifest.symlinks={[link]:'/'};});await expect(resolveRuntimeFamily(root,family,'x64')).rejects.toThrow();
+ await fs.unlink(path.join(release,link));const outside=path.join(root,'outside');await fs.mkdir(outside);await fs.symlink('/',path.join(outside,'z:'));
+ await fs.symlink(outside,path.join(release,'files/share/default_pfx/dosdevices'));
+ await reseal(manifest=>{manifest.symlinks={'files/share/default_pfx/dosdevices/z:':'/'};});await expect(resolveRuntimeFamily(root,family,'x64')).rejects.toThrow();
+});
+it('performs one full hash pass for concurrent and repeated unchanged requests, then invalidates changed files',async()=>{
+ await fixture();const baseline=runtimeFamilyVerificationStats();
+ await Promise.all(Array.from({length:8},()=>resolveRuntimeFamily(root,family,'x64')));
+ for(let i=0;i<5;i++)await resolveRuntimeFamily(root,family,'x64');
+ expect(runtimeFamilyVerificationStats().fullPasses-baseline.fullPasses).toBe(1);
+ expect(runtimeFamilyVerificationStats().cacheHits-baseline.cacheHits).toBe(5);
+ const file=path.join(release,'files/bin/wine');const original=await fs.readFile(file);await fs.writeFile(file,original);
+ await resolveRuntimeFamily(root,family,'x64');expect(runtimeFamilyVerificationStats().fullPasses-baseline.fullPasses).toBe(2);
+ await fs.writeFile(file,'modified');await expect(resolveRuntimeFamily(root,family,'x64')).rejects.toThrow();
+ expect(runtimeFamilyVerificationStats().fullPasses-baseline.fullPasses).toBe(3);
+});
+it('invalidates receipt, inventory and symlink changes, and never caches a failing scan',async()=>{
+ await fixture();await resolveRuntimeFamily(root,family,'x64');let baseline=runtimeFamilyVerificationStats().fullPasses;
+ const pointer=path.join(root,'variants',family,'current.json');await fs.appendFile(pointer,' ');await resolveRuntimeFamily(root,family,'x64');
+ expect(runtimeFamilyVerificationStats().fullPasses-baseline).toBe(1);
+ await fs.writeFile(path.join(release,'extra'),'extra');await expect(resolveRuntimeFamily(root,family,'x64')).rejects.toThrow();await expect(resolveRuntimeFamily(root,family,'x64')).rejects.toThrow();
+ expect(runtimeFamilyVerificationStats().fullPasses-baseline).toBe(3);
+ await fs.unlink(path.join(release,'extra'));await fs.symlink('files',path.join(release,'extra-link'));await expect(resolveRuntimeFamily(root,family,'x64')).rejects.toThrow();
+});
+it('rejects a same-bytes write during full verification and does not cache the raced result',async()=>{
+ await fixture();const baseline=runtimeFamilyVerificationStats().fullPasses;
+ const original=fs.readFile.bind(fs);let changed=false;
+ const spy=vi.spyOn(fs,'readFile').mockImplementation((async(file:any,...args:any[])=>{
+   const result=await (original as any)(file,...args);
+   if(String(file).endsWith('XODUS_NEXUS_PATCH.json')&&!changed){changed=true;const loader=path.join(release,'files/bin/wine');await fs.writeFile(loader,await original(loader));}
+   return result;
+ }) as typeof fs.readFile);
+ try{await expect(resolveRuntimeFamily(root,family,'x64')).rejects.toThrow();}finally{spy.mockRestore();}
+ expect(changed).toBe(true);await resolveRuntimeFamily(root,family,'x64');
+ expect(runtimeFamilyVerificationStats().fullPasses-baseline).toBe(2);
+});
+
+it('rejects a default-runtime alias into a managed family but preserves ordinary default symlinks',async()=>{
+ await fixture();const alias=path.join(root,'wine-alias');await fs.symlink(path.join(release,'files/bin/wine'),alias);
+ const options={runtimeRoot:root,dataRoot:root,gameId:'test',selection:'default',separatePrefix:false,arch:'x64'};
+ await expect(resolveGameRuntime({...options,defaultWine:alias})).rejects.toThrow('separate prefix');
+ await fs.unlink(alias);const legacy=path.join(root,'legacy-wine');await fs.writeFile(legacy,'synthetic');await fs.symlink(legacy,alias);
+ expect((await resolveGameRuntime({...options,defaultWine:alias})).winePath).toBe(alias);
+});
+it('rejects a changed cached fingerprint and forces a fresh full pass on retry',async()=>{
+ await fixture();await resolveRuntimeFamily(root,family,'x64');const baseline=runtimeFamilyVerificationStats().fullPasses;
+ const original=fs.readFile.bind(fs);let pointers=0;
+ const spy=vi.spyOn(fs,'readFile').mockImplementation((async(file:any,...args:any[])=>{
+  const result=await (original as any)(file,...args);
+  if(String(file).endsWith('current.json')&&++pointers===2){const loader=path.join(release,'files/bin/wine');await fs.writeFile(loader,await original(loader));}
+  return result;
+ }) as typeof fs.readFile);
+ try{await expect(resolveRuntimeFamily(root,family,'x64')).rejects.toThrow();}finally{spy.mockRestore();}
+ await resolveRuntimeFamily(root,family,'x64');expect(runtimeFamilyVerificationStats().fullPasses-baseline).toBe(1);
+});
+it('rejects a release-root symlink even when its external payload has matching hashes',async()=>{
+ await fixture();const moved=path.join(root,'outside-release');await fs.rename(release,moved);await fs.symlink(moved,release);
  await expect(resolveRuntimeFamily(root,family,'x64')).rejects.toThrow();
 });

@@ -15,7 +15,7 @@ export interface ResolvedRuntimeFamily extends InstalledRuntimeFamily {
 }
 /** Read a receipt written by a verified managed installer, never a user-supplied
  * executable. A missing or damaged selected family cannot fall back to default. */
-export async function resolveRuntimeFamily(runtimeRoot:string,selection:unknown,arch:string=process.arch):Promise<Readonly<ResolvedRuntimeFamily>> {
+async function verifyRuntimeFamily(runtimeRoot:string,selection:unknown,arch:string=process.arch):Promise<Readonly<ResolvedRuntimeFamily>> {
   const id=gameRuntimeSelection(selection);
   if(id==='default')throw Error('Default runtime resolution requires the existing global runtime.');
   if(!['x64','arm64'].includes(arch))throw Error('Unsupported runtime architecture.');
@@ -50,11 +50,12 @@ export async function resolveRuntimeFamily(runtimeRoot:string,selection:unknown,
       if(!within(root,target)||(await fs.stat(target)).isFile()!==true||await fileDigest(target)!==expected)throw Error('Runtime payload checksum mismatch');
     }
     const symlinks=manifest.symlinks??{};
+    const templateMapping=(name:string,target:unknown)=>name==='files/share/default_pfx/dosdevices/z:'&&target==='/';
     if(!symlinks||Array.isArray(symlinks)||typeof symlinks!=='object')throw Error('Invalid runtime symlink inventory');
     for(const [name,target] of Object.entries(symlinks)) {
-      if(typeof target!=='string'||!target||path.isAbsolute(target)||!name||name.includes('\\')||name.split('/').some(part=>!part||part==='.'||part==='..')||path.isAbsolute(name)||name in manifest.files)throw Error('Unsafe runtime symlink path');
+      if(typeof target!=='string'||!target||path.isAbsolute(target)&&!templateMapping(name,target)||!name||name.includes('\\')||name.split('/').some(part=>!part||part==='.'||part==='..')||path.isAbsolute(name)||name in manifest.files)throw Error('Unsafe runtime symlink path');
       const file=path.join(root,name);
-      if(!(await fs.lstat(file)).isSymbolicLink()||await fs.readlink(file)!==target||!within(root,await fs.realpath(file)))throw Error('Runtime symlink leaves verified payload');
+      if(!(await fs.lstat(file)).isSymbolicLink()||await fs.readlink(file)!==target||!within(root,await fs.realpath(path.dirname(file)))||!templateMapping(name,target)&&!within(root,await fs.realpath(file)))throw Error('Runtime symlink leaves verified payload');
     }
     const inventory:string[]=[];
     const walk=async(directory:string)=>{for(const item of await fs.readdir(directory,{withFileTypes:true})){
@@ -73,6 +74,65 @@ export async function resolveRuntimeFamily(runtimeRoot:string,selection:unknown,
     }
     return Object.freeze({id,label:runtimeFamilyLabels[id],buildId:pointer.buildId,sourceCommit:pointer.sourceCommit,winePath,root,arch:arch as 'x64'|'arm64',prefixSchema:1,manifestSha256:pointer.manifestSha256});
   }catch(error){throw Error(`${runtimeFamilyLabels[id]} is unavailable or failed verification. Reinstall this selected runtime; the default was not used.`,{cause:error});}
+}
+// A cache hit still checks identities and the complete inventory, but never
+// reads payload contents. Receipt/manifest/root changes, additions, removals,
+// replacements and writes invalidate it. Never cache a concurrently changed scan.
+const verified=new Map<string,{fingerprint:string;value:Readonly<ResolvedRuntimeFamily>}>();
+const inFlight=new Map<string,Promise<Readonly<ResolvedRuntimeFamily>>>();
+let fullPasses=0,cacheHits=0;
+export const runtimeFamilyVerificationStats=()=>Object.freeze({fullPasses,cacheHits});
+async function runtimeFingerprint(runtimeRoot:string,id:RuntimeFamily):Promise<string> {
+  const hash=createHash('sha256');
+  const add=(value:string)=>{hash.update(String(Buffer.byteLength(value)));hash.update(':');hash.update(value);};
+  const root=await fs.realpath(runtimeRoot),directory=path.join(runtimeRoot,'variants',id);
+  const canonical=await fs.realpath(directory);
+  if(!within(root,canonical))throw Error('Family path leaves runtime root');
+  add(root);add(canonical);
+  const pointerFile=path.join(directory,'current.json');
+  if(!(await fs.lstat(pointerFile)).isFile())throw Error('Receipt must be a regular file');
+  const bytes=await fs.readFile(pointerFile);add(bytes.toString('utf8'));
+  const pointer=JSON.parse(bytes.toString('utf8'));
+  if(!hashId(pointer.buildId))throw Error('Invalid managed build identity');
+  const release=path.join(directory,'releases',pointer.buildId);
+  const identity=async(file:string)=>{
+    const stat=await fs.lstat(file,{bigint:true});
+    add(file);add([stat.dev,stat.ino,stat.mode,stat.nlink,stat.size,stat.mtimeNs,stat.ctimeNs].join(':'));
+    if(stat.isSymbolicLink())add(await fs.readlink(file));
+    return stat;
+  };
+  for(const file of [runtimeRoot,directory,path.join(directory,'releases'),pointerFile])await identity(file);
+  const walk=async(file:string)=>{
+    const stat=await identity(file);
+    if(stat.isDirectory())for(const name of (await fs.readdir(file)).sort())await walk(path.join(file,name));
+  };
+  await walk(release);
+  return hash.digest('hex');
+}
+const hashId=(value:unknown)=>typeof value==='string'&&/^[a-f0-9]{64}$/.test(value);
+export async function resolveRuntimeFamily(runtimeRoot:string,selection:unknown,arch:string=process.arch):Promise<Readonly<ResolvedRuntimeFamily>> {
+  const id=gameRuntimeSelection(selection);
+  if(id==='default')throw Error('Default runtime resolution requires the existing global runtime.');
+  const key=JSON.stringify([path.resolve(runtimeRoot),id,arch]);
+  const pending=inFlight.get(key);if(pending)return pending;
+  const work=(async()=>{
+    try {
+      const before=await runtimeFingerprint(runtimeRoot,id);
+      const previous=verified.get(key);
+      if(previous?.fingerprint===before){
+        if(await runtimeFingerprint(runtimeRoot,id)!==before)throw Error('Runtime changed during cached verification.');
+        cacheHits++;return previous.value;
+      }
+      verified.delete(key);fullPasses++;
+      const value=await verifyRuntimeFamily(runtimeRoot,id,arch);
+      if(await runtimeFingerprint(runtimeRoot,id)!==before)throw Error('Runtime changed during verification. Retry after installation finishes.');
+      verified.set(key,{fingerprint:before,value});
+      while(verified.size>8)verified.delete(verified.keys().next().value!);
+      return value;
+    }catch(error){verified.delete(key);throw Error(`${runtimeFamilyLabels[id]} is unavailable or failed verification. Reinstall this selected runtime; the default was not used.`,{cause:error});}
+  })();
+  inFlight.set(key,work);
+  try{return await work;}finally{if(inFlight.get(key)===work)inFlight.delete(key);}
 }
 export async function installedRuntimeFamilies(runtimeRoot:string,arch:string=process.arch):Promise<InstalledRuntimeFamily[]> {
   const results=await Promise.all(runtimeFamilies.map(async id=>{

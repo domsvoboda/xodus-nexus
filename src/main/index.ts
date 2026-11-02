@@ -727,8 +727,10 @@ async function gameContent(id: string) {
   if (authState.running || authState.stored !== true) throw Error('Sign in before checking game content.');
   const identity = `${authState.username}:${backend.current.binaryPath}:${currentMarket()}`;
   accountLibrary.select(authState.username, backend.current.capabilities.library ? backend.current.binaryPath : undefined, currentMarket());
+  const selectedRuntime=await resolveGameRuntime({runtimeRoot:store.settings.runtimeRoot,dataRoot:path.dirname(store.settings.runtimeRoot),gameId:game.id,
+    selection:game.runtime,separatePrefix:game.runtimeSeparatePrefix,defaultWine:selectedWinePath(store.settings.winePath,store.settings.runtimeRoot,runtime.current.winePath)});
   const result = await contentManager().plan(game, () => accountLibrary.access(true), currentMarket());
-  const wine = selectedWinePath(store.settings.winePath, store.settings.runtimeRoot, runtime.current.winePath);
+  const wine = selectedRuntime.winePath;
   result.plan.runtimeSupported = Boolean(wine && await storeContentRuntime(wine));
   if (authState.running || authState.stored !== true || identity !== `${authState.username}:${backend.current.binaryPath}:${currentMarket()}`) throw Error('Account changed. Check content again.');
   return result;

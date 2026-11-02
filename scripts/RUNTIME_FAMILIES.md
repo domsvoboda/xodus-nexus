@@ -20,7 +20,8 @@ This schema-1 manifest repeats the identity fields and binds `arch: "x64"`,
 file to its SHA-256. Optional `symlinks` maps links to exact relative targets.
 The combined inventory must cover every non-directory entry except the manifest
 itself. Links must resolve inside the release; executable entry points cannot
-be symlinks. ARM64 variants require a separate reviewed payload contract.
+be symlinks. The sole external-link exception is the exact template mapping
+`files/share/default_pfx/dosdevices/z:` to `/`, recorded without traversal. ARM64 variants require a separate reviewed payload contract.
 
 `XODUS_NEXUS_PATCH.json` belongs to the hashed inventory. Its
 `sourceGraph.proton` must equal `sourceCommit`; its `sourceLockSha256` must
@@ -42,7 +43,11 @@ Stop retains the generated runner and wineserver for that session. Later
 selection or pointer changes cannot redirect it. Removal or cleanup must retain
 runtime releases referenced by active sessions or retained prefixes.
 
-Verification currently streams and hashes the full payload on explicit runtime
-refresh, capability preview and launch resolution. Snapshot reads and ordinary
-UI renders do not scan the payload. Large installed variants may make those
-explicit operations slower; no verification cache or performance claim is made.
+Verification streams and hashes the full payload on first resolution or after
+invalidation. A bounded in-memory cache compares complete inventory and file
+identities (device, inode, mode, link count, size, modification and change times)
+on subsequent explicit runtime refresh, capability preview or launch resolution.
+Unchanged files are not rehashed. Before/after fingerprints must match; failed
+or concurrently changed scans are never cached. Concurrent requests coalesce.
+Snapshot reads and ordinary UI renders perform no verification I/O. Identity
+checks still walk the tree; large uncached variants may take time to verify.
