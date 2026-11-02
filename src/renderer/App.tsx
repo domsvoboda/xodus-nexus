@@ -1,7 +1,7 @@
 import { CloudSaveWarning } from './CloudSaveWarning';
 import { CheckField } from './CheckField';
 import { useDialogFocus } from './use-dialog-focus';
-import { useEffect, useLayoutEffect, useMemo, useRef, useState, type FormEvent } from 'react';
+import { lazy, Suspense, useEffect, useLayoutEffect, useMemo, useRef, useState, type FormEvent } from 'react';
 import {
   ArrowDownToLine, Check, ChevronRight, CircleAlert, CircleUserRound,
   Clock3, Cog, Download, FolderOpen, Gamepad2, Github, HardDrive, Home, Library,
@@ -12,7 +12,6 @@ import type { AccountLibraryPage, AppSnapshot, CatalogProduct, CatalogSearchResu
 import {OverlayShortcutRecorder} from './OverlayShortcutRecorder';
 import {reconcileSettingsDraft} from './settings-draft';
 import {xboxOverlaySettings} from '../shared/xbox-overlay-settings';
-import { XboxSocial } from './XboxSocial';
 import './xbox-desktop-social.css';
 import { estimateTimeRemaining } from '../shared/utils';
 import { nexusRuntimeUpdateAvailable, runtimeDisplay } from '../shared/runtime-display';
@@ -40,6 +39,15 @@ import { ui, uiText, i18n, interfaceLanguages, useInterfaceLanguage } from './i1
 import { localizedTimeRemaining } from './localized-time';
 import type { DownloadCancelOptions } from '../shared/types';
 export type { LibraryFilters } from './library-preferences';
+
+const XboxSocial = lazy(() => import('./XboxSocial').then(module => ({ default: module.XboxSocial })));
+
+function SocialLoading({close}:{close?:()=>void}) {
+  return <div>
+    {close?<button data-gamepad-social-close data-gamepad-cancel onClick={close} aria-label={ui("social.close_xbox_social_d9a718")}><X/></button>:null}
+    <div role="status"><LoaderCircle className="spin" aria-label={ui("ui.loading_xodus_nexus_2e92cfd")}/></div>
+  </div>;
+}
 
 const emptySnapshot: AppSnapshot = {
   backend: {
@@ -1251,11 +1259,11 @@ export default function App() {
     <section className="content-shell">
       <header className="topbar" ref={inertRef(socialOpen)}><GlobalSearch games={data.games} page={page} query={search} change={setSearch} submit={value => { setSubmittedSearch(value); go('store'); }} select={openLibraryGame} /><TopStatus data={data} go={go} /></header>
       <CloudSaveWarning operation={data.gameOperation} openGame={openLibraryGame} disabled={socialOpen} />
-      <div data-gamepad-page={page} ref={inertRef(socialOpen)} className={'page-scroll'+(page==='social'?' social-full-page':'')}>{page === 'home' ? <HomePage data={data} go={go} action={action} openGame={openLibraryGame} returnFocusKey={homeReturnKey} /> : null}{page === 'store' ? <StorePage data={data} toast={setToast} go={go} initialQuery={submittedSearch} /> : null}{page === 'library' ? <LibraryPage data={data} toast={setToast} filters={libraryFilters} onFiltersChange={changeLibraryFilters} selection={librarySelection} onSelectionHandled={request => setLibrarySelection(current => current === request ? undefined : current)} returnHome={key => { setHomeReturnKey(key); go('home'); }} /> : null}{page === 'downloads' ? <DownloadsPage data={data} toast={setToast} /> : null}{page === 'settings' ? <SettingsPage data={data} toast={setToast} /> : null}{page === 'social' ? <div className="nexus-social-page"><XboxSocial key={JSON.stringify([data.auth.username,data.backend.binaryPath])} auth={data.auth} api={window.launcher.nativeSocial} voice={data.backend.available&&data.backend.capabilities.nativeSocial?window.launcher:undefined} runtimeInvites={data.social} runtimeApi={window.launcher} expanded active={!socialOpen} readKeys={notifications.readKeys} onViewed={notifications.viewed} showProfile={desktopProfile}/></div> : null}</div>
+      <div data-gamepad-page={page} ref={inertRef(socialOpen)} className={'page-scroll'+(page==='social'?' social-full-page':'')}>{page === 'home' ? <HomePage data={data} go={go} action={action} openGame={openLibraryGame} returnFocusKey={homeReturnKey} /> : null}{page === 'store' ? <StorePage data={data} toast={setToast} go={go} initialQuery={submittedSearch} /> : null}{page === 'library' ? <LibraryPage data={data} toast={setToast} filters={libraryFilters} onFiltersChange={changeLibraryFilters} selection={librarySelection} onSelectionHandled={request => setLibrarySelection(current => current === request ? undefined : current)} returnHome={key => { setHomeReturnKey(key); go('home'); }} /> : null}{page === 'downloads' ? <DownloadsPage data={data} toast={setToast} /> : null}{page === 'settings' ? <SettingsPage data={data} toast={setToast} /> : null}{page === 'social' ? <div className="nexus-social-page"><Suspense fallback={<SocialLoading/>}><XboxSocial key={JSON.stringify([data.auth.username,data.backend.binaryPath])} auth={data.auth} api={window.launcher.nativeSocial} voice={data.backend.available&&data.backend.capabilities.nativeSocial?window.launcher:undefined} runtimeInvites={data.social} runtimeApi={window.launcher} expanded active={!socialOpen} readKeys={notifications.readKeys} onViewed={notifications.viewed} showProfile={desktopProfile}/></Suspense></div> : null}</div>
       {socialOpen?<button className="nexus-social-scrim" aria-label={ui("social.close_social_shelf_09c6eb")} onClick={()=>setSocialOpen(false)}/>:null}
       <aside id="nexus-social-shelf" role="dialog" aria-modal={socialOpen || undefined} data-gamepad-layer data-gamepad-social-shelf className={'nexus-social-shelf'+(socialOpen?' is-open':'')} aria-label={ui("social.xbox_social_shelf_bb6aaf")} aria-hidden={!socialOpen}
         ref={inertRef(!socialOpen)}>
-        {socialMounted?<XboxSocial key={JSON.stringify([data.auth.username,data.backend.binaryPath])} auth={data.auth} api={window.launcher.nativeSocial} voice={data.backend.available&&data.backend.capabilities.nativeSocial?window.launcher:undefined} runtimeInvites={data.social} runtimeApi={window.launcher} shelf active={socialOpen} openChat={socialChat?.identity===JSON.stringify([data.auth.username,data.backend.binaryPath])?socialChat:undefined} readKeys={notifications.readKeys} onViewed={notifications.viewed} close={()=>setSocialOpen(false)}/>:null}
+        {socialMounted?<Suspense fallback={<SocialLoading close={()=>setSocialOpen(false)}/>}><XboxSocial key={JSON.stringify([data.auth.username,data.backend.binaryPath])} auth={data.auth} api={window.launcher.nativeSocial} voice={data.backend.available&&data.backend.capabilities.nativeSocial?window.launcher:undefined} runtimeInvites={data.social} runtimeApi={window.launcher} shelf active={socialOpen} openChat={socialChat?.identity===JSON.stringify([data.auth.username,data.backend.binaryPath])?socialChat:undefined} readKeys={notifications.readKeys} onViewed={notifications.viewed} close={()=>setSocialOpen(false)}/></Suspense>:null}
       </aside>
     </section>
     <button data-gamepad-social-toggle data-gamepad-key="social-toggle" className={'nexus-social-toggle'+(socialOpen?' is-open':'')} aria-label={ui("social.xbox_social_9dd063")} aria-expanded={socialOpen} aria-controls="nexus-social-shelf" onClick={()=>go('social')}><Copy aria-hidden="true"/><span>{ui("social.social_f1b750")}</span><ChevronRight/></button>
