@@ -46,7 +46,12 @@ async function read(binary: string, titleId: string, signal: AbortSignal): Promi
   const timer = setTimeout(stop, 35_000); timer.unref();
   try {
     const result = await tracked.result; signal.throwIfAborted();
-    if (result.code !== 0) throw Error('Achievements unavailable.');
+    if (result.code !== 0) {
+      // The backend reports a fixed failure stage as JSON on stdout; keep only a safe slug.
+      let stage: unknown;
+      try { stage = (JSON.parse(result.output) as { error?: unknown }).error; } catch { /* no stage reported */ }
+      throw Object.assign(Error('Achievements unavailable.'), { stage: typeof stage === 'string' && /^[a-z0-9-]{1,48}$/.test(stage) ? stage : undefined });
+    }
     return result.output;
   } finally { clearTimeout(timer); signal.removeEventListener('abort', stop); }
 }
@@ -82,7 +87,10 @@ export class GameAchievementsReader {
         if (this.cache.size >= 32) this.cache.delete(this.cache.keys().next().value!);
         this.cache.set(titleId, { until: Date.now() + 120_000, value });
         return structuredClone(value);
-      } catch { return { status: 'error' }; }
+      } catch (error) {
+        const reason = (error as { stage?: unknown })?.stage;
+        return typeof reason === 'string' ? { status: 'error', reason } : { status: 'error' };
+      }
       finally { if (generation === this.generation) this.requests.delete(titleId); }
     });
     this.requests.set(titleId, { controller, job });

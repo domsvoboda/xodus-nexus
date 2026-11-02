@@ -385,6 +385,8 @@ export interface GameAchievement {
 
 export interface GameAchievements {
   status: 'available' | 'unavailable' | 'unsupported' | 'signed-out' | 'error';
+  /** Fixed failure stage reported by the backend (status 'error' only). */
+  reason?: string;
   items?: GameAchievement[];
   partial?: boolean;
 }
