@@ -50,7 +50,13 @@ export function peopleMenuPlacement(row:VerticalBounds,anchor:VerticalBounds,vie
 function PeopleRow({person,choose,open,showMenu,closeMenu,actions}:{person:XboxPerson;choose:()=>void;open:boolean;showMenu?:()=>void;closeMenu:()=>void;actions?:ReactNode}){
   const row=useRef<HTMLDivElement>(null),menu=useRef<HTMLDivElement>(null),more=useRef<HTMLButtonElement>(null);
   const [placement,setPlacement]=useState<ReturnType<typeof peopleMenuPlacement>>();
-  const close=(restore=false)=>{closeMenu();if(restore)more.current?.focus();};
+  const restoreFocus=useRef(false);
+  const close=(restore=false)=>{restoreFocus.current=restore;closeMenu();};
+  // Restore after the menu leaves the DOM. The controller may still poll the
+  // old layer in the frame that requested its dismissal.
+  useBrowserLayoutEffect(()=>{
+    if(!open&&restoreFocus.current){restoreFocus.current=false;more.current?.focus({preventScroll:true});}
+  },[open]);
   useBrowserLayoutEffect(()=>{
     if(!open||!row.current||!menu.current||!more.current)return;
     const place=()=>{
@@ -98,12 +104,12 @@ function PeopleRow({person,choose,open,showMenu,closeMenu,actions}:{person:XboxP
         {person.lastSeen?<small className="social-person-last-seen">{ui("social.last_seen_21fd79")} {person.lastSeen}</small>:null}
       </span>
     </button>
-    {showMenu?<button type="button" className="social-circle-button social-person-more" ref={more}
+    {showMenu?<button type="button" className="social-circle-button social-person-more" ref={more} data-gamepad-menu-trigger
       aria-label={'Actions for '+person.gamertag} aria-haspopup="menu" aria-expanded={open} aria-controls={open?'people-actions-'+person.xuid:undefined}
       onClick={()=>open?close(true):showMenu()} onKeyDown={event=>{if(event.key==='ArrowDown'||event.key==='ArrowUp'){event.preventDefault();showMenu();}}}><MoreHorizontal/></button>:null}
     {open?<div className={'social-person-menu'+(placement?.up?' opens-up':'')} style={{top:placement?.up?'auto':placement?.offset??58,
       bottom:placement?.up?placement.offset:undefined,maxHeight:placement?.maxHeight,overflowY:'auto'}}
-      id={'people-actions-'+person.xuid} role="menu" aria-label={'Actions for '+person.gamertag} ref={menu} tabIndex={-1} onKeyDown={keys}>{actions}</div>:null}
+      id={'people-actions-'+person.xuid} role="menu" data-gamepad-menu aria-label={'Actions for '+person.gamertag} ref={menu} tabIndex={-1} onKeyDown={keys}>{actions}</div>:null}
   </div>;
 }
 
