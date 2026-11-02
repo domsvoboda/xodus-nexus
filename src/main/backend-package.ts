@@ -1,20 +1,17 @@
-import { createHash } from 'node:crypto';
 import { readFileSync } from 'node:fs';
-import { fileURLToPath } from 'node:url';
 import { BACKEND_ARCH_SUFFIX, currentArch, type NexusArch } from './arch.js';
 
-export const BACKEND_REPOSITORY = 'domsvoboda/xodus-nexus';
-export const backendAssets = fileURLToPath(new URL('../../assets/', import.meta.url));
-const lockBytes = readFileSync(new URL('../../assets/backend-source.lock.json', import.meta.url));
-export const backendLock = JSON.parse(lockBytes.toString()) as {
-  schema: number; version: string; repository: string; commit: string; rust: string;
-  cargoLockSha256: string; patchId: string; compatibility: string;
-  patches: Array<{ file: string; sha256: string }>;
+export const BACKEND_REPOSITORY = 'domsvoboda/nexus-backend';
+export const LEGACY_BACKEND_REPOSITORY = 'domsvoboda/xodus-nexus';
+export const BACKEND_REPOSITORIES = [BACKEND_REPOSITORY, LEGACY_BACKEND_REPOSITORY] as const;
+export type BackendRepository = typeof BACKEND_REPOSITORIES[number];
+export const backendLock = JSON.parse(readFileSync(new URL('../../assets/backend-source.lock.json', import.meta.url), 'utf8')) as {
+  schema: 2; version: string; minimumVersion: string; repository: string; commit: string; rust: string;
+  cargoLockSha256: string; buildConfigSha256: string; compatibility: string;
 };
-export const backendRecipeSha256 = createHash('sha256').update(lockBytes).digest('hex');
-// The launcher accepts any stable backend release at or above the version it was
-// built with, so backend updates no longer require a new launcher release.
-export const minimumBackendVersion = backendLock.version;
+export const backendRecipeSha256 = backendLock.buildConfigSha256;
+// The source pin may be newer than the minimum compatible published package.
+export const minimumBackendVersion = backendLock.minimumVersion;
 /** Release archives are per architecture; a launcher only ever installs its own. */
 export const backendPackageName = (version: string, arch: NexusArch = currentArch()) => `xodus-nexus-backend-${version}-linux-${BACKEND_ARCH_SUFFIX[arch]}`;
 
@@ -25,16 +22,18 @@ export function compareVersions(a: string, b: string): number {
 }
 
 export interface BackendPackageManifest {
-  schema: number; version: string; commit: string; recipeSha256: string;
+  schema: number; sourceRepository?: string; version: string; commit: string; recipeSha256: string;
   compatibility: string; platform: string; arch: string;
   archive: string; archiveSha512: string;
   files: Record<string, string>;
   authUi: 'electron';
 }
 
-export function validateBackendManifest(value: unknown, arch: NexusArch = currentArch()): BackendPackageManifest {
+export function validateBackendManifest(value: unknown, arch: NexusArch = currentArch(), repository?: BackendRepository): BackendPackageManifest {
   const item = value as BackendPackageManifest | undefined;
-  if (!item || item.schema !== 1 || item.authUi !== 'electron' || !/^\d+\.\d+\.\d+$/.test(item.version ?? '') ||
+  if (!item || ![1, 2].includes(item.schema) ||
+      (item.schema === 1 && (item.sourceRepository !== undefined || (repository && repository !== LEGACY_BACKEND_REPOSITORY))) ||
+      (item.schema === 2 && (item.sourceRepository !== BACKEND_REPOSITORY || (repository && repository !== BACKEND_REPOSITORY))) || item.authUi !== 'electron' || !/^\d+\.\d+\.\d+$/.test(item.version ?? '') ||
       compareVersions(item.version, minimumBackendVersion) < 0 ||
       !/^[a-f0-9]{40}$/.test(item.commit ?? '') || !/^[a-f0-9]{64}$/.test(item.recipeSha256 ?? '') ||
       typeof item.compatibility !== 'string' || !item.compatibility.trim() ||
@@ -47,8 +46,9 @@ export function validateBackendManifest(value: unknown, arch: NexusArch = curren
   return item;
 }
 
-export function backendAssetUrl(tag: string, name: string, url: unknown): string {
-  const expected = `https://github.com/${BACKEND_REPOSITORY}/releases/download/${encodeURIComponent(tag)}/${name}`;
+export function backendAssetUrl(tag: string, name: string, url: unknown, repository: BackendRepository = BACKEND_REPOSITORY): string {
+  if (!BACKEND_REPOSITORIES.includes(repository)) throw new Error('Unexpected backend repository.');
+  const expected = `https://github.com/${repository}/releases/download/${encodeURIComponent(tag)}/${name}`;
   if (url !== expected) throw new Error('Unexpected backend release asset URL.');
   return expected;
 }
