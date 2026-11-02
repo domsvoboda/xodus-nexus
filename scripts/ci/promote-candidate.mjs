@@ -10,7 +10,7 @@ import { releaseNotesRef, assertApprovedReleaseNotes } from './release-notes-pol
 const kind = process.env.CANDIDATE_KIND, runId = process.env.CANDIDATE_RUN;
 const repo = process.env.GITHUB_REPOSITORY;
 if (process.env.GITHUB_REF !== 'refs/heads/main' || process.env.APPROVE_RELEASE !== 'true') throw Error('Explicit main-branch release authorization required');
-if (!['launcher', 'runtime', 'backend'].includes(kind) || !/^\d+$/.test(runId ?? '') || !/^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/.test(repo ?? '')) throw Error('Invalid promotion selection');
+if (!['launcher', 'runtime'].includes(kind) || !/^\d+$/.test(runId ?? '') || !/^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/.test(repo ?? '')) throw Error('Invalid promotion selection');
 const command = (tool, args) => execFileSync(tool, args, { encoding: 'utf8', maxBuffer: 4 * 1024 * 1024 });
 const run = JSON.parse(command('gh', ['api', `repos/${repo}/actions/runs/${runId}`]));
 const workflow = JSON.parse(command('gh', ['api', `repos/${repo}/actions/workflows/${run.workflow_id}`]));
@@ -41,23 +41,6 @@ try {
     if (changed) throw Error('Runtime build inputs changed after candidate validation');
     const archive = manifest.files.find(file => /-(?:x86_64|aarch64)\.tar\.xz$/.test(file.name));
     tag = archive.name.replace(/^xodus-nexus-runtime-/, 'runtime-').replace(/-(?:x86_64|aarch64)\.tar\.xz$/, '');
-  } else if (kind === 'backend') {
-    const lock = JSON.parse(command('git', ['show', `${run.head_sha}:assets/backend-source.lock.json`]));
-    const recipeHash = createHash('sha256').update(command('git', ['show', `${run.head_sha}:assets/backend-source.lock.json`])).digest('hex');
-    const metadataFiles = manifest.files.filter(file => file.name.endsWith('.manifest.json'));
-    if (metadataFiles.length === 0) throw Error('Backend metadata missing');
-    // One candidate may carry x86_64 and aarch64; each archive carries its own provenance.
-    for (const file of metadataFiles) {
-      const metadata = JSON.parse(await fs.readFile(path.join(directory, file.name), 'utf8'));
-      if (!/^\d+\.\d+\.\d+$/.test(lock.version) || metadata.version !== lock.version || metadata.commit !== lock.commit ||
-          metadata.recipeSha256 !== recipeHash || metadata.compatibility !== lock.compatibility ||
-          !['x64', 'arm64'].includes(metadata.arch) || metadata.platform !== 'linux' || metadata.authUi !== 'electron' ||
-          metadata.archive !== `xodus-nexus-backend-${lock.version}-linux-${{x64:'x86_64',arm64:'aarch64'}[metadata.arch]}.tar.xz` ||
-          file.name !== metadata.archive?.replace('.tar.xz', '.manifest.json')) throw Error('Backend recipe provenance mismatch');
-      const checksumFile = manifest.files.find(entry => entry.name === metadata.archive?.replace('.tar.xz', '.sha512sum'));
-      if (!checksumFile || (await fs.readFile(path.join(directory, checksumFile.name), 'utf8')).trim() !== `${metadata.archiveSha512}  ${metadata.archive}`) throw Error('Backend archive identity mismatch');
-    }
-    tag = `backend-v${lock.version}`;
   } else {
     const pkg = JSON.parse(command('git', ['show', `${run.head_sha}:package.json`]));
     if (!/^\d+\.\d+\.\d+$/.test(pkg.version)) throw Error('Not a stable launcher version');

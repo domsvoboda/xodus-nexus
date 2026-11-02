@@ -4,13 +4,13 @@ import { randomUUID, createHash } from 'node:crypto';
 import type { BackendCapabilities, BackendStatus } from '../shared/types.js';
 import { parseBackendHelp } from '../shared/utils.js';
 import { run } from './process.js';
-import { backendLock, backendRecipeSha256, backendAssets, compareVersions } from './backend-package.js';
+import { backendLock, backendRecipeSha256, compareVersions } from './backend-package.js';
 import { discoverBackend, installBackend, type BackendArtifact } from './backend-releases.js';
 import { BackendPrerequisiteError, backendPrerequisiteFailure } from './backend-prerequisites.js';
 
 const REPOSITORY = backendLock.repository;
 export const LINUX_RUN_PATCH = backendLock.compatibility;
-const LINUX_RUN_RELEASE = backendLock.patchId;
+const LINUX_RUN_RELEASE = backendLock.commit.slice(0, 12);
 const EMPTY_CAPABILITIES: BackendCapabilities = {
   commands: [], account: false, login: false, logout: false, download: false, streaming: false, run: false,
 };
@@ -235,9 +235,6 @@ export class BackendManager {
     const staging = path.join(this.managedRoot, `.staging-${randomUUID()}`);
     const log = (line: string) => this.emitLog('backend', line);
     try {
-      for (const patch of backendLock.patches) {
-        if (createHash('sha256').update(await fs.readFile(path.join(backendAssets, patch.file))).digest('hex') !== patch.sha256) throw new Error('Backend patch checksum mismatch.');
-      }
       log(`Cloning the pinned Xodus source ${backendLock.commit}…`);
       let result = await run('git', ['clone', '--no-checkout', REPOSITORY, staging], { onLine: log });
       if (result.code !== 0) throw new Error(`git clone exited with code ${result.code}`);
@@ -245,15 +242,11 @@ export class BackendManager {
       if (result.code !== 0) throw new Error('Pinned backend checkout failed.');
       const commit = (await run('git', ['-C', staging, 'rev-parse', 'HEAD'])).output.trim();
       if (commit !== backendLock.commit || createHash('sha256').update(await fs.readFile(path.join(staging, 'Cargo.lock'))).digest('hex') !== backendLock.cargoLockSha256) throw new Error('Backend source lock mismatch.');
-      for (const patch of backendLock.patches) {
-        const patchFile = path.join(staging, `.nexus-${patch.file}`);
-        await fs.writeFile(patchFile, await fs.readFile(path.join(backendAssets, patch.file)));
-        log(`Applying ${patch.file}…`);
-        result = await run('git', ['-C', staging, 'apply', '--check', patchFile], { onLine: log, maxOutput: 100_000 });
-        if (result.code !== 0) throw new Error(`The pinned backend patch ${patch.file} does not apply; the previous backend remains active.`);
-        result = await run('git', ['-C', staging, 'apply', patchFile], { onLine: log, maxOutput: 100_000 });
-        if (result.code !== 0) throw new Error(`Backend patch ${patch.file} could not be applied.`);
-      }
+      if (createHash('sha256').update(await fs.readFile(path.join(staging, 'build-config.json'))).digest('hex') !== backendLock.buildConfigSha256)
+        throw new Error('Backend build configuration mismatch.');
+      const compiler = await run('rustc', ['--version']);
+      if (compiler.code !== 0 || !compiler.output.startsWith(`rustc ${backendLock.rust} `))
+        throw new Error(`The source build requires Rust ${backendLock.rust}.`);
       const target = path.join(staging, 'target');
       log(`Building ${commit.slice(0, 10)} with Cargo…`);
       result = await run('cargo', ['build', '--locked', '--release', '--no-default-features', '-p', 'xodus-cli', '-p', 'xodus-service'], {
