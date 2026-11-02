@@ -57,6 +57,8 @@ interface BundleReference {
 const IMAGE_HOSTS = new Set(['store-images.s-microsoft.com', 'store-images.microsoft.com']);
 const STORE_HOSTS = new Set(['www.xbox.com', 'xbox.com', 'apps.microsoft.com']);
 const CACHE_TTL_MS = 10 * 60 * 1000;
+const SEARCH_CACHE_LIMIT = 100;
+const SEARCH_REQUEST_LIMIT = 32;
 // Box art is square and carries the game's title branding, matching the
 // square library tiles; promotional square art is the textless fallback.
 const POSTER_PURPOSES = ['BoxArt', 'TitledPoster', 'Poster', 'FeaturePromotionalSquareArt'];
@@ -278,8 +280,33 @@ export class CatalogService {
   private readonly gameCache = new Map<string, { until: number; value: GameStoreDetails }>();
   private readonly gameRequests = new Map<string,Promise<GameStoreDetails|undefined>>();
   private readonly cache = new Map<string, { expires: number; value: CatalogSearchResult }>();
+  private readonly requests = new Map<string, Promise<CatalogSearchResult>>();
 
   constructor(private readonly fetcher: Fetcher = fetch) {}
+
+  private async cachedResult(key: string, load: () => Promise<CatalogSearchResult>): Promise<CatalogSearchResult> {
+    const now = Date.now();
+    for (const [entryKey, entry] of this.cache) if (entry.expires <= now) this.cache.delete(entryKey);
+    const cached = this.cache.get(key);
+    if (cached) {
+      this.cache.delete(key);
+      this.cache.set(key, cached);
+      return structuredClone(cached.value);
+    }
+    const pending = this.requests.get(key);
+    if (pending) return structuredClone(await pending);
+    if (this.requests.size >= SEARCH_REQUEST_LIMIT) throw new Error('Too many Store requests. Try again.');
+    const request = Promise.resolve().then(load);
+    this.requests.set(key, request);
+    try {
+      const value = await request;
+      while (this.cache.size >= SEARCH_CACHE_LIMIT) this.cache.delete(this.cache.keys().next().value!);
+      this.cache.set(key, { expires: Date.now() + CACHE_TTL_MS, value });
+      return structuredClone(value);
+    } finally {
+      this.requests.delete(key);
+    }
+  }
 
   /** Read descriptive data independently of installation, ownership or package support. */
   async gameDetails(productId: string, rawMarket: string): Promise<GameStoreDetails | undefined> {
@@ -445,9 +472,10 @@ export class CatalogService {
     if (cursor && (cursor.length > 4096 || !/^[A-Za-z0-9+/=_-]+$/.test(cursor))) throw new Error('The Store paging cursor is invalid.');
     const market = normalizeMarket(rawMarket);
     const cacheKey = `${market}\u0000${query.toLowerCase()}\u0000${cursor ?? ''}`;
-    const cached = this.cache.get(cacheKey);
-    if (cached && cached.expires > Date.now()) return structuredClone(cached.value);
+    return this.cachedResult(cacheKey, () => this.searchResult(query, market, cursor));
+  }
 
+  private async searchResult(query: string, market: string, cursor?: string): Promise<CatalogSearchResult> {
     const searchUrl = new URL('https://apps.microsoft.com/api/products/search');
     for (const [key, value] of Object.entries({ query, mediaType: 'games', age: 'all', price: 'all', category: 'all', subscription: 'all', gl: market, hl: 'en-us' })) {
       searchUrl.searchParams.set(key, value);
@@ -456,16 +484,16 @@ export class CatalogService {
     const searchResponse = await this.fetcher(searchUrl, { headers: { Accept: 'application/json' }, signal: AbortSignal.timeout(20_000) });
     if (!searchResponse.ok) throw new Error(`Microsoft Store search returned HTTP ${searchResponse.status}.`);
     const search = await searchResponse.json() as StoreSearchResponse;
-    const value = await this.result(search, query, market, true);
-    this.cache.set(cacheKey, { expires: Date.now() + CACHE_TTL_MS, value });
-    return structuredClone(value);
+    return this.result(search, query, market, true);
   }
 
   async featured(rawMarket: string): Promise<CatalogSearchResult> {
     const market = normalizeMarket(rawMarket);
     const cacheKey = `${market}\u0000featured`;
-    const cached = this.cache.get(cacheKey);
-    if (cached && cached.expires > Date.now()) return structuredClone(cached.value);
+    return this.cachedResult(cacheKey, () => this.featuredResult(market));
+  }
+
+  private async featuredResult(market: string): Promise<CatalogSearchResult> {
     const url = new URL('https://apps.microsoft.com/api/Reco/GetComputedProductsList');
     for (const [key, value] of Object.entries({
       listName: 'TopTrending', pgNo: '1', noItems: '12', filteredCategories: 'AllProducts',
@@ -474,9 +502,7 @@ export class CatalogService {
     const response = await this.fetcher(url, { headers: { Accept: 'application/json' }, signal: AbortSignal.timeout(20_000) });
     if (!response.ok) throw new Error(`Microsoft Store featured collection returned HTTP ${response.status}.`);
     const search = await response.json() as StoreSearchResponse & { title?: unknown };
-    const value = await this.result(search, string(search.title) ?? 'Trending games', market, false);
-    this.cache.set(cacheKey, { expires: Date.now() + CACHE_TTL_MS, value });
-    return structuredClone(value);
+    return this.result(search, string(search.title) ?? 'Trending games', market, false);
   }
 
   async posters(ids: string[], rawMarket: string): Promise<Map<string, string>> {
