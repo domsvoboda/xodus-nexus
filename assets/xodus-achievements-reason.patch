@@ -1,0 +1,29 @@
+diff --git a/crates/xodus-cli/src/commands/achievements.rs b/crates/xodus-cli/src/commands/achievements.rs
+index cd80774..739f7c6 100644
+--- a/crates/xodus-cli/src/commands/achievements.rs
++++ b/crates/xodus-cli/src/commands/achievements.rs
+@@ -117,6 +117,14 @@ async fn lookup(tokens: &TokenManager, title: u32) -> Result<Value, &'static str
+     Ok(json!({"schema":1,"account":account,"titleId":title.to_string(),"items":items,"partial":partial}))
+ }
+ 
++/// Reports the failing stage (a fixed, secret-free slug) so the launcher can show why
++/// the list did not load, instead of a bare failure.
++fn fail(stage: &str, json_output: bool) -> ExitCode {
++    eprintln!("Xbox achievements unavailable: {stage}");
++    if json_output { println!("{}", json!({"schema":1,"error":stage})); }
++    ExitCode::FAILURE
++}
++
+ pub async fn run(tokens: &TokenManager, title_id: u32, json_output: bool) -> ExitCode {
+     if title_id == 0 { eprintln!("Xbox achievements unavailable: invalid-title"); return ExitCode::FAILURE; }
+     match tokio::time::timeout(Duration::from_secs(30),lookup(tokens,title_id)).await {
+@@ -124,7 +132,8 @@ pub async fn run(tokens: &TokenManager, title_id: u32, json_output: bool) -> Exi
+             if json_output { println!("{value}"); } else { println!("{} achievements",value["items"].as_array().map_or(0,Vec::len)); }
+             ExitCode::SUCCESS
+         }
+-        _ => { eprintln!("Xbox achievements unavailable: request-failed"); ExitCode::FAILURE }
++        Ok(Err(stage)) => fail(stage, json_output),
++        Err(_) => fail("timeout", json_output),
+     }
+ }
+ 

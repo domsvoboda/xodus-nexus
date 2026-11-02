@@ -66,7 +66,9 @@ function statusText(value?: GameAchievements): string {
   switch (value?.status) {
     case 'signed-out': return ui("ui.sign_in_to_view_your_xbox_achievements_970a464");
     case 'unsupported': return ui("ui.update_the_backend_to_read_xbox_achievements_f17f4e8");
-    case 'error': return ui("ui.xbox_achievements_could_not_be_loaded_try_refres_4abc110");
+    case 'error': return value.reason
+      ? ui("ui.xbox_achievements_could_not_be_loaded_reason_7d3a5c1", { reason: value.reason })
+      : ui("ui.xbox_achievements_could_not_be_loaded_try_refres_4abc110");
     default: return ui("ui.no_xbox_achievements_are_available_for_this_game_9615682");
   }
 }

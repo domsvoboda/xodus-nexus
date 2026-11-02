@@ -1052,6 +1052,7 @@
   "ui.xbox_accepted_the_message_but_it_is_not_yet_conf_6ca6e90": "Xbox ha aceptado el mensaje, pero aún no aparece confirmado en la conversación. Se conserva tu borrador.",
   "ui.xbox_accepted_the_message_but_the_conversation_c_5ec8ebb": "Xbox ha aceptado el mensaje, pero no se ha podido actualizar la conversación.",
   "ui.xbox_achievements_883e15c": "Logros de Xbox",
+  "ui.xbox_achievements_could_not_be_loaded_reason_7d3a5c1": "No se han podido cargar los logros de Xbox ({{reason}}). Prueba a actualizar.",
   "ui.xbox_achievements_could_not_be_loaded_try_refres_4abc110": "No se han podido cargar los logros de Xbox. Prueba a actualizar.",
   "ui.xbox_activity_could_not_be_loaded_try_refreshing_4198490": "No se ha podido cargar la actividad de Xbox. Prueba a actualizar.",
   "ui.xbox_activity_may_be_delayed_or_unavailable_for_c15dd35": "La actividad de Xbox puede llegar con retraso o no estar disponible en algunos juegos. El tiempo de sesión local no se suma al total de Xbox.",
