@@ -1,3 +1,4 @@
+import {gameRuntimeSelection} from '../shared/runtime-selection.js';
 import { createHash } from 'node:crypto';
 import { promises as fs } from 'node:fs';
 import os from 'node:os';
@@ -108,6 +109,8 @@ export class StateStore {
   async patchGame(id: string, patch: Partial<Game>): Promise<Game> {
     const game = this.state.games.find((entry) => entry.id === id);
     if (!game) throw new Error('Game not found.');
+    if ('runtime' in patch) patch.runtime = gameRuntimeSelection(patch.runtime);
+    if ('runtimeSeparatePrefix' in patch && typeof patch.runtimeSeparatePrefix !== 'boolean') throw Error('Invalid runtime prefix choice.');
     Object.assign(game, patch);
     await this.save();
     return game;

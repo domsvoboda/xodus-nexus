@@ -1,4 +1,9 @@
 {
+  "runtime.game_runtime": "Entorno del juego",
+  "runtime.use_default": "Usar el entorno predeterminado",
+  "runtime.unavailable": "{{name}} (no disponible)",
+  "runtime.separate_prefix": "Usar un prefijo independiente para esta compilación",
+  "runtime.prefix_warning": "Se crea un prefijo independiente para cada compilación del entorno. Las partidas locales existentes permanecen en el prefijo anterior. No se copian ni transfieren automáticamente.",
   "auth.browser": "Continuar en el navegador",
   "auth.browser_error": "No se ha podido abrir el inicio de sesión en el navegador. Google Chrome debe estar instalado. Inténtalo de nuevo o elige otro método.",
   "auth.cancel_passkey": "Cancelar solicitud de llave de acceso",

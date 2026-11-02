@@ -1,4 +1,9 @@
 {
+  "runtime.game_runtime": "游戏运行环境",
+  "runtime.use_default": "使用默认运行环境",
+  "runtime.unavailable": "{{name}}（不可用）",
+  "runtime.separate_prefix": "为此运行环境版本使用独立前缀",
+  "runtime.prefix_warning": "每个运行环境版本都会创建独立前缀。现有本地存档保留在旧前缀中，不会自动复制或转移。",
   "auth.browser": "在浏览器中继续",
   "auth.browser_error": "未能打开浏览器登录页面。必须安装Google Chrome。请重试或选择其他方式。",
   "auth.cancel_passkey": "取消通行密钥请求",

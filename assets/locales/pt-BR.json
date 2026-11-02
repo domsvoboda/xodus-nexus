@@ -1,4 +1,9 @@
 {
+  "runtime.game_runtime": "Ambiente do jogo",
+  "runtime.use_default": "Usar o ambiente padrão",
+  "runtime.unavailable": "{{name}} (indisponível)",
+  "runtime.separate_prefix": "Usar um prefixo separado para esta compilação",
+  "runtime.prefix_warning": "Um prefixo separado é criado para cada compilação do ambiente. Os salvamentos locais existentes permanecem no prefixo antigo. Eles não são copiados ou transferidos automaticamente.",
   "auth.browser": "Continuar no navegador",
   "auth.browser_error": "Não foi possível abrir o login no navegador. O Google Chrome precisa estar instalado. Tente novamente ou escolha outro método.",
   "auth.cancel_passkey": "Cancelar solicitação de chave de acesso",

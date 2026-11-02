@@ -1,3 +1,6 @@
+import {gameRuntimeSelection} from '../shared/runtime-selection.js';
+import {resolveRuntimeFamily} from './runtime-families.js';
+import {resolveGameRuntime,bindRuntimePrefix} from './runtime-prefix-binding.js';
 import {desktopTrayAvailable} from './launcher-tray-desktop.js';
 import {LauncherTray} from './launcher-tray.js';
 import {SteamKeyboard} from './steam-keyboard.js';
@@ -1046,7 +1049,11 @@ async function importGame(input?: string): Promise<Game | null> {
 async function gameLaunchOptions(id: string): Promise<GameLaunchOptions> {
   const game = store.games.find((entry) => entry.id === id);
   if (!game) throw new Error('Game not found.');
-  const wine = selectedWinePath(store.settings.winePath, store.settings.runtimeRoot, runtime.current.winePath);
+  let wine: string;
+  try {
+    wine=(await resolveGameRuntime({runtimeRoot:store.settings.runtimeRoot,dataRoot:path.dirname(store.settings.runtimeRoot),gameId:game.id,
+      selection:game.runtime,separatePrefix:game.runtimeSeparatePrefix,defaultWine:selectedWinePath(store.settings.winePath,store.settings.runtimeRoot,runtime.current.winePath)})).winePath;
+  } catch(error) { const reason=(error as Error).message;return {cloudSaves:false,cloudReason:reason,vcInstall:false,vcReason:reason}; }
   if (!wine) return { cloudSaves: false, cloudReason: 'Select Xodus Runtime in Settings.', vcInstall: false, vcReason: 'Select Xodus Runtime in Settings.' };
   const wineAvailable = await fs.access(wine, constants.X_OK).then(() => true, () => false);
   if (!wineAvailable) return { cloudSaves: false, cloudReason: 'The selected Wine binary is unavailable.', vcInstall: false, vcReason: 'The selected Wine binary is unavailable.' };
@@ -1106,7 +1113,10 @@ async function prepareGameLaunch(id: string, steam?: SteamGameContext): Promise<
   if (inspected.installState !== 'ready') throw new Error(inspected.installMessage ?? 'The installation is not ready for Xodus run.');
   const locale = supportedGameLocale(game.locale ?? '');
   const titleId = await gameTitleId(game).catch(() => undefined);
-  const wine = selectedWinePath(store.settings.winePath, store.settings.runtimeRoot, runtime.current.winePath);
+  const runtimeContext = await resolveGameRuntime({runtimeRoot:store.settings.runtimeRoot,dataRoot:path.dirname(store.settings.runtimeRoot),gameId:game.id,
+    selection:game.runtime,separatePrefix:game.runtimeSeparatePrefix,defaultWine:selectedWinePath(store.settings.winePath,store.settings.runtimeRoot,runtime.current.winePath)});
+  const wine = runtimeContext.winePath;
+  await bindRuntimePrefix(runtimeContext);
   if (!wine) throw new Error('Select a Wine / Proton binary in Settings.');
   try { await fs.access(wine, constants.X_OK); }
   catch { throw new Error(`The selected Wine runtime is unavailable: ${wine}. Select or reinstall Xodus Runtime in Settings.`); }
@@ -1204,8 +1214,8 @@ async function prepareGameLaunch(id: string, steam?: SteamGameContext): Promise<
     if (game.launchTools?.dualSenseCompatibility) writeLaunchLog('DualSense compatibility mode enabled for this game (054c:0ce6).');
     if (game.launchTools?.dualShock4Compatibility) writeLaunchLog('DualShock 4 compatibility mode enabled for this game (v1, v2 and wireless adapter).');
     await prepareSystemWallet();
-    const legacyPrefixRoot = path.join(dataRoot, 'prefixes', game.id);
-    const compatibilityDataPath = path.join(dataRoot, 'compatdata', game.id);
+    const legacyPrefixRoot = runtimeContext.legacyPrefixRoot;
+    const compatibilityDataPath = runtimeContext.compatibilityDataPath;
     const steamRoot = path.join(app.getPath('home'), '.steam', 'root');
     launchWrapper = await prepareGameWrapper(wine, game.launchTools, path.join(dataRoot, 'launch-wrappers'), launchEnvironment, game.path);
     const protonRunner = await prepareProtonRunner(wine, compatibilityDataPath, steamRoot, launchWrapper.command, store.settings.shaderCacheLimitGiB);
@@ -1396,7 +1406,10 @@ async function installGameVcRuntime(id: string): Promise<void> {
   if (!game) throw new Error('Game not found.');
   const inspected = await inspectGameDirectory(game.path);
   if (inspected.installState !== 'ready') throw new Error(inspected.installMessage ?? 'The game installation is not ready.');
-  const wine = selectedWinePath(store.settings.winePath, store.settings.runtimeRoot, runtime.current.winePath);
+  const runtimeContext = await resolveGameRuntime({runtimeRoot:store.settings.runtimeRoot,dataRoot:path.dirname(store.settings.runtimeRoot),gameId:game.id,
+    selection:game.runtime,separatePrefix:game.runtimeSeparatePrefix,defaultWine:selectedWinePath(store.settings.winePath,store.settings.runtimeRoot,runtime.current.winePath)});
+  const wine = runtimeContext.winePath;
+  await bindRuntimePrefix(runtimeContext);
   if (!wine) throw new Error('Select Xodus Runtime in Settings first.');
   await fs.access(wine, constants.X_OK);
 
@@ -1430,7 +1443,7 @@ async function installGameVcRuntime(id: string): Promise<void> {
   const controller = new AbortController();
   preparationControllers.set(operationId, controller);
   try {
-    const compatibilityDataPath = path.join(dataRoot, 'compatdata', game.id);
+    const compatibilityDataPath = runtimeContext.compatibilityDataPath;
     const protonRunner = await prepareProtonRunner(wine, compatibilityDataPath, path.join(app.getPath('home'), '.steam', 'root'), undefined, store.settings.shaderCacheLimitGiB);
     if (!protonRunner) throw new Error('VC++ installation requires a full Proton runtime, not a standalone Wine binary.');
     const prefix = path.join(compatibilityDataPath, 'pfx');
@@ -1913,6 +1926,19 @@ function registerIpc(): void {
   });
   ipcMain.handle('update-game', async (_event, id: string, patch: Partial<Game>) => {
     const allowed: Partial<Game> = {};
+    if ('runtime' in patch || 'runtimeSeparatePrefix' in patch) {
+      const current = store.games.find(game=>game.id===id);
+      if (!current) throw Error('Game not found.');
+      const selection=gameRuntimeSelection('runtime' in patch ? patch.runtime : current.runtime);
+      const separate='runtimeSeparatePrefix' in patch ? patch.runtimeSeparatePrefix : current.runtimeSeparatePrefix;
+      if(selection!==(current.runtime??'default')||selection!=='default'&&separate!==current.runtimeSeparatePrefix)ensureIdle();
+      if (separate !== undefined && typeof separate !== 'boolean') throw Error('Invalid runtime prefix choice.');
+      if (selection !== 'default') {
+        if (separate !== true) throw Error('Explicit separate prefix choice is required. Existing local saves remain in the old prefix.');
+        if (selection !== current.runtime) await resolveRuntimeFamily(store.settings.runtimeRoot,selection);
+      }
+      allowed.runtime=selection;allowed.runtimeSeparatePrefix=separate;
+    }
     for (const key of ['title', 'executable', 'launchArgs'] as const) if (typeof patch[key] === 'string') allowed[key] = patch[key];
     if ('launchTools' in patch) allowed.launchTools = normalizeLaunchTools(patch.launchTools);
     if (typeof patch.locale === 'string') {

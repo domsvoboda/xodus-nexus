@@ -1,4 +1,9 @@
 {
+  "runtime.game_runtime": "Środowisko gry",
+  "runtime.use_default": "Użyj domyślnego środowiska",
+  "runtime.unavailable": "{{name}} (niedostępne)",
+  "runtime.separate_prefix": "Użyj osobnego prefiksu dla tej kompilacji",
+  "runtime.prefix_warning": "Dla każdej kompilacji środowiska tworzony jest osobny prefiks. Istniejące lokalne zapisy pozostają w starym prefiksie. Nie są automatycznie kopiowane ani przenoszone.",
   "common.view_all": "Pokaż wszystkie ({{count}})",
   "downloads.active_summary": "Kolejka instalacji, instalacje w toku: {{count}}, {{state}}, {{game}}",
   "downloads.current": "{{state}} ({{current}}/{{total}})",

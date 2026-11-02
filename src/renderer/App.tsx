@@ -1,3 +1,5 @@
+import {GameRuntimeFields} from './GameRuntimeFields';
+import {gameRuntimeAvailable,type GameRuntimeSelection} from '../shared/runtime-selection';
 import { CloudSaveWarning } from './CloudSaveWarning';
 import { CheckField } from './CheckField';
 import { useDialogFocus } from './use-dialog-focus';
@@ -209,7 +211,7 @@ function useGameLaunchOptions(game: Game | undefined, data: AppSnapshot): GameLa
       .then((value) => { if (!cancelled) setOptions(value); })
       .catch((error) => { if (!cancelled) setOptions({ cloudSaves: false, cloudReason: errorMessage(error), vcInstall: false, vcReason: errorMessage(error) }); });
     return () => { cancelled = true; };
-  }, [game?.id, data.settings.winePath, data.settings.runtimeRoot, data.runtime.winePath, data.backend.binaryPath, data.backend.commit, data.backend.available]);
+  }, [game?.id, game?.runtime, game?.runtimeSeparatePrefix, data.runtime.variants?.map(item=>item.id+':'+item.buildId).join(','), data.settings.winePath, data.settings.runtimeRoot, data.runtime.winePath, data.backend.binaryPath, data.backend.commit, data.backend.available]);
   return options;
 }
 
@@ -217,7 +219,7 @@ export function HomePage({ data, go, action, openGame, returnFocusKey }: {
   data: AppSnapshot; go: (page: Page) => void; action: (fn: () => Promise<unknown>, success?: string) => void; openGame?: (id: string, returnKey: string) => void; returnFocusKey?: string;
 }) {
   const featured = data.games[0];
-  const canPlay = Boolean(featured?.installState === 'ready' && data.backend.capabilities.run && (data.settings.winePath || data.runtime.winePath));
+  const canPlay = Boolean(featured?.installState === 'ready' && data.backend.capabilities.run && gameRuntimeAvailable(featured?.runtime,featured?.runtimeSeparatePrefix,Boolean(data.settings.winePath||data.runtime.winePath),data.runtime.variants??[]));
   const launchOptions = useGameLaunchOptions(featured, data);
   const spotlightArt = featured?.heroUrl ?? featured?.coverUrl;
   const home = useRef<HTMLElement>(null);
@@ -651,6 +653,8 @@ export function LibraryPage({ data, toast, filters, onFiltersChange, selection, 
   const [dialogGame, setDialogGame] = useState<{ id: string; kind: 'settings' | 'remove' }>();
   const [editTitle, setEditTitle] = useState('');
   const [editLocale, setEditLocale] = useState('');
+  const [editRuntime,setEditRuntime]=useState<GameRuntimeSelection>('default');
+  const [editSeparatePrefix,setEditSeparatePrefix]=useState(false);
   const [editTools, setEditTools] = useState<GameLaunchTools>({ ...defaultLaunchTools });
   const [localeOptions, setLocaleOptions] = useState<string[]>([]);
   const localeRequest = useRef(0);
@@ -728,6 +732,7 @@ export function LibraryPage({ data, toast, filters, onFiltersChange, selection, 
     setMenu(undefined);
     setEditTitle(game.title);
     setEditLocale(game.locale ?? '');
+    setEditRuntime(game.runtime ?? 'default');setEditSeparatePrefix(game.runtimeSeparatePrefix===true);
     setEditTools({ ...defaultLaunchTools, ...game.launchTools });
     setLocaleOptions([]);
     const request = ++localeRequest.current;
@@ -742,7 +747,7 @@ export function LibraryPage({ data, toast, filters, onFiltersChange, selection, 
     if (!dialogGame) return;
     setDialogBusy(true);
     try {
-      await window.launcher.updateGame(dialogGame.id, { title: editTitle.trim(), locale: editLocale, launchTools: normalizeLaunchTools(editTools) });
+      await window.launcher.updateGame(dialogGame.id, { title: editTitle.trim(), locale: editLocale, launchTools: normalizeLaunchTools(editTools), runtime:editRuntime, runtimeSeparatePrefix:editSeparatePrefix });
       toast({ kind: 'success', message: ui("ui.game_settings_saved_7f466a5") });
       setDialogGame(undefined);
     } catch (error) { toast({ kind: 'error', message: errorMessage(error) }); }
@@ -829,7 +834,7 @@ export function LibraryPage({ data, toast, filters, onFiltersChange, selection, 
     contentDisabled: !game.storeId || data.auth.stored !== true || !data.backend.capabilities.library,
   });
   const selectedPanel = catalogProduct&&detailVisible?<CatalogGameDetails key={catalogProduct.productId+catalogScope} product={catalogProduct} data={data} back={closeDetails} toast={toast}/>:!catalogSelection&&selected&&detailVisible ? <GameDetails key={`${selected.id}:${data.auth.username}:${data.auth.stored}:${data.auth.running}:${data.backend.binaryPath}:${data.settings.market}`} game={selected} data={data} back={closeDetails} backLabel={returnHomeKey.current ? ui('game.back_to_home') : undefined} play={<>
-          <button className="primary" data-gamepad-play disabled={gameBusy || selected.installState !== 'ready' || !data.backend.capabilities.run || !(data.settings.winePath || data.runtime.winePath)} onClick={() => play()}>{gameBusy ? <LoaderCircle className="spin" /> : <Play fill="currentColor" />}{gameBusy ? ui("ui.working_5474eef") : ui("ui.play_436e610")}</button>
+          <button className="primary" data-gamepad-play disabled={gameBusy || selected.installState !== 'ready' || !data.backend.capabilities.run || !gameRuntimeAvailable(selected.runtime,selected.runtimeSeparatePrefix,Boolean(data.settings.winePath||data.runtime.winePath),data.runtime.variants??[])} onClick={() => play()}>{gameBusy ? <LoaderCircle className="spin" /> : <Play fill="currentColor" />}{gameBusy ? ui("ui.working_5474eef") : ui("ui.play_436e610")}</button>
           {gameBusy && !(selectedOperation?.kind === 'prerequisite' && selectedOperation.status === 'running') ? <button className="secondary danger" onClick={stopGame}><X />{ui("ui.stop_cae7d57")}</button> : null}
         </>} manage={<GameMenuActions {...managementProps(selected)} />} technical={<dl><div><dt>{ui("ui.store_id_4a3eac6")}</dt><dd>{selected.storeId ?? ui("ui.not_found_e3ebaa1")}</dd></div><div><dt>{ui("ui.executable_72cd8a6")}</dt><dd>{selected.executable ?? ui("ui.not_found_e3ebaa1")}</dd></div><div><dt>{ui("ui.location_15b6197")}</dt><dd>{selected.path}</dd></div></dl>} notices={<>
       {selected.installMessage ? <div className="alert amber"><CircleAlert /><span>{uiText(selected.installMessage)}</span></div> : null}
@@ -852,6 +857,7 @@ export function LibraryPage({ data, toast, filters, onFiltersChange, selection, 
         <h2>{ui("ui.game_settings_fece860")}</h2>
         <label>{ui("ui.display_name_2b7f6a8")}<input data-gamepad-initial required value={editTitle} onChange={(event) => setEditTitle(event.target.value)} /></label>
         <GameLanguage value={editLocale} locales={localeOptions} onChange={setEditLocale} />
+        <GameRuntimeFields value={editRuntime} separate={editSeparatePrefix} installed={data.runtime.variants??[]} change={value=>{setEditRuntime(value);setEditSeparatePrefix(false);}} changeSeparate={setEditSeparatePrefix}/>
         <GameLaunchToolFields value={editTools} change={setEditTools} />
         <div className="dialog-actions"><button type="button" className="secondary" disabled={dialogBusy} data-gamepad-cancel onClick={() => setDialogGame(undefined)}>{ui("ui.cancel_19766ed")}</button><button className="primary" disabled={dialogBusy || !editTitle.trim()}><Check />{ui("ui.save_1509f56")}</button></div>
       </form>}

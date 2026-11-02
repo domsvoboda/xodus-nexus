@@ -1,4 +1,9 @@
 {
+  "runtime.game_runtime": "遊戲執行環境",
+  "runtime.use_default": "使用預設執行環境",
+  "runtime.unavailable": "{{name}}（無法使用）",
+  "runtime.separate_prefix": "為此執行環境版本使用獨立前綴",
+  "runtime.prefix_warning": "每個執行環境版本都會建立獨立前綴。現有本機存檔保留在舊前綴中，不會自動複製或轉移。",
   "auth.browser": "在瀏覽器中繼續",
   "auth.browser_error": "無法開啟瀏覽器登入。必須已安裝 Google Chrome。請重試或選擇其他方式。",
   "auth.cancel_passkey": "取消金鑰（Passkey）請求",

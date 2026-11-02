@@ -1,4 +1,9 @@
 {
+  "runtime.game_runtime": "Environnement du jeu",
+  "runtime.use_default": "Utiliser l’environnement par défaut",
+  "runtime.unavailable": "{{name}} (indisponible)",
+  "runtime.separate_prefix": "Utiliser un préfixe séparé pour cette version",
+  "runtime.prefix_warning": "Un préfixe séparé est créé pour chaque version de l’environnement. Les sauvegardes locales restent dans l’ancien préfixe. Elles ne sont pas copiées ni transférées automatiquement.",
   "auth.browser": "Continuer dans le navigateur",
   "auth.browser_error": "Impossible d'ouvrir la connexion dans le navigateur. Google Chrome doit être installé. Réessayez ou choisissez une autre méthode.",
   "auth.passkey_label": "Aide pour la clé d'accès de Xodus Nexus",

@@ -1,3 +1,4 @@
+import {installedRuntimeFamilies} from './runtime-families.js';
 import {runtimeWineFailure} from './runtime-prerequisites.js';
 import { constants, createWriteStream, promises as fs } from 'node:fs';
 import path from 'node:path';
@@ -111,6 +112,7 @@ export class RuntimeManager {
       this.commandOk('sha512sum', ['--version']),
     ]);
     this.status.prerequisites = { gh, authenticated, tar, sha512sum };
+    this.status.variants = await installedRuntimeFamilies(this.status.runtimeRoot, this.hostArch);
     const pointer = await this.readPointer();
     if (pointer && await this.validateWine(pointer.winePath)) {
       Object.assign(this.status, {

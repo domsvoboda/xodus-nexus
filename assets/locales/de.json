@@ -1,4 +1,9 @@
 {
+  "runtime.game_runtime": "Spiel-Laufzeit",
+  "runtime.use_default": "Standard-Laufzeit verwenden",
+  "runtime.unavailable": "{{name}} (nicht verfügbar)",
+  "runtime.separate_prefix": "Separates Präfix für diesen Laufzeit-Build verwenden",
+  "runtime.prefix_warning": "Für jeden Laufzeit-Build wird ein separates Präfix erstellt. Vorhandene lokale Spielstände bleiben im alten Präfix. Sie werden nicht automatisch kopiert oder übertragen.",
   "auth.browser": "Im Browser fortfahren",
   "auth.browser_error": "Die Anmeldung konnte nicht im Browser geöffnet werden. Google Chrome muss installiert sein. Versuche es erneut oder wähle eine andere Methode.",
   "auth.cancel_passkey": "Passkey Abfrage abbrechen",
