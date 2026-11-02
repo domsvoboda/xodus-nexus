@@ -3,16 +3,20 @@ import { createHash, randomUUID } from 'node:crypto';
 import path from 'node:path';
 import { run } from './process.js';
 import {
-  BACKEND_REPOSITORY, backendPackageName, backendAssetUrl, compareVersions, minimumBackendVersion,
+  BACKEND_REPOSITORIES, type BackendRepository, backendPackageName, backendAssetUrl, compareVersions, minimumBackendVersion,
   validateBackendManifest, validateBackendArchive, type BackendPackageManifest,
 } from './backend-package.js';
 import { BACKEND_ARCH_SUFFIX, currentArch, isLinuxElf64, nexusArch, type NexusArch } from './arch.js';
 
-export interface BackendArtifact { tag: string; manifest: BackendPackageManifest; archiveUrl: string }
+export interface BackendArtifact { repository: BackendRepository; tag: string; manifest: BackendPackageManifest; archiveUrl: string }
+
+class BackendHttpError extends Error {
+  constructor(readonly status: number) { super(`Backend download failed (HTTP ${status}).`); }
+}
 
 async function bytes(url: string, fetcher: typeof fetch, limit: number): Promise<Buffer> {
   const response = await fetcher(url, { signal: AbortSignal.timeout(60_000) });
-  if (!response.ok || !response.body) throw new Error(`Backend download failed (HTTP ${response.status}).`);
+  if (!response.ok || !response.body) throw new BackendHttpError(response.status);
   const parts: Uint8Array[] = [];
   const reader = response.body.getReader();
   let size = 0;
@@ -29,37 +33,44 @@ async function bytes(url: string, fetcher: typeof fetch, limit: number): Promise
 }
 
 export async function discoverBackend(fetcher: typeof fetch, arch: NexusArch = currentArch()): Promise<BackendArtifact> {
-  const releases = JSON.parse((await bytes(`https://api.github.com/repos/${BACKEND_REPOSITORY}/releases?per_page=100`, fetcher, 2_000_000)).toString()) as Array<{
-    tag_name?: string; draft?: boolean; prerelease?: boolean;
-    assets?: Array<{ name?: string; browser_download_url?: string }>;
-  }>;
-  if (!Array.isArray(releases)) throw new Error('Invalid backend release list.');
-  // The Electron-hosted backend requires the updated launcher.
-  let selected: { tag: string; version: string; release: NonNullable<typeof releases[number]> } | undefined;
-  for (const item of releases) {
-    if (item.draft || item.prerelease) continue;
-    const match = /^backend-v(\d+\.\d+\.\d+)$/.exec(item.tag_name ?? '');
-    if (!match || compareVersions(match[1], minimumBackendVersion) < 0) continue;
-    // A newer release may not ship this architecture. Never select its other
-    // architecture or let it hide the newest complete matching release.
-    const name = backendPackageName(match[1], arch);
-    const required = ['.tar.xz', '.manifest.json', '.sha512sum', '-source.tar.xz', '-source.sha512sum'];
-    if (!required.every(suffix => item.assets?.some(asset => asset.name === name + suffix))) continue;
-    if (!selected || compareVersions(match[1], selected.version) > 0) selected = { tag: item.tag_name!, version: match[1], release: item };
+  type Release = { tag_name?: string; draft?: boolean; prerelease?: boolean;
+    assets?: Array<{ name?: string; browser_download_url?: string }> };
+  let selected: { tag: string; version: string; repository: BackendRepository; release: Release } | undefined;
+  // Prefer the fork for equal versions. An empty new repository still permits
+  // installation of the compatible package previously published by the launcher.
+  for (const repository of BACKEND_REPOSITORIES) {
+    let releases: Release[];
+    try {
+      releases = JSON.parse((await bytes(`https://api.github.com/repos/${repository}/releases?per_page=100`, fetcher, 2_000_000)).toString());
+    } catch (error) {
+      if (error instanceof BackendHttpError && error.status === 404) continue;
+      throw error;
+    }
+    if (!Array.isArray(releases)) throw new Error('Invalid backend release list.');
+    for (const item of releases) {
+      if (item.draft || item.prerelease) continue;
+      const match = /^backend-v(\d+\.\d+\.\d+)$/.exec(item.tag_name ?? '');
+      if (!match || compareVersions(match[1], minimumBackendVersion) < 0) continue;
+      const name = backendPackageName(match[1], arch);
+      const required = ['.tar.xz', '.manifest.json', '.sha512sum', '-source.tar.xz', '-source.sha512sum'];
+      if (!required.every(suffix => item.assets?.some(asset => asset.name === name + suffix))) continue;
+      if (!selected || compareVersions(match[1], selected.version) > 0)
+        selected = { tag: item.tag_name!, version: match[1], repository, release: item };
+    }
   }
   if (!selected) throw new Error('No compatible Nexus backend release has been published yet.');
   const tag = selected.tag;
   const packageName = backendPackageName(selected.version, arch);
-  const asset = (name: string) => backendAssetUrl(tag, name, selected!.release.assets?.find(item => item.name === name)?.browser_download_url);
+  const asset = (name: string) => backendAssetUrl(tag, name, selected!.release.assets?.find(item => item.name === name)?.browser_download_url, selected!.repository);
   const archive = `${packageName}.tar.xz`;
-  const manifest = validateBackendManifest(JSON.parse((await bytes(asset(`${packageName}.manifest.json`), fetcher, 100_000)).toString()), arch);
+  const manifest = validateBackendManifest(JSON.parse((await bytes(asset(`${packageName}.manifest.json`), fetcher, 100_000)).toString()), arch, selected.repository);
   if (manifest.version !== selected.version) throw new Error('The backend release does not match its manifest.');
   const checksum = (await bytes(asset(`${packageName}.sha512sum`), fetcher, 1000)).toString().trim();
   if (checksum !== `${manifest.archiveSha512}  ${archive}`) throw new Error('Backend SHA-512 manifest mismatch.');
   // Distribution must include the matching corresponding source, not just binaries.
   asset(`${packageName}-source.tar.xz`);
   asset(`${packageName}-source.sha512sum`);
-  return { tag, manifest, archiveUrl: asset(archive) };
+  return { repository: selected.repository, tag, manifest, archiveUrl: asset(archive) };
 }
 
 export async function installBackend(
@@ -69,14 +80,15 @@ export async function installBackend(
 ): Promise<string> {
   if (process.platform !== 'linux' || !nexusArch()) throw new Error('The prebuilt backend supports x86_64 and arm64 Linux only.');
   await assertIdle();
-  const manifest = validateBackendManifest(artifact.manifest);
+  const manifest = validateBackendManifest(artifact.manifest, currentArch(), artifact.repository);
+  backendAssetUrl(artifact.tag, manifest.archive, artifact.archiveUrl, artifact.repository);
   const staging = path.join(managedRoot, `.download-${randomUUID()}`);
   await fs.mkdir(staging, { recursive: true });
   try {
     phase('Downloading the Nexus backend…');
     const archive = path.join(staging, manifest.archive);
     const response = await fetcher(artifact.archiveUrl, { signal: AbortSignal.timeout(300_000) });
-    if (!response.ok || !response.body) throw new Error(`Backend download failed (HTTP ${response.status}).`);
+    if (!response.ok || !response.body) throw new BackendHttpError(response.status);
     const reader = response.body.getReader();
     const file = await fs.open(archive, 'wx');
     const hash = createHash('sha512');
