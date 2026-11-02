@@ -256,6 +256,8 @@ button.primary svg, button.secondary svg { width: 17px; height: 17px; }
 .library-filters select, .library-filters input { height: 36px; background: #292e35; color: #f1f3f5; border: 1px solid #4b515b; border-radius: 6px; padding: 7px 10px; }
 .library-filters .library-refresh { flex: 0 0 36px; width: 36px; min-height: 36px; height: 36px; padding: 0; display: grid; place-items: center; }
 .library-refresh svg { width: 17px; height: 17px; }
+.library-filter-location { min-width: 0; max-width: min(100%, 300px); }
+.library-filter-location select { width: 100%; text-overflow: ellipsis; }
 .library-filter-search { flex: 1; min-width: 150px; }
 .library-filter-search input { width: 100%; }
 .library-license { display: block; margin: 8px 10px 0; color: #b8bec6; font-size: 11px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }

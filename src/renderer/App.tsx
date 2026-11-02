@@ -20,7 +20,7 @@ import { defaultLaunchTools, normalizeLaunchTools } from '../shared/launch-tools
 import { DEFAULT_SHADER_CACHE_GIB, shaderCacheLimits } from '../shared/shader-cache';
 import type { GameLaunchTools } from '../shared/types';
 import { catalogInstallRequest, PackageInstallProvider, usePackageInstall } from './PackageInstall';
-import { defaultLibraryFilters, loadLibraryFilters, saveLibraryFilters, libraryProductMatchesPlayState, rankLibraryRows, type LibraryFilters } from './library-preferences';
+import { defaultLibraryFilters, loadLibraryFilters, saveLibraryFilters, libraryProductMatchesPlayState, rankLibraryRows, libraryGameLocation, libraryLocations, type LibraryFilters } from './library-preferences';
 import { InstallQueueShortcut } from './InstallQueueShortcut';
 import { GamepadNavigation } from './GamepadNavigation';
 import { requestTextKeyboard } from './touch-keyboard';
@@ -449,11 +449,12 @@ export function AccountGames({ data, toast, selectedId, select, menu, openProduc
   const startPackageInstall = usePackageInstall();
   const [localFilters, setLocalFilters] = useState<LibraryFilters>(defaultLibraryFilters);
   const selectedFilters = filters ?? localFilters;
-  const { kind, playState, query } = selectedFilters;
+  const { kind, playState, query, location } = selectedFilters;
+  const locations = libraryLocations(data.games, location);
   const sort = kind === 'gamepass' ? selectedFilters.sort : undefined;
   const updateFilters = (patch: Partial<LibraryFilters>) => (onFiltersChange ?? setLocalFilters)({ ...selectedFilters, ...patch });
   const setKind = (kind: LibraryFilters['kind']) => updateFilters({ kind, sort:kind === 'gamepass' ? sort : undefined });
-  const setPlayState = (playState: LibraryFilters['playState']) => updateFilters({ playState });
+  const setPlayState = (playState: LibraryFilters['playState']) => updateFilters({ playState, ...(playState === 'installable' ? {location:undefined} : {}) });
   const setQuery = (query: string) => updateFilters({ query });
   const [result, setResult] = useState<AccountLibraryPage>();
   const [busy, setBusy] = useState(false);
@@ -496,7 +497,7 @@ export function AccountGames({ data, toast, selectedId, select, menu, openProduc
   const visible = loadedIdentity === identity ? result : undefined;
   // Installed games are already in the snapshot. Account searches must also
   // resolve every remaining licensed page before reporting no matches.
-  const searching = available && playState !== 'installed' && Boolean(query.trim()) && !error && (busy || Boolean(visible?.cursor));
+  const searching = available && !location && playState !== 'installed' && Boolean(query.trim()) && !error && (busy || Boolean(visible?.cursor));
   useEffect(() => {
     if (!searching || busy || !visible?.cursor || searchTerm !== query.trim()) return;
     void load();
@@ -506,9 +507,9 @@ export function AccountGames({ data, toast, selectedId, select, menu, openProduc
   const products = (visible?.products ?? []).filter(product => !installed.has(product.productId) && !installed.has(product.installProductId ?? ''));
   const access = (game: Game) => game.storeId ? visible?.accessByProductId[game.storeId.toUpperCase()] : undefined;
   const rows = rankLibraryRows([
-    ...data.games.filter(game => playState !== 'installable' && (kind === 'all' || access(game) === kind)).sort((a, b) => a.title.localeCompare(b.title))
+    ...data.games.filter(game => (!location || libraryGameLocation(game) === location) && playState !== 'installable' && (kind === 'all' || access(game) === kind)).sort((a, b) => a.title.localeCompare(b.title))
       .map(game => ({ id: game.id, title: game.title, game, product: undefined })),
-    ...products.filter(product => libraryProductMatchesPlayState(product, playState)).map(product => ({ id: product.productId, title: product.title, product, game: undefined })),
+    ...products.filter(product => !location && libraryProductMatchesPlayState(product, playState)).map(product => ({ id: product.productId, title: product.title, product, game: undefined })),
   ].filter(row => row.title.toLocaleLowerCase().includes(query.trim().toLocaleLowerCase())),
     sort ? visible?.recentProductIds : undefined, row => row.product?.productId ?? row.game?.storeId?.toUpperCase());
   async function load(refresh = false) {
@@ -544,6 +545,7 @@ export function AccountGames({ data, toast, selectedId, select, menu, openProduc
     <div className="library-filters" data-gamepad-filters>
       <label>{ui("ui.access_ec5ba0a")}<select aria-label={ui("ui.access_ec5ba0a")} value={kind} onChange={event => setKind(event.target.value as AccountLibraryPage['kind'])}><option value="all">{ui("ui.all_games_cf2bf15")}</option><option value="owned">{ui("ui.owned_17b760c")}</option><option value="gamepass">{ui("ui.in_game_pass_69c8edf")}</option><option value="other">{ui("ui.other_access_542b2ae")}</option></select></label>
       <label>{ui("ui.play_state_6f423d1")}<select aria-label={ui("ui.play_state_6f423d1")} value={playState} onChange={event => setPlayState(event.target.value as typeof playState)}><option value="all">{ui("ui.all_states_f189411")}</option><option value="installed">{ui("ui.installed_f8b32f4")}</option><option value="installable">{ui("ui.ready_to_install_bda18b9")}</option></select></label>
+      <label className="library-filter-location">{ui("ui.install_location_af47896")}<select aria-label={ui("ui.install_location_af47896")} title={location} value={location ?? ''} onChange={event => updateFilters({location:event.target.value || undefined, ...(event.target.value ? {playState:'installed'} : {})})}><option value="">{ui("library.all_locations")}</option>{locations.map(folder => <option key={folder} value={folder}>{folder}</option>)}</select></label>
       {kind === 'gamepass' ? <label>{ui("ui.sort_bec6903")}<select aria-label={ui("ui.library_order_4dbb747")} value={sort ?? 'default'} onChange={event => updateFilters({sort:event.target.value === 'recent-gamepass' ? 'recent-gamepass' : undefined})}><option value="default">{ui("ui.default_order_f44484d")}</option><option value="recent-gamepass">{ui("ui.recently_added_to_game_pass_0c69d8c")}</option></select></label> : null}
       <label className="library-filter-search">{ui("ui.search_49c266b")}<input aria-label={ui("ui.search_library_21a933a")} placeholder={ui("ui.search_your_games_17caf33")} value={query} onChange={event => setQuery(event.target.value)} /></label>
       <button className="secondary library-refresh" aria-label={ui("ui.refresh_library_c628c56")} title={ui("ui.refresh_library_c628c56")} disabled={!available || busy} onClick={() => load(true)}>{busy ? <LoaderCircle className="spin" /> : <RefreshCw />}</button>
@@ -567,8 +569,8 @@ export function AccountGames({ data, toast, selectedId, select, menu, openProduc
         const downloading = queued.has(product.productId) || queued.has(product.installProductId ?? '');
         return <LibraryProductCard key={product.productId} product={product} present={present} downloading={downloading} installing={installing} canInstall={data.backend.capabilities.streaming} install={install} open={openProduct} />;
       })}</div>
-      {!busy && !searching && !error && !rows.length ? <p>{visible?.cursor && playState !== 'installed' ? ui("ui.no_games_match_these_filters_in_the_loaded_resul_10d7834") : ui("ui.no_games_match_these_filters_e0e0d54")}</p> : null}
-      <div data-gamepad-library-footer><LibraryPagination loading={busy} hasMore={Boolean(visible?.cursor)} searching={searching} load={() => { void load(); }} />
+      {!busy && !searching && !error && !rows.length ? <p>{!location && visible?.cursor && playState !== 'installed' ? ui("ui.no_games_match_these_filters_in_the_loaded_resul_10d7834") : ui("ui.no_games_match_these_filters_e0e0d54")}</p> : null}
+      <div data-gamepad-library-footer><LibraryPagination loading={busy} hasMore={!location && Boolean(visible?.cursor)} searching={searching} load={() => { void load(); }} />
       <p className="account-library-note">{ui("ui.licensed_games_are_listed_regardless_of_package_e204851")}</p></div>
       {sort ? <p className="account-library-note">{ui("ui.microsoft_s_pc_game_pass_recently_added_collecti_75fb3d3")}</p> : null}
     </div>

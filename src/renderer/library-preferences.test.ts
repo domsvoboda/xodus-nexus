@@ -51,3 +51,24 @@ it('puts ranked installed and available games together without mutating cards or
  expect(rows.map(row=>row.id)).toEqual(['old-installed','new-available','old-available','new-installed']);
  expect(rankLibraryRows(rows,undefined,row=>row.id)).toEqual(rows);
 });
+
+it('persists an exact absolute library folder, rejects invalid values and clears it for Ready to install', () => {
+ let raw='';const storage={getItem:()=>raw,setItem:(_key:string,value:string)=>{raw=value;}};
+ const filters={...defaultLibraryFilters,playState:'installed' as const,location:'/run/media/deck/SD/Games/'};
+ expect(saveLibraryFilters(filters,storage)).toBe(true);
+ expect(loadLibraryFilters(storage)).toEqual({...filters,location:'/run/media/deck/SD/Games'});
+ for(const location of ['relative/Games',42,'/bad\0path','/bad\npath','/'+ 'x'.repeat(4096)]){
+  raw=JSON.stringify({...filters,location});expect(loadLibraryFilters(storage).location).toBeUndefined();
+ }
+ raw=JSON.stringify({...filters,playState:'installable'});expect(loadLibraryFilters(storage).location).toBeUndefined();
+});
+
+it('groups exact installation parent folders without inferring volume labels, and retains an empty saved folder', async () => {
+ const {libraryGameLocation,libraryLocations}=await import('./library-preferences');
+ const games=[{path:'/home/deck/Games/Forza'},{path:'/run/media/deck/SD/Games/Gears/'},{path:'/run/media/deck/SD/Games/Forza'},{path:'/run/media/deck/SD/Games-other/Test'},{path:'relative/Test'}];
+ expect(libraryGameLocation(games[1])).toBe('/run/media/deck/SD/Games');
+ expect(libraryGameLocation({path:'/Test'})).toBe('/');
+ expect(libraryGameLocation({path:'/'})).toBeUndefined();
+ expect(libraryLocations(games,'/mnt/unavailable/Games')).toEqual(['/home/deck/Games','/mnt/unavailable/Games','/run/media/deck/SD/Games','/run/media/deck/SD/Games-other']);
+ expect(games[1].path).toBe('/run/media/deck/SD/Games/Gears/');
+});

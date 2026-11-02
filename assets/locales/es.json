@@ -1074,5 +1074,6 @@
   "ui.your_owned_games_game_pass_games_and_local_insta_ebb2bf4": "Tus juegos en propiedad, los juegos de Game Pass y las instalaciones locales.",
   "ui.your_pc_games_brought_together_354f2fc": "Tus juegos de PC, todos juntos.",
   "ui.your_settings_and_games_will_not_change_3e99619": "Tu configuración y tus juegos no cambiarán.",
-  "ui.your_wallet_provider_handles_its_password_window_eb886e1": "Tu proveedor de cartera gestiona su ventana de contraseña. Nexus no recibe la contraseña, no activa una cartera desactivada ni restablece las credenciales guardadas."
+  "ui.your_wallet_provider_handles_its_password_window_eb886e1": "Tu proveedor de cartera gestiona su ventana de contraseña. Nexus no recibe la contraseña, no activa una cartera desactivada ni restablece las credenciales guardadas.",
+  "library.all_locations": "Todas las ubicaciones"
 }

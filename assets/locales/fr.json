@@ -222,5 +222,6 @@
   "message.the_download_server_is_rate_limiting_requests_ht_a9df1b2": "Le serveur de téléchargement n'accepte qu'un nombre limité de demandes (HTTP 429). Patientez avant de réessayer. Les fichiers partiels sont maintenus. Réessayez l'installation pour rafraichir le lien et reprendre le téléchargement.",
   "message.the_download_server_returned_an_unexpected_http_bd720a0": "Le serveur de téléchargement a renvoyé une réponse HTTP inattendue{{code}}. Les fichiers partiels sont conservés. Utilisez Réessayer l’installation pour actualiser le lien du paquet et reprendre.",
   "message.the_download_stopped_receiving_data_after_repeat_d1878f8": "Le téléchargement s'est interrompu malgré plusieurs tentatives. Les fichiers partiels sont maintenus. Réessayez l'installation pour rafraichir le lien et reprendre le téléchargement.",
-  "message.the_game_could_not_be_launched_cadba92": "Le jeu a échoué à se lancer."
+  "message.the_game_could_not_be_launched_cadba92": "Le jeu a échoué à se lancer.",
+  "library.all_locations": "Tous les emplacements"
 }

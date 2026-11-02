@@ -1098,5 +1098,6 @@
   "cloud.unavailable": "Cloud sync is unavailable for this session. Progress may only be saved on this device. Keep your local saves.",
   "cloud.upload": "Cloud sync reported an error while finishing. The latest progress may not be available on other devices. Keep your local saves.",
   "cloud.view_game": "View game",
-  "cloud.conflict_retry": "Cloud sync is paused. Close the game, then start it again and choose a save in the conflict dialog. Keep your local saves until your choice succeeds."
+  "cloud.conflict_retry": "Cloud sync is paused. Close the game, then start it again and choose a save in the conflict dialog. Keep your local saves until your choice succeeds.",
+  "library.all_locations": "All locations"
 }
