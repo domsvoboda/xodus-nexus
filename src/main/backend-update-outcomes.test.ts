@@ -56,6 +56,22 @@ describe('backend mutation boundaries', () => {
     const oldRefresh = m.refresh(); await entered.promise; await m.update(() => {}); release.resolve(); await oldRefresh;
     expect(m.current.binaryPath).toBe(path.join(root, 'selected/xodus-cli')); expect(m.current.commit).toBe(backendLock.commit); expect(m.current.recipeSha256).toBe(backendRecipeSha256);
   });
+  it('prepares no install for an absent, external or locally built backend', async () => {
+    const m=manager(); for (const source of ['none','external','managed']) {
+      Object.assign((m as unknown as {status:object}).status,{available:source!=='none',source});
+      await fs.writeFile(path.join(root,'xodus-backends/current.json'),JSON.stringify({binaryPath:'/local',delivery:'local'}));
+      expect((await m.prepareComponentUpdate(()=>{})).item.state).toBe('skipped');
+    }
+    expect(discoverBackend).not.toHaveBeenCalled(); expect(installBackend).not.toHaveBeenCalled();
+  });
+  it('applies only its prepared target and rejects a pointer changed after planning', async () => {
+    const m=manager(),pointer=path.join(root,'xodus-backends/current.json');
+    await fs.writeFile(pointer,JSON.stringify({binaryPath:'/old',delivery:'release',version:'1.0.0'}));
+    Object.assign((m as unknown as {status:object}).status,{available:true,source:'managed',binaryPath:'/old'});
+    const prepared=await m.prepareComponentUpdate(()=>{});expect(prepared.item.state).toBe('ready');
+    await fs.writeFile(pointer,'changed');expect(await prepared.isCurrent()).toBe(false);
+    await expect(prepared.apply({identity:Symbol()})).rejects.toMatchObject({committed:false});expect(installBackend).not.toHaveBeenCalled();
+  });
   it('keeps operation target A while concurrent discovery records newer B', async () => {
     const m = manager(), entered = deferred<void>(), release = deferred<void>(); refreshSelected(m);
     vi.mocked(discoverBackend).mockResolvedValueOnce(artifact('99.0.0')).mockResolvedValueOnce(artifact('100.0.0'));

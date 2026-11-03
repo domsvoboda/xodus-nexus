@@ -6,6 +6,7 @@ import { parseBackendHelp } from '../shared/utils.js';
 import { run } from './process.js';
 import { backendLock, backendRecipeSha256, compareVersions } from './backend-package.js';
 import { discoverBackend, installBackend, type BackendArtifact } from './backend-releases.js';
+import type { PreparedComponentUpdate } from './component-updates.js';
 import { BackendPrerequisiteError, backendPrerequisiteFailure } from './backend-prerequisites.js';
 
 const REPOSITORY = backendLock.repository;
@@ -215,7 +216,40 @@ export class BackendManager {
     return this.current;
   }
 
-  async update(onStatus: () => void): Promise<void> {
+  async prepareComponentUpdate(onStatus: () => void): Promise<PreparedComponentUpdate> {
+    const before = await fs.readFile(this.pointerFile, 'utf8').catch(() => undefined);
+    const externalRoot = this.status.externalRoot;
+    let pointer: ManagedPointer | undefined;
+    try { pointer = before === undefined ? undefined : JSON.parse(before) as ManagedPointer; } catch { /* Ineligible malformed pointer. */ }
+    const eligible = this.status.available && this.status.source === 'managed' && pointer?.delivery === 'release' && pointer.binaryPath === this.status.binaryPath;
+    const item = { id: 'backend', component: 'backend' as const, label: 'Backend', currentVersion: pointer?.version,
+      state: 'skipped' as 'ready' | 'skipped' | 'unchanged', reason: 'Only an installed managed backend release is updated automatically.' };
+    let target: BackendMutationTarget | undefined;
+    const same = async () => before === await fs.readFile(this.pointerFile, 'utf8').catch(() => undefined) && externalRoot === this.status.externalRoot;
+    if (!eligible || !pointer) return { item, isCurrent: same, apply: async () => { throw Error(item.reason); } };
+    const artifact = await discoverBackend(this.fetcher);
+    const newer = !pointer.version || compareVersions(pointer.version, artifact.manifest.version) < 0;
+    return {
+      item: { ...item, targetVersion: artifact.manifest.version, state: newer ? 'ready' : 'unchanged', reason: undefined },
+      isCurrent: same,
+      apply: async () => {
+        try { await this.performUpdate(onStatus, artifact, same); target = { commit: this.status.commit!, binaryPath: this.status.binaryPath!, version: this.status.version, delivery: this.status.delivery }; }
+        catch (error) { if (error instanceof BackendMutationError && error.committed) target = error.target; throw error; }
+        return { committed: true };
+      },
+      reconcile: async () => {
+        const pointer = await this.readPointer();
+        if (!target || pointer?.binaryPath !== target.binaryPath || pointer.commit !== target.commit || pointer.version !== target.version) throw Error('The activated backend changed. Check again.');
+        const refreshed = await this.refresh();
+        if (!refreshed.available || refreshed.source !== 'managed' || refreshed.binaryPath !== target.binaryPath) throw Error('The activated backend is not available.');
+        onStatus(); return {};
+      },
+    };
+  }
+
+  async update(onStatus: () => void): Promise<void> { return this.performUpdate(onStatus); }
+
+  private async performUpdate(onStatus: () => void, selected?: BackendArtifact, expectedCurrent?: () => Promise<boolean>): Promise<void> {
     if (this.status.updating) throw new Error('A backend installation is already running.');
     // Reserve before the first awaited external activity check. Notification
     // failures must also release this reservation.
@@ -231,7 +265,8 @@ export class BackendManager {
       await this.assertUpdateAllowed();
       // Keep this operation's verified target independent of later read-only
       // release checks, which may replace the manager's discovery cache.
-      const artifact = await discoverBackend(this.fetcher);
+      if (expectedCurrent && !await expectedCurrent()) throw Error('The installed backend changed. Check again.');
+      const artifact = selected ?? await discoverBackend(this.fetcher);
       this.artifact = artifact;
       const binaryPath = await installBackend(this.managedRoot, artifact, this.fetcher, async cli => {
         const caps = await this.validate(cli);
@@ -244,6 +279,7 @@ export class BackendManager {
         this.status.phase = message; this.emitLog('backend', message); onStatus();
       });
       await this.assertUpdateAllowed();
+      if (expectedCurrent && !await expectedCurrent()) throw Error('The installed backend changed before activation. Check again.');
       const manifest = artifact.manifest;
       const pointer: ManagedPointer = { commit: manifest.commit, binaryPath, builtAt: new Date().toISOString(),
         linuxRunPatch: manifest.compatibility, recipeSha256: manifest.recipeSha256, version: manifest.version, delivery: 'release' };
