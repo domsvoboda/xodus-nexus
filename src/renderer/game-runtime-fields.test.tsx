@@ -9,7 +9,7 @@ it('offers only default when no verified variants are installed, never an unbuil
 });
 it('lists verified families with explicit separate-prefix acknowledgment and save warning',()=>{
  const html=renderToStaticMarkup(<GameRuntimeFields value="nexus-cachyos" separate={false} installed={[{id:'nexus-cachyos',label:'Nexus Runtime (CachyOS, experimental)',buildId:'a'.repeat(64),sourceCommit:'b'.repeat(40),manifestSha256:'c'.repeat(64)}]} change={change} changeSeparate={change}/>);
- expect(html).toContain('experimental');expect(html).toMatch(/type="checkbox" required/);expect(html).toContain('class="check-input"');const help=html.match(/aria-describedby="([^"]+)"/)?.[1];expect(help).toBeTruthy();expect(html).toContain('<small id="'+help+'">');expect(html).toContain('Existing local saves stay in the old prefix');expect(html).not.toContain('checked=""');
+ expect(html).toContain('experimental');expect(html).toMatch(/type="checkbox" required/);expect(html).toContain('class="check-input"');const help=html.match(/aria-describedby="([^"]+)"/)?.[1];expect(help).toBeTruthy();expect(html).toContain('<small id="'+help+'">');expect(html).toContain('Existing local saves stay in the old prefix');expect(html).toContain('Updates within this family reuse the same prefix and local saves');expect(html).not.toContain('each runtime build');expect(html).not.toContain('this runtime build');expect(html).not.toContain('checked=""');
 });
 it('shows a missing persisted selection as disabled rather than falling back',()=>{
  const html=renderToStaticMarkup(<GameRuntimeFields value="nexus-cachyos" separate installed={[]} change={change} changeSeparate={change}/>);

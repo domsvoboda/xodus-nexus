@@ -29,3 +29,24 @@ export function gameRuntimeAvailable(selection:unknown,separatePrefix:unknown,de
   if(selection===undefined||selection==='default')return defaultAvailable;
   return separatePrefix===true&&runtimeFamilies.includes(selection as RuntimeFamily)&&installed.some(item=>item.id===selection);
 }
+
+/** Prefix identity survives family updates and switching away/back. Build origin is compatibility metadata, never a runtime pin. */
+export type RuntimePrefixAnchor = {layout:'family'} | {layout:'build';origin:RuntimeBuildApproval};
+export type RuntimePrefixAnchors = Partial<Record<RuntimeFamily,RuntimePrefixAnchor>>;
+export function runtimePrefixAnchor(value:unknown):RuntimePrefixAnchor {
+  if(!value||typeof value!=='object')throw Error('Invalid runtime prefix identity.');
+  const item=value as RuntimePrefixAnchor;
+  if(item.layout==='family')return {layout:'family'};
+  if(item.layout==='build')return {layout:'build',origin:runtimeBuildApproval(item.origin)};
+  throw Error('Invalid runtime prefix identity.');
+}
+export function runtimePrefixAnchors(value:unknown):RuntimePrefixAnchors {
+  if(value===undefined)return {};
+  if(!value||typeof value!=='object'||Array.isArray(value))throw Error('Invalid runtime prefix identities.');
+  const result:RuntimePrefixAnchors={};
+  for(const [family,anchor] of Object.entries(value)) {
+    if(!runtimeFamilies.includes(family as RuntimeFamily))throw Error('Invalid runtime prefix family.');
+    result[family as RuntimeFamily]=runtimePrefixAnchor(anchor);
+  }
+  return result;
+}

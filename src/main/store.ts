@@ -1,4 +1,4 @@
-import {gameRuntimeSelection,runtimeBuildApproval} from '../shared/runtime-selection.js';
+import {gameRuntimeSelection,runtimeBuildApproval,runtimePrefixAnchors} from '../shared/runtime-selection.js';
 import { createHash } from 'node:crypto';
 import { promises as fs } from 'node:fs';
 import os from 'node:os';
@@ -113,6 +113,7 @@ export class StateStore {
     if (!game) throw new Error('Game not found.');
     if ('runtime' in patch) patch.runtime = gameRuntimeSelection(patch.runtime);
     if ('runtimeSeparatePrefix' in patch && typeof patch.runtimeSeparatePrefix !== 'boolean') throw Error('Invalid runtime prefix choice.');
+    if ('runtimePrefixes' in patch) patch.runtimePrefixes=runtimePrefixAnchors(patch.runtimePrefixes);
     if ('runtimeBuild' in patch && patch.runtimeBuild !== undefined) patch.runtimeBuild=runtimeBuildApproval(patch.runtimeBuild);
     Object.assign(game, patch);
     await this.save();

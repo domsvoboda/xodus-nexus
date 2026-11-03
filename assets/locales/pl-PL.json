@@ -1,10 +1,9 @@
 {
-  "runtime.build_changed": "Zainstalowana kompilacja zmieniła się lub nie została zatwierdzona. Sprawdź ją i wyraźnie wybierz nowy osobny prefiks. Lokalne zapisy pozostają w starym prefiksie.",
   "runtime.game_runtime": "Środowisko gry",
   "runtime.use_default": "Użyj domyślnego środowiska",
   "runtime.unavailable": "{{name}} (niedostępne)",
-  "runtime.separate_prefix": "Użyj osobnego prefiksu dla tej kompilacji",
-  "runtime.prefix_warning": "Dla każdej kompilacji środowiska tworzony jest osobny prefiks. Istniejące lokalne zapisy pozostają w starym prefiksie. Nie są automatycznie kopiowane ani przenoszone.",
+  "runtime.separate_prefix": "Użyj osobnego prefiksu dla tej rodziny środowisk",
+  "runtime.prefix_warning": "Aktualizacje tej rodziny używają tego samego prefiksu i lokalnych zapisów. Zmiana rodziny używa osobnego prefiksu. Istniejące zapisy pozostają w starym prefiksie i nie są automatycznie kopiowane ani przenoszone.",
   "common.view_all": "Pokaż wszystkie ({{count}})",
   "downloads.active_summary": "Kolejka instalacji, instalacje w toku: {{count}}, {{state}}, {{game}}",
   "downloads.current": "{{state}} ({{current}}/{{total}})",

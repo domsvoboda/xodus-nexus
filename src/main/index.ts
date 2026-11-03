@@ -800,7 +800,7 @@ async function gameContent(id: string) {
   const identity = `${authState.username}:${backend.current.binaryPath}:${currentMarket()}`;
   accountLibrary.select(authState.username, backend.current.capabilities.library ? backend.current.binaryPath : undefined, currentMarket());
   const selectedRuntime=await resolveGameRuntime({runtimeRoot:store.settings.runtimeRoot,dataRoot:path.dirname(store.settings.runtimeRoot),gameId:game.id,
-    selection:game.runtime,separatePrefix:game.runtimeSeparatePrefix,approvedBuild:game.runtimeBuild,defaultWine:selectedWinePath(store.settings.winePath,store.settings.runtimeRoot,runtime.current.winePath)});
+    selection:game.runtime,separatePrefix:game.runtimeSeparatePrefix,approvedBuild:game.runtimeBuild,prefixAnchor:game.runtime&&game.runtime!=='default'?game.runtimePrefixes?.[game.runtime]:undefined,defaultWine:selectedWinePath(store.settings.winePath,store.settings.runtimeRoot,runtime.current.winePath)});
   const result = await contentManager().plan(game, () => accountLibrary.access(true), currentMarket());
   const wine = selectedRuntime.winePath;
   result.plan.runtimeSupported = Boolean(wine && await storeContentRuntime(wine));
@@ -1133,7 +1133,7 @@ async function gameLaunchOptions(id: string): Promise<GameLaunchOptions> {
   let wine: string;
   try {
     wine=(await resolveGameRuntime({runtimeRoot:store.settings.runtimeRoot,dataRoot:path.dirname(store.settings.runtimeRoot),gameId:game.id,
-      selection:game.runtime,separatePrefix:game.runtimeSeparatePrefix,approvedBuild:game.runtimeBuild,defaultWine:selectedWinePath(store.settings.winePath,store.settings.runtimeRoot,runtime.current.winePath)})).winePath;
+      selection:game.runtime,separatePrefix:game.runtimeSeparatePrefix,approvedBuild:game.runtimeBuild,prefixAnchor:game.runtime&&game.runtime!=='default'?game.runtimePrefixes?.[game.runtime]:undefined,defaultWine:selectedWinePath(store.settings.winePath,store.settings.runtimeRoot,runtime.current.winePath)})).winePath;
   } catch(error) { const reason=(error as Error).message;return {cloudSaves:false,cloudReason:reason,vcInstall:false,vcReason:reason}; }
   if (!wine) return { cloudSaves: false, cloudReason: 'Select Xodus Runtime in Settings.', vcInstall: false, vcReason: 'Select Xodus Runtime in Settings.' };
   const wineAvailable = await fs.access(wine, constants.X_OK).then(() => true, () => false);
@@ -1216,7 +1216,7 @@ async function prepareGameLaunch(id: string, steam?: SteamGameContext): Promise<
   const locale = supportedGameLocale(game.locale ?? '');
   const titleId = await gameTitleId(game).catch(() => undefined);
   const runtimeContext = await resolveGameRuntime({runtimeRoot:store.settings.runtimeRoot,dataRoot:path.dirname(store.settings.runtimeRoot),gameId:game.id,
-    selection:game.runtime,separatePrefix:game.runtimeSeparatePrefix,approvedBuild:game.runtimeBuild,defaultWine:selectedWinePath(store.settings.winePath,store.settings.runtimeRoot,runtime.current.winePath)});
+    selection:game.runtime,separatePrefix:game.runtimeSeparatePrefix,approvedBuild:game.runtimeBuild,prefixAnchor:game.runtime&&game.runtime!=='default'?game.runtimePrefixes?.[game.runtime]:undefined,defaultWine:selectedWinePath(store.settings.winePath,store.settings.runtimeRoot,runtime.current.winePath)});
   const wine = runtimeContext.winePath;
   await bindRuntimePrefix(runtimeContext);
   if (!wine) throw new Error('Select a Wine / Proton binary in Settings.');
@@ -1509,7 +1509,7 @@ async function installGameVcRuntime(id: string): Promise<void> {
   const inspected = await inspectGameDirectory(game.path);
   if (inspected.installState !== 'ready') throw new Error(inspected.installMessage ?? 'The game installation is not ready.');
   const runtimeContext = await resolveGameRuntime({runtimeRoot:store.settings.runtimeRoot,dataRoot:path.dirname(store.settings.runtimeRoot),gameId:game.id,
-    selection:game.runtime,separatePrefix:game.runtimeSeparatePrefix,approvedBuild:game.runtimeBuild,defaultWine:selectedWinePath(store.settings.winePath,store.settings.runtimeRoot,runtime.current.winePath)});
+    selection:game.runtime,separatePrefix:game.runtimeSeparatePrefix,approvedBuild:game.runtimeBuild,prefixAnchor:game.runtime&&game.runtime!=='default'?game.runtimePrefixes?.[game.runtime]:undefined,defaultWine:selectedWinePath(store.settings.winePath,store.settings.runtimeRoot,runtime.current.winePath)});
   const wine = runtimeContext.winePath;
   await bindRuntimePrefix(runtimeContext);
   if (!wine) throw new Error('Select Xodus Runtime in Settings first.');
@@ -2043,11 +2043,11 @@ function registerIpc(): void {
   ipcMain.handle('runtime-families', async () => {const families=await runtime.refreshFamilies();emitSnapshot();return families;});
   ipcMain.handle('update-game', async (_event, id: string, patch: Partial<Game>&RuntimeSettingsRequest) => {
     const allowed: Partial<Game> = {};
-    if ('runtime' in patch || 'runtimeSeparatePrefix' in patch || 'runtimeApproveBuild' in patch) {
+    if ('runtime' in patch || 'runtimeSeparatePrefix' in patch) {
       const current=store.games.find(game=>game.id===id);
       if(!current)throw Error('Game not found.');
       const selection=gameRuntimeSelection('runtime' in patch?patch.runtime:current.runtime);
-      if(selection!==(current.runtime??'default')||patch.runtimeApproveBuild===true||selection!=='default'&&patch.runtimeSeparatePrefix!==undefined&&patch.runtimeSeparatePrefix!==current.runtimeSeparatePrefix)ensureIdle();
+      if(selection!==(current.runtime??'default')||selection!=='default'&&patch.runtimeSeparatePrefix!==undefined&&patch.runtimeSeparatePrefix!==current.runtimeSeparatePrefix)ensureIdle();
       Object.assign(allowed,await approvedRuntimeSettings(current,patch,store.settings.runtimeRoot));
     }
     for (const key of ['title', 'executable', 'launchArgs'] as const) if (typeof patch[key] === 'string') allowed[key] = patch[key];

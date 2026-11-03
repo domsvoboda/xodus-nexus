@@ -1,7 +1,7 @@
 // Run with Electron. Exercises only the launcher's session-only demo runtime-settings UI with explicitly synthetic family descriptors.
 // XODUS_UI_SMOKE_OUTPUT must be a new private directory. Optional
 // XODUS_UI_SMOKE_SOURCE selects a built checkout (defaults to this checkout).
-// Spanish is the default language for this long-label fixture.
+// English is the default language for review captures.
 const {app,session,ipcMain} = require('electron');
 const fs = require('node:fs/promises');
 const path = require('node:path');
@@ -12,7 +12,7 @@ if (!output || !path.isAbsolute(output)) throw Error('Set XODUS_UI_SMOKE_OUTPUT 
 if (process.argv.some(value=>value==='--launch-game'||value==='--nexus-profile')) throw Error('Demo fixture does not accept game or profile arguments');
 process.env.XODUS_DEMO = '1';
 app.disableHardwareAcceleration();
-const language=process.env.XODUS_UI_SMOKE_LANG || 'es-ES';
+const language=process.env.XODUS_UI_SMOKE_LANG || 'en-US';
 app.commandLine.appendSwitch('lang',language);
 // Never inherit another capture action or a developer server from the caller.
 for (const name of ['VITE_DEV_SERVER_URL','XODUS_DEMO_CAPTURE_DIR','XODUS_DEMO_TOUR','XODUS_NEXUS_SMOKE_SCREENSHOT','XODUS_NEXUS_SMOKE_STORE','XODUS_NEXUS_SMOKE_STORE_QUERY','XODUS_NEXUS_FONTCONFIG','XODUS_NEXUS_FONTCONFIG_ORIGINAL','XODUS_NEXUS_FONTCONFIG_ORIGINAL_SET']) delete process.env[name];
@@ -45,8 +45,8 @@ async function capture(window) {
   // account, runtime, prefix or installed-game filesystem operation is invoked.
   ipcMain.removeHandler('runtime-families');ipcMain.handle('runtime-families',()=>choices);
   ipcMain.removeHandler('update-game');ipcMain.handle('update-game',(_event,id,patch)=>{requests.push({id,patch});return {...snapshot.games[0],...patch};});
-  const spanish=JSON.parse(await fs.readFile(path.join(source,'assets/locales/es.json'),'utf8'));
-  const settingsLabel=spanish['ui.game_settings_fece860'];
+  const labels=JSON.parse(await fs.readFile(path.join(source,'assets/locales',language.startsWith('es')?'es.json':'en.json'),'utf8'));
+  const settingsLabel=labels['ui.game_settings_fece860'];
   await ready(window,'.sidebar nav button:nth-child(2)');
   await evaluate(window,()=>document.querySelector('.sidebar nav button:nth-child(2)').click());
   await ready(window,'.library-card-menu-button');
@@ -84,10 +84,11 @@ async function capture(window) {
     });
     if(before.documentWidth>width||before.dialog.left<0||before.dialog.right>width||before.dialog.top<0||before.dialog.bottom>height||!before.focusInDialog||!before.focusIsInitial)throw Error('Runtime settings bounds/focus failed: '+JSON.stringify(before));
     if(variant==='default'&&(before.options.length!==1||before.selected!=='default'||before.consent!==undefined))throw Error('Default must not advertise an uninstalled family');
-    if(variant==='unavailable'&&(!before.options.some(option=>option.value===family&&option.disabled)||before.selected!==family||before.consent!==false))throw Error('Unavailable persisted family must not fall back or preapprove');
+    if(variant==='unavailable'&&(!before.options.some(option=>option.value===family&&option.disabled)||before.selected!==family||before.consent!==true))throw Error('Unavailable persisted family must preserve family selection and consent');
     let consentGeometry;
     if(variant==='synthetic-installed-update') {
-      if(before.selected!==family||before.consent!==false)throw Error('Build B must require fresh consent');
+      if(before.selected!==family||before.consent!==true)throw Error('Family update must retain consent');
+      await evaluate(window,()=>document.querySelector('.game-dialog input[type="checkbox"][required]').click());
       // Native form validation must keep Save from invoking even the demo handler.
       await evaluate(window,()=>document.querySelector('.game-dialog button.primary').click());await settle(window);
       if(requests.length)throw Error('Unchecked consent submitted a settings request');
@@ -102,12 +103,11 @@ async function capture(window) {
     if(!cancelFocus.restored||requests.length)throw Error('B cancellation failed focus restoration or submitted settings: '+JSON.stringify({width,height,variant,cancelFocus,requests}));
     if(variant==='synthetic-installed-update') {
       await open();
-      await evaluate(window,()=>{const input=document.querySelector('.game-dialog input[type="checkbox"][required]');if(input.checked)throw Error('Reopened B consent was prefilled');input.focus();});
-      await press(0);
+      await evaluate(window,()=>{const input=document.querySelector('.game-dialog input[type="checkbox"][required]');if(!input.checked)throw Error('Family consent was lost on reopen');input.focus();});
       await evaluate(window,()=>{const save=document.querySelector('.game-dialog button.primary');save.scrollIntoView({block:'center'});save.focus();});
       await press(0);await closed();
       const sent=requests[0]?.patch;
-      if(requests.length!==1||sent.runtime!==family||sent.runtimeApproveBuild!==true||JSON.stringify(sent.runtimeExpectedBuild)!==JSON.stringify(b))throw Error('Explicit B approval payload mismatch: '+JSON.stringify(requests));
+      if(requests.length!==1||sent.runtime!==family||sent.runtimeSeparatePrefix!==true||'runtimeApproveBuild' in sent||'runtimeExpectedBuild' in sent)throw Error('Family selection payload mismatch: '+JSON.stringify(requests));
     }
     results.push({...before,width,height,variant,consentGeometry,cancelRestoredFocus:cancelFocus,requests:structuredClone(requests)});
   }

@@ -1,10 +1,9 @@
 {
-  "runtime.build_changed": "La compilación del entorno cambió o no se ha aprobado. Revísala y elige explícitamente un nuevo prefijo independiente. Las partidas locales permanecen en el prefijo anterior.",
   "runtime.game_runtime": "Entorno del juego",
   "runtime.use_default": "Usar el entorno predeterminado",
   "runtime.unavailable": "{{name}} (no disponible)",
-  "runtime.separate_prefix": "Usar un prefijo independiente para esta compilación",
-  "runtime.prefix_warning": "Se crea un prefijo independiente para cada compilación del entorno. Las partidas locales existentes permanecen en el prefijo anterior. No se copian ni transfieren automáticamente.",
+  "runtime.separate_prefix": "Usar un prefijo independiente para esta familia de entornos",
+  "runtime.prefix_warning": "Las actualizaciones de esta familia reutilizan el mismo prefijo y las partidas locales. Cambiar de familia usa un prefijo independiente. Las partidas existentes permanecen en el prefijo anterior y no se copian ni transfieren automáticamente.",
   "auth.browser": "Continuar en el navegador",
   "auth.browser_error": "No se ha podido abrir el inicio de sesión en el navegador. Google Chrome debe estar instalado. Inténtalo de nuevo o elige otro método.",
   "auth.cancel_passkey": "Cancelar solicitud de llave de acceso",

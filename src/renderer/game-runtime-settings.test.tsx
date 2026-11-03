@@ -29,43 +29,23 @@ beforeEach(async()=>{
  document.body.innerHTML='<div id="root"></div>';root=createRoot(document.getElementById('root')!);await render();
 });
 afterEach(async()=>{await act(async()=>root.unmount());vi.restoreAllMocks();vi.unstubAllGlobals();document.body.innerHTML='';});
-const chooseInstalled=()=>click([...document.querySelectorAll('[role="dialog"] button')].find(button=>button.textContent==='Use the newly installed build with a separate prefix')!);
-it('preserves approved A while B is current and unrelated settings Save sends no new approval',async()=>{
- await openSettings();expect(consent().checked).toBe(true);
- expect(document.querySelector('[role="alert"]')?.textContent).toContain('approved build');
- await save();expect(window.launcher.updateGame).toHaveBeenCalledWith(data.games[0].id,expect.objectContaining({runtime:family,runtimeSeparatePrefix:true,runtimeApproveBuild:false,runtimeExpectedBuild:undefined}));
+it('retains family consent when a newer installed build is discovered without a new approval action',async()=>{
+ await openSettings();expect(consent().checked).toBe(true);expect(document.querySelector('[role="alert"]')).toBeNull();
+ await save();expect(window.launcher.updateGame).toHaveBeenCalledWith(data.games[0].id,expect.objectContaining({runtime:family,runtimeSeparatePrefix:true}));expect(vi.mocked(window.launcher.updateGame).mock.calls[0][1]).not.toHaveProperty('runtimeApproveBuild');
 });
-it('permits same-family A-to-B only after explicit choice of the installed build',async()=>{
- await openSettings();await chooseInstalled();await save();
- expect(window.launcher.updateGame).toHaveBeenCalledWith(data.games[0].id,expect.objectContaining({runtime:family,runtimeSeparatePrefix:true,runtimeApproveBuild:true,runtimeExpectedBuild:b}));
+it('keeps consent during B to C update while the form is open',async()=>{
+ await openSettings();data.runtime.variants=[installed(c)];await render();expect(consent().checked).toBe(true);await save();expect(window.launcher.updateGame).toHaveBeenCalledWith(data.games[0].id,expect.objectContaining({runtimeSeparatePrefix:true}));
 });
-it('ordinary Save of an already current approved build sends no fresh build approval',async()=>{
- data.runtime.variants=[installed(a)];await render();await openSettings();expect(consent().checked).toBe(true);
- await save();expect(window.launcher.updateGame).toHaveBeenCalledWith(data.games[0].id,expect.objectContaining({runtimeApproveBuild:false,runtimeExpectedBuild:undefined}));
+it('retains consent after reopening and local family refresh',async()=>{
+ data.runtime.variants=[installed(a)];await render();vi.mocked(window.launcher.getRuntimeFamilies).mockResolvedValue([installed(b)]);await openSettings();expect(consent().checked).toBe(true);await click(document.querySelector('[role="dialog"] [data-gamepad-cancel]')!);await openSettings();expect(consent().checked).toBe(true);
 });
-it('invalidates pending B approval when C arrives, retaining A until explicit C choice',async()=>{
- await openSettings();await chooseInstalled();data.runtime.variants=[installed(c)];await render();
- expect(consent().checked).toBe(true);await save();expect(window.launcher.updateGame).toHaveBeenLastCalledWith(data.games[0].id,expect.objectContaining({runtimeApproveBuild:false,runtimeExpectedBuild:undefined}));
- await openSettings();await chooseInstalled();await save();
- expect(window.launcher.updateGame).toHaveBeenLastCalledWith(data.games[0].id,expect.objectContaining({runtimeApproveBuild:true,runtimeExpectedBuild:c}));
+it('requires separate prefix consent when first choosing another family',async()=>{
+ data.games=[{...data.games[0],runtime:'default',runtimeSeparatePrefix:false,runtimeBuild:undefined}];await render();await openSettings();
+ const select=[...document.querySelectorAll<HTMLSelectElement>('[role="dialog"] select')].find(node=>[...node.options].some(option=>option.value===family))!;
+ await act(async()=>{select.value=family;select.dispatchEvent(new Event('change',{bubbles:true}));});expect(consent().checked).toBe(false);await click(consent());await save();expect(window.launcher.updateGame).toHaveBeenCalledWith(data.games[0].id,expect.objectContaining({runtime:family,runtimeSeparatePrefix:true}));
 });
-it('preserves A approval when current changes while the form stays open',async()=>{
- data.runtime.variants=[installed(a)];await render();await openSettings();expect(consent().checked).toBe(true);
- data.runtime.variants=[installed(b)];await render();expect(consent().checked).toBe(true);
- await save();expect(window.launcher.updateGame).toHaveBeenCalledWith(data.games[0].id,expect.objectContaining({runtimeSeparatePrefix:true,runtimeApproveBuild:false}));
-});
-it('resets fresh B approval after closing and reopening, preserving A',async()=>{
- await openSettings();await chooseInstalled();await click(document.querySelector('[role="dialog"] [data-gamepad-cancel]')!);
- await openSettings();expect(consent().checked).toBe(true);await save();
- expect(window.launcher.updateGame).toHaveBeenCalledWith(data.games[0].id,expect.objectContaining({runtimeApproveBuild:false}));
-});
-it('refreshes verified current B locally without clearing saved A approval',async()=>{
- data.runtime.variants=[installed(a)];await render();vi.mocked(window.launcher.getRuntimeFamilies).mockResolvedValue([installed(b)]);
- await openSettings();expect(window.launcher.getRuntimeFamilies).toHaveBeenCalledOnce();expect(consent().checked).toBe(true);
- await chooseInstalled();await save();
- expect(window.launcher.updateGame).toHaveBeenCalledWith(data.games[0].id,expect.objectContaining({runtime:family,runtimeApproveBuild:true,runtimeExpectedBuild:b}));
-});
-it('does not fabricate valid approval for a legacy family-wide consent',async()=>{
- data.games=[{...data.games[0],runtimeBuild:undefined}];await render();await openSettings();expect(consent().checked).toBe(false);
- await click(consent());await save();expect(window.launcher.updateGame).toHaveBeenCalledWith(data.games[0].id,expect.objectContaining({runtimeApproveBuild:true,runtimeExpectedBuild:b}));
+it('returning to a previously used family retains its saved prefix choice',async()=>{
+ data.games=[{...data.games[0],runtime:'default',runtimeSeparatePrefix:false,runtimePrefixes:{[family]:{layout:'build',origin:a}}}];await render();await openSettings();
+ const select=[...document.querySelectorAll<HTMLSelectElement>('[role="dialog"] select')].find(node=>[...node.options].some(option=>option.value===family))!;
+ await act(async()=>{select.value=family;select.dispatchEvent(new Event('change',{bubbles:true}));});expect(consent().checked).toBe(true);
 });

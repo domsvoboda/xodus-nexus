@@ -1,10 +1,9 @@
 {
-  "runtime.build_changed": "La version installée a changé ou n’a pas été approuvée. Vérifiez-la et choisissez explicitement un nouveau préfixe séparé. Les sauvegardes locales restent dans l’ancien préfixe.",
   "runtime.game_runtime": "Environnement du jeu",
   "runtime.use_default": "Utiliser l’environnement par défaut",
   "runtime.unavailable": "{{name}} (indisponible)",
-  "runtime.separate_prefix": "Utiliser un préfixe séparé pour cette version",
-  "runtime.prefix_warning": "Un préfixe séparé est créé pour chaque version de l’environnement. Les sauvegardes locales restent dans l’ancien préfixe. Elles ne sont pas copiées ni transférées automatiquement.",
+  "runtime.separate_prefix": "Utiliser un préfixe séparé pour cette famille d’environnements",
+  "runtime.prefix_warning": "Les mises à jour de cette famille réutilisent le même préfixe et les sauvegardes locales. Changer de famille utilise un préfixe séparé. Les sauvegardes existantes restent dans l’ancien préfixe et ne sont ni copiées ni transférées automatiquement.",
   "auth.browser": "Continuer dans le navigateur",
   "auth.browser_error": "Impossible d'ouvrir la connexion dans le navigateur. Google Chrome doit être installé. Réessayez ou choisissez une autre méthode.",
   "auth.passkey_label": "Aide pour la clé d'accès de Nexus Launcher",

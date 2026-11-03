@@ -152,11 +152,11 @@ async function resolveVerifiedRuntimeFamily(runtimeRoot:string,selection:unknown
   inFlight.set(key,work);
   try{return await work;}finally{if(inFlight.get(key)===work)inFlight.delete(key);}
 }
-/** Current build is for discovery and fresh explicit approval. */
+/** Current build is used by discovery and every new family launch. */
 export function resolveRuntimeFamily(runtimeRoot:string,selection:unknown,arch:string=process.arch) {
   return resolveVerifiedRuntimeFamily(runtimeRoot,selection,arch);
 }
-/** Launch an exact approved retained build, independently of current. */
+/** Exact retained-build lookup for rollback/lifetime tooling, not per-game launch selection. */
 export async function resolveRuntimeFamilyBuild(runtimeRoot:string,selection:unknown,approval:unknown,arch:string=process.arch) {
   return resolveVerifiedRuntimeFamily(runtimeRoot,selection,arch,runtimeBuildApproval(approval));
 }

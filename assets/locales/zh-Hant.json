@@ -1,10 +1,9 @@
 {
-  "runtime.build_changed": "已安裝的執行環境版本已變更或尚未獲准。請檢查後明確選擇新的獨立前綴。現有本機存檔保留在舊前綴中。",
   "runtime.game_runtime": "遊戲執行環境",
   "runtime.use_default": "使用預設執行環境",
   "runtime.unavailable": "{{name}}（無法使用）",
-  "runtime.separate_prefix": "為此執行環境版本使用獨立前綴",
-  "runtime.prefix_warning": "每個執行環境版本都會建立獨立前綴。現有本機存檔保留在舊前綴中，不會自動複製或轉移。",
+  "runtime.separate_prefix": "為此執行環境系列使用獨立前綴",
+  "runtime.prefix_warning": "同一系列的更新會繼續使用相同的前綴和本機存檔。切換系列會使用獨立前綴。現有本機存檔保留在舊前綴中，不會自動複製或轉移。",
   "auth.browser": "在瀏覽器中繼續",
   "auth.browser_error": "無法開啟瀏覽器登入。必須已安裝 Google Chrome。請重試或選擇其他方式。",
   "auth.cancel_passkey": "取消金鑰（Passkey）請求",

@@ -1,15 +1,15 @@
 import {promises as fs} from 'node:fs';
 import path from 'node:path';
-import {gameRuntimeSelection,sameRuntimeBuild,type GameRuntimeSelection} from '../shared/runtime-selection.js';
-import {resolveRuntimeFamilyBuild,type ResolvedRuntimeFamily} from './runtime-families.js';
+import {gameRuntimeSelection,runtimePrefixAnchor,runtimeBuildApproval,type RuntimePrefixAnchor,type GameRuntimeSelection} from '../shared/runtime-selection.js';
+import {resolveRuntimeFamily,type ResolvedRuntimeFamily} from './runtime-families.js';
 export interface GameRuntimeContext {
   readonly selection:GameRuntimeSelection;readonly family:'default'|'nexus'|'nexus-cachyos';
   readonly winePath:string;readonly compatibilityDataPath:string;readonly legacyPrefixRoot:string;readonly dataRoot:string;
-  readonly managed?:Readonly<ResolvedRuntimeFamily>;
+  readonly prefixAnchor?:Readonly<RuntimePrefixAnchor>;readonly managed?:Readonly<ResolvedRuntimeFamily>;
 }
 /** Capture once before prerequisite staging or launch. Later setting/pointer
  * changes cannot redirect this session, its prefix or its captured Stop runner. */
-export async function resolveGameRuntime(options:{runtimeRoot:string;dataRoot:string;gameId:string;selection:unknown;separatePrefix:unknown;approvedBuild?:unknown;defaultWine:string|undefined;arch?:string}):Promise<Readonly<GameRuntimeContext>> {
+export async function resolveGameRuntime(options:{runtimeRoot:string;dataRoot:string;gameId:string;selection:unknown;separatePrefix:unknown;approvedBuild?:unknown;prefixAnchor?:unknown;defaultWine:string|undefined;arch?:string}):Promise<Readonly<GameRuntimeContext>> {
   const selection=gameRuntimeSelection(options.selection);
   if(!/^[A-Za-z0-9_-]{1,128}$/.test(options.gameId))throw Error('Invalid game prefix identity.');
   if(selection==='default') {
@@ -22,10 +22,11 @@ export async function resolveGameRuntime(options:{runtimeRoot:string;dataRoot:st
       compatibilityDataPath:path.join(options.dataRoot,'compatdata',options.gameId),legacyPrefixRoot:path.join(options.dataRoot,'prefixes',options.gameId)});
   }
   if(options.separatePrefix!==true)throw Error('Choose a separate runtime prefix before using this family. Existing local saves remain in the old prefix.');
-  const managed=await resolveRuntimeFamilyBuild(options.runtimeRoot,selection,options.approvedBuild,options.arch).catch(error=>{throw Error('The selected runtime build changed, has not been approved or failed verification. Explicitly choose an installed build in Game settings. Existing prefix and local saves were preserved.',{cause:error});});
-  if(!sameRuntimeBuild(options.approvedBuild,managed))throw Error('The selected runtime build changed or has not been approved. Explicitly choose the installed build in Game settings. Existing prefix and local saves were preserved.');
-  const root=path.join(options.dataRoot,'runtime-prefixes',selection,managed.buildId,options.gameId);
-  return Object.freeze({selection,family:selection,winePath:managed.winePath,dataRoot:options.dataRoot,managed,
+  const managed=await resolveRuntimeFamily(options.runtimeRoot,selection,options.arch);
+  // Persisted pre-0.5 build metadata identifies an existing prefix, not its next runtime.
+  const anchor=options.prefixAnchor!==undefined?runtimePrefixAnchor(options.prefixAnchor):options.approvedBuild!==undefined?{layout:'build' as const,origin:runtimeBuildApproval(options.approvedBuild)}:{layout:'family' as const};
+  const root=path.join(options.dataRoot,'runtime-prefixes',selection,anchor.layout==='build'?anchor.origin.buildId:'prefixes',options.gameId);
+  return Object.freeze({selection,family:selection,winePath:managed.winePath,dataRoot:options.dataRoot,managed,prefixAnchor:Object.freeze(anchor),
     compatibilityDataPath:path.join(root,'compatdata'),legacyPrefixRoot:path.join(root,'wine')});
 }
 /** No pfx/wineboot, copying, save migration or default pointer mutation. */
@@ -43,7 +44,8 @@ export async function bindRuntimePrefix(context:Readonly<GameRuntimeContext>):Pr
     try{if(!(await fs.lstat(marker)).isFile())throw Error('Runtime prefix binding must be a regular file.');}
     catch(error){if((error as NodeJS.ErrnoException).code!=='ENOENT')throw error;}
   }
-  const expected=context.managed?{schema:1,family:context.family,buildId:context.managed.buildId,sourceCommit:context.managed.sourceCommit,manifestSha256:context.managed.manifestSha256,prefixSchema:context.managed.prefixSchema,arch:context.managed.arch}:undefined;
+  const anchor=context.prefixAnchor;
+  const expected=context.managed?(anchor?.layout==='build'?{schema:1,family:context.family,buildId:anchor.origin.buildId,sourceCommit:anchor.origin.sourceCommit,manifestSha256:anchor.origin.manifestSha256,prefixSchema:context.managed.prefixSchema,arch:context.managed.arch}:{schema:2,family:context.family,layout:'family',prefixSchema:context.managed.prefixSchema,arch:context.managed.arch}):undefined;
   try {
     const current=JSON.parse(await fs.readFile(marker,'utf8'));
     if(!expected) {if(current.family!=='default')throw Error('The default prefix belongs to another runtime family.');return;}

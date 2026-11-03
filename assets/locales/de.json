@@ -1,10 +1,9 @@
 {
-  "runtime.build_changed": "Der installierte Laufzeit-Build wurde geändert oder noch nicht genehmigt. Prüfe ihn und wähle ausdrücklich ein neues separates Präfix. Lokale Spielstände bleiben im alten Präfix.",
   "runtime.game_runtime": "Spiel-Laufzeit",
   "runtime.use_default": "Standard-Laufzeit verwenden",
   "runtime.unavailable": "{{name}} (nicht verfügbar)",
-  "runtime.separate_prefix": "Separates Präfix für diesen Laufzeit-Build verwenden",
-  "runtime.prefix_warning": "Für jeden Laufzeit-Build wird ein separates Präfix erstellt. Vorhandene lokale Spielstände bleiben im alten Präfix. Sie werden nicht automatisch kopiert oder übertragen.",
+  "runtime.separate_prefix": "Separates Präfix für diese Laufzeitfamilie verwenden",
+  "runtime.prefix_warning": "Updates innerhalb dieser Laufzeitfamilie verwenden dasselbe Präfix und dieselben lokalen Spielstände. Beim Wechsel der Familie wird ein separates Präfix verwendet. Vorhandene lokale Spielstände bleiben im alten Präfix und werden nicht automatisch kopiert oder übertragen.",
   "auth.browser": "Im Browser fortfahren",
   "auth.browser_error": "Die Anmeldung konnte nicht im Browser geöffnet werden. Google Chrome muss installiert sein. Versuche es erneut oder wähle eine andere Methode.",
   "auth.cancel_passkey": "Passkey Abfrage abbrechen",
