@@ -33,6 +33,7 @@ import {xboxOverlaySettings,xboxOverlayPatch} from '../shared/xbox-overlay-setti
 import { BackendManager } from './backend.js';
 import { run, spawnTracked } from './process.js';
 import { inspectGameDirectory, StateStore } from './store.js';
+import { inspectStartupLibrary } from './startup-library.js';
 import { hasIncompleteUpdate, INCOMPLETE_UPDATE_MESSAGE } from './installation-state.js';
 import { RuntimeManager } from './runtime.js';
 import { prepareProtonRunner, syncPrefixUserLocale, syncUnrealCultureGameIni } from './proton.js';
@@ -2544,9 +2545,8 @@ app.whenReady().then(async () => {
     return;
   }
   const inspectedGames: { id: string; patch: Partial<Game> }[] = [];
-  for (const game of [...store.games]) {
-    try {
-      const inspected = await inspectGameDirectory(game.path);
+  for (const { game, inspected } of await inspectStartupLibrary(store.games, inspectGameDirectory)) {
+    if (inspected) {
       inspectedGames.push({ id: game.id, patch: {
         installState: inspected.installState,
         installMessage: inspected.installMessage,
@@ -2559,7 +2559,7 @@ app.whenReady().then(async () => {
         installedVersion: inspected.installedVersion,
         packageName: inspected.packageName,
       } });
-    } catch {
+    } else {
       await refreshIncompleteUpdate(game).catch(() => {});
       // Keep unavailable entries visible, without clearing any update barrier.
     }
