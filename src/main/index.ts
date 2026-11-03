@@ -1834,26 +1834,23 @@ function registerIpc(): void {
   ipcMain.handle('runtime-check-nexus', async () => { const value = await runtime.checkNexus(); emitSnapshot(); return value; });
   ipcMain.handle('runtime-install', async () => {
     ensureIdle();
-    await runtime.install(emitSnapshot, async winePath => {
-      await store.setSettings({ winePath });
-      await refreshAccount(false);
-      emitSnapshot();
+    await runtime.install(emitSnapshot, {
+      persistSelection: async winePath => { await store.setSettings({ winePath }); },
+      refreshAccount: async () => { await refreshAccount(false); emitSnapshot(); },
     });
   });
   ipcMain.handle('runtime-install-nexus', async () => {
     ensureIdle();
-    await runtime.installNexus(emitSnapshot, async winePath => {
-      await store.setSettings({ winePath });
-      await refreshAccount(false);
-      emitSnapshot();
+    await runtime.installNexus(emitSnapshot, {
+      persistSelection: async winePath => { await store.setSettings({ winePath }); },
+      refreshAccount: async () => { await refreshAccount(false); emitSnapshot(); },
     });
   });
   ipcMain.handle('runtime-rollback-preview', async () => {
     ensureIdle();
-    await runtime.rollbackCloudSavePreview(emitSnapshot, async winePath => {
-      await store.setSettings({ winePath });
-      await refreshAccount(false);
-      emitSnapshot();
+    await runtime.rollbackCloudSavePreview(emitSnapshot, {
+      persistSelection: async winePath => { await store.setSettings({ winePath }); },
+      refreshAccount: async () => { await refreshAccount(false); emitSnapshot(); },
     });
   });
   ipcMain.handle('account-refresh', () => refreshAccount());

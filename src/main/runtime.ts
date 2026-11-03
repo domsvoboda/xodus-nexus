@@ -1,3 +1,4 @@
+import {commitRuntimePointer,type PointerCommitResult} from './runtime-pointer-commit.js';
 import {installedRuntimeFamilies} from './runtime-families.js';
 import {runtimeWineFailure} from './runtime-prerequisites.js';
 import { constants, createWriteStream, promises as fs } from 'node:fs';
@@ -57,7 +58,11 @@ export function previewBaseRelease(name: string): string | null {
 }
 
 export interface RuntimeSettingsReservation { setRoot(root: string): void; release(): void; }
-type AfterInstall = (winePath: string) => Promise<void>;
+type AfterInstall = ((winePath: string) => Promise<void>) | {
+  persistSelection(winePath:string):Promise<void>;
+  refreshAccount?():Promise<void>;
+};
+interface Activation {winePath:string;pointer:PointerCommitResult;}
 
 export class RuntimeManager {
   private mutation?: symbol;
@@ -172,13 +177,14 @@ export class RuntimeManager {
 
   async refreshSelection(onStatus: () => void, afterRefresh: () => Promise<void>): Promise<RuntimeStatus> {
     const lease = this.reserveMutation();
+    let operationError:unknown;
     try {
       onStatus();
       await this.refresh();
       await afterRefresh();
-    } finally {
+    } catch(error){operationError=error;throw error;} finally {
       lease.release();
-      onStatus();
+      this.notifyCompletion(onStatus,operationError);
     }
     return this.current;
   }
@@ -247,6 +253,7 @@ export class RuntimeManager {
   async install(onStatus: () => void, afterInstall?: AfterInstall): Promise<string> {
     const lease = this.reserveMutation();
     let staging: string | undefined;
+    let operationError:unknown;
     try {
       onStatus();
       if (!this.latestArtifact) await this.check();
@@ -273,23 +280,24 @@ export class RuntimeManager {
       result = await run('sha512sum', ['-c', artifact.checksumName], { cwd: downloads, maxOutput: 100_000 });
       if (result.code !== 0) throw new Error('Snapshot SHA-512 verification failed.');
 
-      const wine = await this.activateArchive(downloads, artifact.name, artifact.commit, onStatus, canonicalSnapshotName(artifact.commit), lease.root);
-      await afterInstall?.(wine);
-      return wine;
+      const activation = await this.activateArchive(downloads, artifact.name, artifact.commit, onStatus, canonicalSnapshotName(artifact.commit), lease.root);
+      await this.completeActivation(activation,afterInstall);
+      return activation.winePath;
     } catch (error) {
+      operationError=error;
       this.status.error = (error as Error).message;
       throw error;
     } finally {
       if (staging) await fs.rm(staging, { recursive: true, force: true }).catch(() => undefined);
       lease.release();
-      onStatus();
+      this.notifyCompletion(onStatus,operationError,true);
     }
   }
   // Shared tail of both install paths: verify the archive structure, extract,
   // validate Wine and atomically switch the active runtime pointer. The
   // release directory uses the simple canonical name (releaseName); what the
   // archive calls its top-level folder is only provenance, kept in current.json.
-  private async activateArchive(downloads: string, archiveName: string, commit: string, onStatus: () => void, releaseName: string, root: string): Promise<string> {
+  private async activateArchive(downloads: string, archiveName: string, commit: string, onStatus: () => void, releaseName: string, root: string): Promise<Activation> {
     const staging = path.join(root, `.staging-${randomUUID()}`);
     const extracted = path.join(staging, 'extracted');
     const archivePath = path.join(downloads, archiveName);
@@ -336,15 +344,43 @@ export class RuntimeManager {
       if (!await this.validateWine(winePath)) throw new Error('The activated runtime is not executable.');
       const pointer: RuntimePointer = { name: releaseName, winePath, commit, installedAt: new Date().toISOString() };
       await fs.mkdir(root, { recursive: true });
-      const pointerTmp = `${this.pointerFile(root)}.tmp`;
-      await fs.writeFile(pointerTmp, JSON.stringify(pointer, null, 2), { mode: 0o600 });
-      await fs.rename(pointerTmp, this.pointerFile(root));
-      Object.assign(this.status, { installed: true, name: releaseName, winePath, commit, phase: 'Runtime is ready.', error: undefined });
-      this.emitLog('runtime', `Active Wine: ${winePath}`);
-      return winePath;
+      const pointerResult=await commitRuntimePointer(root,pointer);
+      Object.assign(this.status, { installed: true, name: releaseName, winePath, commit, phase: 'Runtime activated; finishing setup.', error: undefined });
+      try{this.emitLog('runtime', `Active Wine: ${winePath}`);}catch(error){pointerResult.errors.push(new Error('Runtime activation log failed: '+(error as Error).message,{cause:error}));}
+      return {winePath,pointer:pointerResult};
     } finally {
       await fs.rm(staging, { recursive: true, force: true }).catch(() => undefined);
     }
+  }
+
+  private notifyCompletion(onStatus:()=>void,prior:unknown,activated=false):void {
+    try{onStatus();}catch(error){
+      if(prior)throw new AggregateError([prior,error],(prior as Error).message+' Status notification failed: '+(error as Error).message);
+      if(activated){
+        this.status.phase='Runtime activated; finishing setup needs attention.';
+        this.status.error='The runtime was activated, but updating its status failed: '+(error as Error).message;
+        throw new Error(this.status.error,{cause:error});
+      }
+      throw error;
+    }
+  }
+  private async completeActivation(activation:Activation,afterInstall?:AfterInstall):Promise<void> {
+    const errors=[...activation.pointer.errors];
+    if(typeof afterInstall==='function') {
+      try{await afterInstall(activation.winePath);}catch(error){errors.push(new Error('Finishing launcher setup failed: '+(error as Error).message,{cause:error}));}
+    } else if(afterInstall) {
+      let saved=false;
+      try{await afterInstall.persistSelection(activation.winePath);saved=true;}
+      catch(error){errors.push(new Error('Saving the selected runtime failed or could not be confirmed: '+(error as Error).message,{cause:error}));}
+      if(saved&&afterInstall.refreshAccount)try{await afterInstall.refreshAccount();}
+      catch(error){errors.push(new Error('The runtime selection was saved, but refreshing account status failed: '+(error as Error).message,{cause:error}));}
+    }
+    if(errors.length) {
+      this.status.phase='Runtime activated; finishing setup needs attention.';
+      this.status.error='The runtime was activated. '+errors.map(error=>error.message).join(' ');
+      throw new AggregateError(errors,this.status.error);
+    }
+    this.status.phase='Runtime is ready.';this.status.error=undefined;
   }
 
   // Only published releases are installable here, never unapproved CI artifacts.
@@ -419,6 +455,7 @@ export class RuntimeManager {
   async installNexus(onStatus: () => void, afterInstall?: AfterInstall): Promise<string> {
     const lease = this.reserveMutation();
     let staging: string | undefined;
+    let operationError:unknown;
     try {
       onStatus();
       if (!this.nexusArtifact) await this.checkNexus();
@@ -440,20 +477,22 @@ export class RuntimeManager {
       const result = await run('sha512sum', ['-c', artifact.checksumName], { cwd: downloads, maxOutput: 100_000 });
       if (result.code !== 0) throw new Error('Nexus runtime SHA-512 verification failed.');
 
-      const wine = await this.activateArchive(downloads, artifact.name, artifact.version, onStatus, nexusReleaseName(artifact.name), lease.root);
-      await afterInstall?.(wine);
-      return wine;
+      const activation = await this.activateArchive(downloads, artifact.name, artifact.version, onStatus, nexusReleaseName(artifact.name), lease.root);
+      await this.completeActivation(activation,afterInstall);
+      return activation.winePath;
     } catch (error) {
+      operationError=error;
       this.status.error = (error as Error).message;
       throw error;
     } finally {
       if (staging) await fs.rm(staging, { recursive: true, force: true }).catch(() => undefined);
       lease.release();
-      onStatus();
+      this.notifyCompletion(onStatus,operationError,true);
     }
   }
   async rollbackCloudSavePreview(onStatus: () => void, afterInstall?: AfterInstall): Promise<string> {
     const lease = this.reserveMutation();
+    let operationError:unknown;
     try {
       onStatus();
       const current = await this.readPointer(lease.root);
@@ -463,16 +502,14 @@ export class RuntimeManager {
       await this.validateWine(winePath, 'The previous runtime is missing or failed validation. The preview remains active.');
       onStatus();
       const pointer: RuntimePointer = { ...current, name: baseName, winePath, installedAt: new Date().toISOString() };
-      const temporary = `${this.pointerFile(lease.root)}.tmp-${randomUUID()}`;
-      await fs.writeFile(temporary, JSON.stringify(pointer, null, 2), { mode: 0o600 });
-      await fs.rename(temporary, this.pointerFile(lease.root));
-      Object.assign(this.status, { name: baseName, winePath, phase: 'Previous runtime restored.', error: undefined });
-      this.emitLog('runtime', `Restored Wine: ${winePath}`);
-      await afterInstall?.(winePath);
+      const pointerResult=await commitRuntimePointer(lease.root,pointer);
+      Object.assign(this.status, { installed:true,name:baseName,winePath,commit:pointer.commit,phase:'Previous runtime restored; finishing setup.',error:undefined });
+      try{this.emitLog('runtime', `Restored Wine: ${winePath}`);}catch(error){pointerResult.errors.push(new Error('Runtime activation log failed: '+(error as Error).message,{cause:error}));}
+      await this.completeActivation({winePath,pointer:pointerResult},afterInstall);
       return winePath;
-    } finally {
+    } catch(error){operationError=error;this.status.error=(error as Error).message;throw error;} finally {
       lease.release();
-      onStatus();
+      this.notifyCompletion(onStatus,operationError,true);
     }
   }
 }
