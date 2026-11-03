@@ -36,7 +36,7 @@ import { run, spawnTracked } from './process.js';
 import { inspectGameDirectory, StateStore } from './store.js';
 import { inspectStartupLibrary } from './startup-library.js';
 import { hasIncompleteUpdate, INCOMPLETE_UPDATE_MESSAGE } from './installation-state.js';
-import { RuntimeManager } from './runtime.js';
+import { RuntimeManager, type RuntimeSettingsReservation } from './runtime.js';
 import { prepareProtonRunner, syncPrefixUserLocale, syncUnrealCultureGameIni } from './proton.js';
 import { layoutOfWine } from './proton-layout.js';
 import { accountCacheKey } from './offline-identity.js';
@@ -482,7 +482,8 @@ function requireBackend(command: keyof typeof backend.current.capabilities): str
   return status.binaryPath;
 }
 
-function ensureIdle(mode?: 'install' | 'launch' | 'remove'): void {
+function ensureIdle(mode?: 'install' | 'launch' | 'remove', ownRuntimeReservation?: RuntimeSettingsReservation): void {
+  if (ownRuntimeReservation) runtime.assertSettingsReservation(ownRuntimeReservation);
   if (offlinePermissionChanging) throw Error('Wait for the offline-permission change to finish.');
   if (keyringSupport.busy) throw Error('Wait for the wallet operation to finish.');
   if (authState.running || authJob) throw Error('A sign-in operation is already in progress.');
@@ -496,7 +497,7 @@ function ensureIdle(mode?: 'install' | 'launch' | 'remove'): void {
   if (gameRemovalInProgress) throw new Error('A game is being removed. Wait for it to finish.');
   assertActivityCompatible(operations.keys(), store.downloads, gameOperation, installQueue.size, mode);
   if (backend.current.updating) throw new Error('The backend is being updated.');
-  if (runtime.current.updating) throw new Error('Xodus Runtime is being installed.');
+  if ((runtime.current.updating || runtime.busy) && !ownRuntimeReservation) throw new Error('Xodus Runtime is being installed.');
 }
 
 async function syncManagedWinePath(): Promise<void> {
@@ -728,8 +729,8 @@ function requestAuth(command: 'login' | 'logout', player = false): Promise<void>
 }
 
 /** Reserve the auth job before any asynchronous preparation or credential mutation. */
-function requestSavedAccount(action: 'use' | 'forget' | 'enable', name: unknown): Promise<void> {
-  ensureIdle();
+function requestSavedAccount(action: 'use' | 'forget' | 'enable', name: unknown, ownRuntimeReservation?: RuntimeSettingsReservation): Promise<void> {
+  ensureIdle(undefined, ownRuntimeReservation);
   const binary = backend.current.binaryPath;
   if (typeof name !== 'string' || !binary || !backend.current.capabilities.savedAccounts) return Promise.reject(Error('Saved accounts are not available.'));
   if (action === 'forget' && authState.stored === null) return Promise.reject(Error('Refresh account status before forgetting a saved Store account.'));
@@ -1822,29 +1823,38 @@ function registerIpc(): void {
   ipcMain.handle('backend-check-update', async () => { const value = await backend.checkUpdate(); emitSnapshot(); return value; });
   ipcMain.handle('backend-update', async () => { await backend.update(emitSnapshot); await refreshAccount(); });
   ipcMain.handle('backend-rebuild', async () => { await backend.rebuild(emitSnapshot); await refreshAccount(); });
-  ipcMain.handle('runtime-refresh', async () => { const value = await runtime.refresh(); await syncManagedWinePath(); await refreshAccount(false); emitSnapshot(); return value; });
+  ipcMain.handle('runtime-refresh', async () => {
+    ensureIdle();
+    return runtime.refreshSelection(emitSnapshot, async () => {
+      await syncManagedWinePath();
+      await refreshAccount(false);
+    });
+  });
   ipcMain.handle('runtime-check-update', async () => { const value = await runtime.check(); emitSnapshot(); return value; });
   ipcMain.handle('runtime-check-nexus', async () => { const value = await runtime.checkNexus(); emitSnapshot(); return value; });
   ipcMain.handle('runtime-install', async () => {
     ensureIdle();
-    const winePath = await runtime.install(emitSnapshot);
-    await store.setSettings({ winePath });
-    await refreshAccount(false);
-    emitSnapshot();
+    await runtime.install(emitSnapshot, async winePath => {
+      await store.setSettings({ winePath });
+      await refreshAccount(false);
+      emitSnapshot();
+    });
   });
   ipcMain.handle('runtime-install-nexus', async () => {
     ensureIdle();
-    const winePath = await runtime.installNexus(emitSnapshot);
-    await store.setSettings({ winePath });
-    await refreshAccount(false);
-    emitSnapshot();
+    await runtime.installNexus(emitSnapshot, async winePath => {
+      await store.setSettings({ winePath });
+      await refreshAccount(false);
+      emitSnapshot();
+    });
   });
   ipcMain.handle('runtime-rollback-preview', async () => {
     ensureIdle();
-    const winePath = await runtime.rollbackCloudSavePreview(emitSnapshot);
-    await store.setSettings({ winePath });
-    await refreshAccount(false);
-    emitSnapshot();
+    await runtime.rollbackCloudSavePreview(emitSnapshot, async winePath => {
+      await store.setSettings({ winePath });
+      await refreshAccount(false);
+      emitSnapshot();
+    });
   });
   ipcMain.handle('account-refresh', () => refreshAccount());
   const socialClient=(event:Electron.IpcMainInvokeEvent)=>{
@@ -2231,39 +2241,51 @@ function registerIpc(): void {
     if (patch.closeToTray !== undefined) {if(typeof patch.closeToTray !== 'boolean')throw Error('Invalid close-to-tray setting.');allowed.closeToTray=patch.closeToTray;}
     if (typeof patch.firstRunCompleted === 'boolean') allowed.firstRunCompleted = patch.firstRunCompleted;
     const previous = store.settings;
-    if (allowed.multiAccountEnabled === true && (previous.multiAccountEnabled !== true || savedAccountsEnabled !== true)) await requestSavedAccount('enable', '');
-    const settings = await store.setSettings(allowed);
-    if(patch.closeToTray!==undefined){
-      if(!launcherTray.configure(settings.closeToTray===true)){
-        await store.setSettings({closeToTray:previous.closeToTray===true});emitSnapshot();
-        throw Error('The system tray is unavailable. Use a desktop session with a system tray.');
+    const componentKeys = ['market', 'winePath', 'externalXodusRoot', 'runtimeRoot'] as const;
+    // Do not reapply unchanged component values after an unrelated async action.
+    for (const key of componentKeys) if (allowed[key] === previous[key]) delete allowed[key];
+    const componentChange = componentKeys.some(key => allowed[key] !== undefined);
+    const reservation = componentChange ? runtime.reserveSettingsChange() : undefined;
+    try {
+      if (allowed.multiAccountEnabled === true && (previous.multiAccountEnabled !== true || savedAccountsEnabled !== true)) await requestSavedAccount('enable', '', reservation);
+      const settings = await store.setSettings(allowed);
+      if (reservation) {
+        // Settings have committed; keep component roots coherent even if a
+        // later independent tray/overlay/bandwidth side effect fails.
+        backend.setExternalRoot(settings.externalXodusRoot);
+        reservation.setRoot(settings.runtimeRoot);
       }
-      if(!settings.closeToTray&&mainWindow&&!mainWindow.isVisible())await showLauncher();
-      if(Object.keys(patch).every(key=>key==='closeToTray')){emitSnapshot();return settings;}
+      if(patch.closeToTray!==undefined){
+        if(!launcherTray.configure(settings.closeToTray===true)){
+          await store.setSettings({closeToTray:previous.closeToTray===true});emitSnapshot();
+          throw Error('The system tray is unavailable. Use a desktop session with a system tray.');
+        }
+        if(!settings.closeToTray&&mainWindow&&!mainWindow.isVisible())await showLauncher();
+        if(Object.keys(patch).every(key=>key==='closeToTray')){emitSnapshot();return settings;}
+      }
+      if(Object.keys(xboxOverlayPatch(patch)).length){
+        await overlayShortcut?.configure(settings);gameGuide?.publish('overlay',xboxOverlaySettings(settings));
+        if(!xboxOverlaySettings(settings).overlayEnabled)gameGuide?.reset();
+        if(Object.keys(patch).every(key=>['overlayEnabled','overlayShortcut','overlaySide'].includes(key))){emitSnapshot();return settings;}
+      }
+      if (patch.downloadLimitMiB !== undefined) {
+        try { await downloadLimitControls.apply(settings.downloadLimitMiB ?? 0); }
+        catch { emitSnapshot(); throw Error('The speed limit was saved, but could not be sent to the active download. Retry the installation to apply it.'); }
+      }
+      // A bandwidth-only change must not restart authentication or refresh devices.
+      if (isBandwidthOnlyPatch(patch)) { emitSnapshot(); return settings; }
+      if (isShaderCacheOnlyPatch(patch)) { emitSnapshot(); return settings; }
+      // Cosmetic/storage preferences do not change the selected components or
+      // account scope, including a full unchanged Settings form saved by the UI.
+      if (!componentChange) { emitSnapshot(); return settings; }
+      await backend.refresh();
+      await refreshAccount(false);
+      await runtime.refresh();
+      emitSnapshot();
+      return settings;
+    } finally {
+      if (reservation) { reservation.release(); emitSnapshot(); }
     }
-    if(Object.keys(xboxOverlayPatch(patch)).length){
-      await overlayShortcut?.configure(settings);gameGuide?.publish('overlay',xboxOverlaySettings(settings));
-      if(!xboxOverlaySettings(settings).overlayEnabled)gameGuide?.reset();
-      if(Object.keys(patch).every(key=>['overlayEnabled','overlayShortcut','overlaySide'].includes(key))){emitSnapshot();return settings;}
-    }
-    if (patch.downloadLimitMiB !== undefined) {
-      try { await downloadLimitControls.apply(settings.downloadLimitMiB ?? 0); }
-      catch { emitSnapshot(); throw Error('The speed limit was saved, but could not be sent to the active download. Retry the installation to apply it.'); }
-    }
-    // A bandwidth-only change must not restart authentication or refresh devices.
-    if (isBandwidthOnlyPatch(patch)) { emitSnapshot(); return settings; }
-    if (isShaderCacheOnlyPatch(patch)) { emitSnapshot(); return settings; }
-    // Cosmetic/storage preferences do not change the selected components or
-    // account scope, including a full unchanged Settings form saved by the UI.
-    if ((['market', 'winePath', 'externalXodusRoot', 'runtimeRoot'] as const)
-      .every(key => settings[key] === previous[key])) { emitSnapshot(); return settings; }
-    backend.setExternalRoot(settings.externalXodusRoot);
-    runtime.setRoot(settings.runtimeRoot);
-    await backend.refresh();
-    await refreshAccount(false);
-    await runtime.refresh();
-    emitSnapshot();
-    return settings;
   });
   ipcMain.handle('choose-directory', async (_event, defaultPath?: string) => {
     const result = await dialog.showOpenDialog(mainWindow!, { properties: ['openDirectory', 'createDirectory'], defaultPath });
@@ -2568,8 +2590,8 @@ app.whenReady().then(async () => {
     }
   }
   await store.patchGames(inspectedGames);
-  runtime = new RuntimeManager(store.settings.runtimeRoot, emitLog, () => downloadCancellations.size > 0 || operations.size > 0 || installQueue.size > 0 || preparingInstall || backend?.current.updating === true);
-  backend = new BackendManager(app.getPath('userData'), store.settings.externalXodusRoot, emitLog, () => keyringSupport.busy || downloadCancellations.size > 0 || operations.size > 0 || installQueue.size > 0 || preparingInstall || runtime?.current.updating === true);
+  runtime = new RuntimeManager(store.settings.runtimeRoot, emitLog, () => preparingLaunch || finalizingGame || downloadCancellations.size > 0 || operations.size > 0 || installQueue.size > 0 || preparingInstall || backend?.current.updating === true);
+  backend = new BackendManager(app.getPath('userData'), store.settings.externalXodusRoot, emitLog, () => keyringSupport.busy || downloadCancellations.size > 0 || operations.size > 0 || installQueue.size > 0 || preparingInstall || runtime?.busy === true);
   await backend.refresh();
   await runtime.refresh();
   if (!demoMode) {

@@ -55,7 +55,12 @@ export function previewBaseRelease(name: string): string | null {
   return match?.[1] ?? null;
 }
 
+export interface RuntimeSettingsReservation { setRoot(root: string): void; release(): void; }
+type AfterInstall = (winePath: string) => Promise<void>;
+
 export class RuntimeManager {
+  private mutation?: symbol;
+  private settingsReservation?: RuntimeSettingsReservation;
   private status: RuntimeStatus;
   private emitLog: (scope: string, line: string) => void;
   private isOperationActive: () => boolean;
@@ -80,16 +85,44 @@ export class RuntimeManager {
   }
 
   get current(): RuntimeStatus { return structuredClone(this.status); }
-  setRoot(root: string): void { this.status.runtimeRoot = root; }
+  get busy(): boolean { return this.mutation !== undefined; }
+  setRoot(root: string): void {
+    if (this.busy) throw new Error('The runtime cannot be changed while a Xodus operation is active.');
+    this.status.runtimeRoot = root;
+  }
+  private reserveMutation() {
+    if (this.busy || this.isOperationActive()) throw new Error('The runtime cannot be changed while a Xodus operation is active.');
+    const owner = Symbol('runtime mutation'), root = this.status.runtimeRoot;
+    this.mutation = owner;
+    this.status.updating = true;
+    return { owner, root, release: () => {
+      if (this.mutation !== owner) return;
+      this.settingsReservation = undefined;
+      this.mutation = undefined;
+      this.status.updating = false;
+    } };
+  }
+  assertSettingsReservation(reservation: RuntimeSettingsReservation): void {
+    if (!this.busy || this.settingsReservation !== reservation) throw new Error('The runtime cannot be changed while a Xodus operation is active.');
+  }
+  reserveSettingsChange(): RuntimeSettingsReservation {
+    const lease = this.reserveMutation();
+    const reservation: RuntimeSettingsReservation = Object.freeze({
+      setRoot: (root: string) => { this.assertSettingsReservation(reservation); this.status.runtimeRoot = root; },
+      release: lease.release,
+    });
+    this.settingsReservation = reservation;
+    return reservation;
+  }
 
   private async commandOk(command: string, args: string[]): Promise<boolean> {
     try { return (await run(command, args, { maxOutput: 30_000 })).code === 0; } catch { return false; }
   }
 
-  private pointerFile(): string { return path.join(this.status.runtimeRoot, 'current.json'); }
+  private pointerFile(root = this.status.runtimeRoot): string { return path.join(root, 'current.json'); }
 
-  private async readPointer(): Promise<RuntimePointer | null> {
-    try { return JSON.parse(await fs.readFile(this.pointerFile(), 'utf8')) as RuntimePointer; } catch { return null; }
+  private async readPointer(root = this.status.runtimeRoot): Promise<RuntimePointer | null> {
+    try { return JSON.parse(await fs.readFile(this.pointerFile(root), 'utf8')) as RuntimePointer; } catch { return null; }
   }
 
   private async validateWine(winePath: string, failureMessage?: string): Promise<boolean> {
@@ -132,6 +165,19 @@ export class RuntimeManager {
       });
     } else {
       Object.assign(this.status, { installed: false, name: undefined, winePath: undefined, commit: undefined });
+    }
+    return this.current;
+  }
+
+  async refreshSelection(onStatus: () => void, afterRefresh: () => Promise<void>): Promise<RuntimeStatus> {
+    const lease = this.reserveMutation();
+    try {
+      onStatus();
+      await this.refresh();
+      await afterRefresh();
+    } finally {
+      lease.release();
+      onStatus();
     }
     return this.current;
   }
@@ -197,19 +243,20 @@ export class RuntimeManager {
     onStatus();
   }
 
-  async install(onStatus: () => void): Promise<string> {
-    if (this.isOperationActive()) throw new Error('The runtime cannot be changed while a Xodus operation is active.');
-    if (!this.latestArtifact) await this.check();
-    const artifact = this.latestArtifact;
-    if (!artifact) throw new Error(this.status.error ?? 'The current snapshot is unavailable.');
-    if (!this.status.prerequisites.tar || !this.status.prerequisites.sha512sum) throw new Error('tar or sha512sum is missing.');
-
-    this.status.updating = true;
-    this.status.error = undefined;
-    onStatus();
-    const staging = path.join(this.status.runtimeRoot, `.staging-${randomUUID()}`);
-    const downloads = path.join(staging, 'downloads');
+  async install(onStatus: () => void, afterInstall?: AfterInstall): Promise<string> {
+    const lease = this.reserveMutation();
+    let staging: string | undefined;
     try {
+      onStatus();
+      if (!this.latestArtifact) await this.check();
+      const artifact = this.latestArtifact && { ...this.latestArtifact };
+      if (!artifact) throw new Error(this.status.error ?? 'The current snapshot is unavailable.');
+      if (!this.status.prerequisites.tar || !this.status.prerequisites.sha512sum) throw new Error('tar or sha512sum is missing.');
+
+      this.status.error = undefined;
+      onStatus();
+      staging = path.join(lease.root, `.staging-${randomUUID()}`);
+      const downloads = path.join(staging, 'downloads');
       await fs.mkdir(downloads, { recursive: true });
       this.setPhase('Downloading the official x86_64 snapshot from GitHub Actions…', onStatus);
       let result = await run('gh', ['run', 'download', String(artifact.runId), '--repo', REPOSITORY, '--name', artifact.name, '--dir', downloads], {
@@ -225,23 +272,24 @@ export class RuntimeManager {
       result = await run('sha512sum', ['-c', artifact.checksumName], { cwd: downloads, maxOutput: 100_000 });
       if (result.code !== 0) throw new Error('Snapshot SHA-512 verification failed.');
 
-      return await this.activateArchive(downloads, artifact.name, artifact.commit, onStatus, canonicalSnapshotName(artifact.commit));
+      const wine = await this.activateArchive(downloads, artifact.name, artifact.commit, onStatus, canonicalSnapshotName(artifact.commit), lease.root);
+      await afterInstall?.(wine);
+      return wine;
     } catch (error) {
       this.status.error = (error as Error).message;
       throw error;
     } finally {
-      this.status.updating = false;
-      await fs.rm(staging, { recursive: true, force: true }).catch(() => undefined);
+      if (staging) await fs.rm(staging, { recursive: true, force: true }).catch(() => undefined);
+      lease.release();
       onStatus();
     }
   }
-
   // Shared tail of both install paths: verify the archive structure, extract,
   // validate Wine and atomically switch the active runtime pointer. The
   // release directory uses the simple canonical name (releaseName); what the
   // archive calls its top-level folder is only provenance, kept in current.json.
-  private async activateArchive(downloads: string, archiveName: string, commit: string, onStatus: () => void, releaseName: string): Promise<string> {
-    const staging = path.join(this.status.runtimeRoot, `.staging-${randomUUID()}`);
+  private async activateArchive(downloads: string, archiveName: string, commit: string, onStatus: () => void, releaseName: string, root: string): Promise<string> {
+    const staging = path.join(root, `.staging-${randomUUID()}`);
     const extracted = path.join(staging, 'extracted');
     const archivePath = path.join(downloads, archiveName);
     try {
@@ -267,7 +315,7 @@ export class RuntimeManager {
       await this.validateWine(candidateWine, 'The downloaded Wine failed --version validation.');
       if (this.isOperationActive()) throw new Error('Another operation started during installation; the runtime was not activated.');
 
-      const releases = path.join(this.status.runtimeRoot, 'releases');
+      const releases = path.join(root, 'releases');
       const releaseRoot = path.join(releases, releaseName);
       await fs.mkdir(releases, { recursive: true });
       try {
@@ -278,10 +326,10 @@ export class RuntimeManager {
       const winePath = path.join(releaseRoot, path.relative(candidateRoot, candidateWine));
       if (!await this.validateWine(winePath)) throw new Error('The activated runtime is not executable.');
       const pointer: RuntimePointer = { name: releaseName, winePath, commit, installedAt: new Date().toISOString() };
-      await fs.mkdir(this.status.runtimeRoot, { recursive: true });
-      const pointerTmp = `${this.pointerFile()}.tmp`;
+      await fs.mkdir(root, { recursive: true });
+      const pointerTmp = `${this.pointerFile(root)}.tmp`;
       await fs.writeFile(pointerTmp, JSON.stringify(pointer, null, 2), { mode: 0o600 });
-      await fs.rename(pointerTmp, this.pointerFile());
+      await fs.rename(pointerTmp, this.pointerFile(root));
       Object.assign(this.status, { installed: true, name: releaseName, winePath, commit, phase: 'Runtime is ready.', error: undefined });
       this.emitLog('runtime', `Active Wine: ${winePath}`);
       return winePath;
@@ -359,19 +407,20 @@ export class RuntimeManager {
     await pipeline(Readable.fromWeb(response.body as import('node:stream/web').ReadableStream), createWriteStream(target));
   }
 
-  async installNexus(onStatus: () => void): Promise<string> {
-    if (this.isOperationActive()) throw new Error('The runtime cannot be changed while a Xodus operation is active.');
-    if (!this.nexusArtifact) await this.checkNexus();
-    const artifact = this.nexusArtifact;
-    if (!artifact) throw new Error(this.status.nexusError ?? 'No Nexus runtime is available.');
-    if (!this.status.prerequisites.tar || !this.status.prerequisites.sha512sum) throw new Error('tar or sha512sum is missing.');
-
-    this.status.updating = true;
-    this.status.error = undefined;
-    onStatus();
-    const staging = path.join(this.status.runtimeRoot, `.staging-${randomUUID()}`);
-    const downloads = path.join(staging, 'downloads');
+  async installNexus(onStatus: () => void, afterInstall?: AfterInstall): Promise<string> {
+    const lease = this.reserveMutation();
+    let staging: string | undefined;
     try {
+      onStatus();
+      if (!this.nexusArtifact) await this.checkNexus();
+      const artifact = this.nexusArtifact && { ...this.nexusArtifact };
+      if (!artifact) throw new Error(this.status.nexusError ?? 'No Nexus runtime is available.');
+      if (!this.status.prerequisites.tar || !this.status.prerequisites.sha512sum) throw new Error('tar or sha512sum is missing.');
+
+      this.status.error = undefined;
+      onStatus();
+      staging = path.join(lease.root, `.staging-${randomUUID()}`);
+      const downloads = path.join(staging, 'downloads');
       await fs.mkdir(downloads, { recursive: true });
       this.setPhase(`Downloading the Nexus runtime ${artifact.version}…`, onStatus);
       await this.downloadFile(artifact.url, path.join(downloads, artifact.name));
@@ -382,36 +431,38 @@ export class RuntimeManager {
       const result = await run('sha512sum', ['-c', artifact.checksumName], { cwd: downloads, maxOutput: 100_000 });
       if (result.code !== 0) throw new Error('Nexus runtime SHA-512 verification failed.');
 
-      return await this.activateArchive(downloads, artifact.name, artifact.version, onStatus, nexusReleaseName(artifact.name));
+      const wine = await this.activateArchive(downloads, artifact.name, artifact.version, onStatus, nexusReleaseName(artifact.name), lease.root);
+      await afterInstall?.(wine);
+      return wine;
     } catch (error) {
       this.status.error = (error as Error).message;
       throw error;
     } finally {
-      this.status.updating = false;
-      await fs.rm(staging, { recursive: true, force: true }).catch(() => undefined);
+      if (staging) await fs.rm(staging, { recursive: true, force: true }).catch(() => undefined);
+      lease.release();
       onStatus();
     }
   }
-
-  async rollbackCloudSavePreview(onStatus: () => void): Promise<string> {
-    if (this.isOperationActive()) throw new Error('The runtime cannot be changed while a Xodus operation is active.');
-    const current = await this.readPointer();
-    const baseName = current ? previewBaseRelease(current.name) : null;
-    if (!current || !baseName) throw new Error('No cloud-save preview is active.');
-    const winePath = await runtimeLoader(path.join(this.status.runtimeRoot, 'releases', baseName), this.hostArch);
-    await this.validateWine(winePath, 'The previous runtime is missing or failed validation. The preview remains active.');
-    this.status.updating = true;
-    onStatus();
+  async rollbackCloudSavePreview(onStatus: () => void, afterInstall?: AfterInstall): Promise<string> {
+    const lease = this.reserveMutation();
     try {
+      onStatus();
+      const current = await this.readPointer(lease.root);
+      const baseName = current ? previewBaseRelease(current.name) : null;
+      if (!current || !baseName) throw new Error('No cloud-save preview is active.');
+      const winePath = await runtimeLoader(path.join(lease.root, 'releases', baseName), this.hostArch);
+      await this.validateWine(winePath, 'The previous runtime is missing or failed validation. The preview remains active.');
+      onStatus();
       const pointer: RuntimePointer = { ...current, name: baseName, winePath, installedAt: new Date().toISOString() };
-      const temporary = `${this.pointerFile()}.tmp-${randomUUID()}`;
+      const temporary = `${this.pointerFile(lease.root)}.tmp-${randomUUID()}`;
       await fs.writeFile(temporary, JSON.stringify(pointer, null, 2), { mode: 0o600 });
-      await fs.rename(temporary, this.pointerFile());
+      await fs.rename(temporary, this.pointerFile(lease.root));
       Object.assign(this.status, { name: baseName, winePath, phase: 'Previous runtime restored.', error: undefined });
       this.emitLog('runtime', `Restored Wine: ${winePath}`);
+      await afterInstall?.(winePath);
       return winePath;
     } finally {
-      this.status.updating = false;
+      lease.release();
       onStatus();
     }
   }
