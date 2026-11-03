@@ -48,6 +48,16 @@ async function verifyRuntimeFamily(runtimeRoot:string,selection:unknown,arch:str
     const root=await fs.realpath(requestedRoot);
     const releases=await fs.realpath(path.join(directory,'releases'));
     if(!within(managedRoot,releases)||!within(releases,root))throw Error('Runtime build leaves its managed directory');
+    return await verifyRuntimeFamilyPayload(root,pointer,arch);
+  }catch(error){throw Error(`${runtimeFamilyLabels[id]} is unavailable or failed verification. Reinstall this selected runtime; the default was not used.`,{cause:error});}
+}
+export interface RuntimeFamilyReceipt {schema:1;family:RuntimeFamily;sourceRepository:string;sourceCommit:string;manifestSha256:string;buildId:string;}
+/** Integrity validation only. Installation authority must come from a verified
+ * published archive; this function never adopts a folder or writes receipts. */
+export async function verifyRuntimeFamilyPayload(root:string,pointer:RuntimeFamilyReceipt,arch:string=process.arch):Promise<Readonly<ResolvedRuntimeFamily>> {
+  const id=pointer.family;
+  if(!runtimeFamilies.includes(id)||pointer.schema!==1||pointer.sourceRepository!==repositories[id]||!commit(pointer.sourceCommit)||!hash(pointer.manifestSha256)||!hash(pointer.buildId))throw Error('Invalid managed runtime receipt');
+  if(!(await fs.lstat(root)).isDirectory())throw Error('Runtime root must be a real directory');
     if(!(await fs.lstat(path.join(root,'nexus-family.json'))).isFile())throw Error('Runtime manifest must be a regular file');
     const bytes=await fs.readFile(path.join(root,'nexus-family.json'));
     if(digest(bytes)!==pointer.manifestSha256)throw Error('Runtime manifest checksum mismatch');
@@ -91,7 +101,6 @@ async function verifyRuntimeFamily(runtimeRoot:string,selection:unknown,arch:str
       await fs.access(file,constants.X_OK);
     }
     return Object.freeze({id,label:runtimeFamilyLabels[id],buildId:pointer.buildId,sourceCommit:pointer.sourceCommit,winePath,root,arch:arch as 'x64'|'arm64',prefixSchema:1,manifestSha256:pointer.manifestSha256});
-  }catch(error){throw Error(`${runtimeFamilyLabels[id]} is unavailable or failed verification. Reinstall this selected runtime; the default was not used.`,{cause:error});}
 }
 // A cache hit still checks identities and the complete inventory, but never
 // reads payload contents. Receipt/manifest/root changes, additions, removals,
