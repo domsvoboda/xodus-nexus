@@ -1,4 +1,4 @@
-import { afterEach, describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import { promises as fs } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
@@ -6,7 +6,7 @@ import { createHash } from 'node:crypto';
 import { LauncherUpdater, launcherCandidate } from './launcher-update.js';
 import { APPIMAGE_ARCH_SUFFIX, ELF_MACHINE, currentArch, type NexusArch } from './arch.js';
 const roots: string[] = [];
-afterEach(async () => { for (const root of roots.splice(0)) await fs.rm(root, { recursive: true, force: true }); });
+afterEach(async () => { vi.restoreAllMocks(); for (const root of roots.splice(0)) await fs.rm(root, { recursive: true, force: true }); });
 function image(marker: number, arch: NexusArch = currentArch()): Buffer {
   const bytes = Buffer.alloc(100, marker); Buffer.from('7f454c46', 'hex').copy(bytes);
   bytes[4] = 2; bytes[5] = 1; Buffer.from('414902', 'hex').copy(bytes, 8); bytes.writeUInt16LE(ELF_MACHINE[arch], 18); return bytes;
@@ -34,6 +34,36 @@ async function fixture(bad = '', arch: NexusArch = currentArch(),repo='domsvobod
   await updater.initialize(); await updater.check(); return { root, target, updater, fetcher };
 }
 describe('AppImage updater', () => {
+  it('releases admission and lock when initial notification throws', async () => {
+    const {root,target,fetcher}=await fixture();let fail=false;
+    const updater=new LauncherUpdater('0.2.2',target,root,()=>{if(fail)throw Error('notify');},fetcher);await updater.initialize();await updater.check();fail=true;
+    await expect(updater.install()).rejects.toMatchObject({committed:false});expect(updater.state.updating).toBe(false);expect(await fs.readFile(target)).toEqual(image(1));
+    expect((await fs.readdir(root)).some(name=>name.endsWith('.nexus-update.lock'))).toBe(false);fail=false;await updater.install();
+  });
+  it('clears busy state after postcommit cleanup failure and reports actual replacement', async () => {
+    const {root,target,updater}=await fixture();const original=fs.rm;let injected=false;
+    vi.spyOn(fs,'rm').mockImplementation(async(p,options)=>{if(!injected&&String(p).includes('.nexus-update-')){injected=true;throw Error('cleanup failed');}return original(p,options);});
+    await expect(updater.install()).rejects.toMatchObject({committed:true});expect(updater.state.updating).toBe(false);expect(await fs.readFile(target)).toEqual(image(2));expect(updater.state.restartRequired).toBe(true);
+    expect((await fs.readdir(root)).some(name=>name.endsWith('.nexus-update.lock'))).toBe(false);
+  });
+  it('preserves backup and reports attention if rollback fails after replacement', async () => {
+    const {root,target,updater}=await fixture();const write=fs.writeFile,rename=fs.rename;
+    vi.spyOn(fs,'writeFile').mockImplementation(async(p,data,options)=>{if(String(p).includes('launcher-update.json.'))throw Error('journal failed');return write(p,data,options);});
+    vi.spyOn(fs,'rename').mockImplementation(async(a,b)=>{if(String(a).includes('.nexus-backup-'))throw Error('restore failed');return rename(a,b);});
+    await expect(updater.install()).rejects.toMatchObject({committed:true});expect(await fs.readFile(target)).toEqual(image(2));expect(updater.state.updating).toBe(false);
+    const backups=(await fs.readdir(root)).filter(name=>name.includes('.nexus-backup-'));expect(backups).toHaveLength(1);expect(await fs.readFile(path.join(root,backups[0]))).toEqual(image(1));
+  });
+  it('does not remove a consumed journal temporary path after publication', async () => {
+    const {updater}=await fixture();const rm=vi.spyOn(fs,'rm');await updater.install();expect(rm.mock.calls.some(([p])=>String(p).includes('launcher-update.json.'))).toBe(false);
+  });
+  it('rejects concurrent installation before awaited image validation', async () => {
+    const {updater}=await fixture();let release!:()=>void;const hold=new Promise<void>(r=>release=r);
+    const internal=updater as unknown as {writableImage():Promise<string>};const original=internal.writableImage.bind(updater);vi.spyOn(internal,'writableImage').mockImplementation(async()=>{await hold;return original();});
+    const pending=updater.install();await expect(updater.install()).rejects.toThrow('pending');release();await pending;
+  });
+  it('rejects a changed installed image from an approved component plan', async () => {
+    const {updater,target}=await fixture();const plan=await updater.prepareComponentUpdate();expect(plan.item.state).toBe('ready');await fs.writeFile(target,image(7));expect(await plan.isCurrent()).toBe(false);await expect(plan.apply({identity:Symbol()})).rejects.toThrow('changed');expect(await fs.readFile(target)).toEqual(image(7));
+  });
   it('ignores backend/runtime tags and prereleases; uses newest complete stable launcher', () => {
     expect(launcherCandidate([{ ...release('9.0.0'), tag_name: 'backend-v9.0.0' }, { ...release('8.0.0'), prerelease: true }, release('0.2.3'), release('0.2.4')], '0.2.2')?.version).toBe('0.2.4');
     expect(launcherCandidate([release()], '0.2.3')).toBeUndefined();

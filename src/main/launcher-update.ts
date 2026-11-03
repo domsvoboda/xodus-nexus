@@ -1,6 +1,7 @@
 import { constants, promises as fs } from 'node:fs';
 import { createHash, randomUUID } from 'node:crypto';
 import path from 'node:path';
+import type { PreparedComponentUpdate } from './component-updates.js';
 import type { LauncherUpdate } from '../shared/types.js';
 import { isNewerVersion } from '../shared/utils.js';
 import { APPIMAGE_ARCH_SUFFIX, currentArch, isLinuxElf64, type NexusArch } from './arch.js';
@@ -42,6 +43,7 @@ export class LauncherUpdater {
   private journal?: Journal;
   private checking?: Promise<void>;
   private controller?: AbortController;
+  private mutationReserved = false;
   cancel(): void { this.controller?.abort(); }
   constructor(private version: string, private image: string | undefined, private userData: string,
     private changed: () => void, private fetcher: typeof fetch = fetch, private arch: NexusArch = currentArch()) {
@@ -86,10 +88,37 @@ export class LauncherUpdater {
     } catch (error) { this.state.error = (error as Error).message; }
     finally { this.state.checking = false; this.state.checkedAt = new Date().toISOString(); this.changed(); }
   }
-  async install(): Promise<void> {
+  async prepareComponentUpdate(): Promise<PreparedComponentUpdate> {
+    const item = { id: 'launcher', component: 'launcher' as const, label: 'Launcher', currentVersion: this.version,
+      state: 'skipped' as 'ready' | 'skipped' | 'unchanged' | 'deferred', reason: 'An installed writable AppImage is required.' };
+    if (this.state.restartRequired) return { item: { ...item, state: 'deferred', reason: 'Restart to use the installed launcher update.' }, isCurrent: async () => false, apply: async () => { throw Error('Restart required.'); } };
+    let target: string;
+    try { target = await this.writableImage(); } catch { return { item, isCurrent: async () => false, apply: async () => { throw Error(item.reason); } }; }
+    const before = await fs.stat(target);
+    await this.check();
+    if (this.state.error) throw Error(this.state.error);
+    const candidate = this.candidate ? structuredClone(this.candidate) : undefined;
+    const same = async () => {
+      try { const current = await fs.stat(target); return !this.state.restartRequired && await this.writableImage() === target && current.ino === before.ino && current.dev === before.dev && current.size === before.size && current.mtimeMs === before.mtimeMs && current.ctimeMs === before.ctimeMs; } catch { return false; }
+    };
+    return { item: { ...item, state: candidate ? 'ready' : 'unchanged', targetVersion: candidate?.version, reason: undefined },
+      isCurrent: same,
+      apply: async () => { if (!candidate) throw Error('No launcher update was selected.'); await this.install(candidate, same); return { committed: true, restartRequired: true }; },
+      reconcile: async () => { if (!candidate || !this.state.restartRequired || this.journal?.version !== candidate.version || this.targetPath !== target) throw Error('Launcher update needs manual reconciliation.'); return { restartRequired: true }; },
+    };
+  }
+
+  async install(selected?: LauncherCandidate, expectedCurrent?: () => Promise<boolean>): Promise<void> {
+    if (this.mutationReserved) throw Error('A launcher update is already pending.');
+    this.mutationReserved = true;
+    try { await this.performInstall(selected, expectedCurrent); }
+    finally { this.mutationReserved = false; }
+  }
+  private async performInstall(selected?: LauncherCandidate, expectedCurrent?: () => Promise<boolean>): Promise<void> {
     if (this.state.updating || this.state.restartRequired) throw new Error('A launcher update is already pending.');
-    if (!this.candidate) throw new Error('Check for a newer launcher release first.');
-    const candidate = this.candidate;
+    const candidate = selected ?? this.candidate;
+    if (!candidate) throw new Error('Check for a newer launcher release first.');
+    if (expectedCurrent && !await expectedCurrent()) throw Error('The installed launcher changed. Check again.');
     const target = await this.writableImage();
     const lockPath = `${target}.nexus-update.lock`;
     let lock;
@@ -104,15 +133,20 @@ export class LauncherUpdater {
       catch (error) { if ((error as NodeJS.ErrnoException).code !== 'ESRCH') throw error; }
       await fs.rm(lockPath); lock = await fs.open(lockPath, 'wx', 0o600);
     }
+    let activationCommitted = false;
+    try {
     await lock.writeFile(String(process.pid)); await lock.close();
     const before = await fs.stat(target);
     const temporary = `${target}.nexus-update-${randomUUID()}`;
     const backup = `${target}.nexus-backup-${randomUUID()}`;
     const previousJournal = this.journal;
-    let replaced = false, backedUp = false;
+    let replaced = false, backedUp = false, rollbackFailed = false;
+    let failure: unknown;
+    let failed = false;
     this.controller = new AbortController();
-    this.state.updating = true; this.state.error = undefined; this.state.progress = 0; this.state.phase = 'Downloading launcher update…'; this.changed();
+    this.state.updating = true; this.state.error = undefined; this.state.progress = 0; this.state.phase = 'Downloading launcher update…';
     try {
+      this.changed();
       const checksumResponse = await this.fetcher(candidate.checksum.browser_download_url, { signal: AbortSignal.any([this.controller.signal, AbortSignal.timeout(15_000)]) });
       if (!checksumResponse.ok || candidate.checksum.size > 4096) throw new Error('Could not download the launcher checksum.');
       const checksum = (await checksumResponse.text()).trim();
@@ -136,27 +170,45 @@ export class LauncherUpdater {
       if (!isLinuxElf64(header, this.arch) || header.subarray(8, 11).toString('hex') !== '414902') throw new Error(`The update is not a ${APPIMAGE_ARCH_SUFFIX[this.arch]} AppImage.`);
       const now = await fs.stat(target);
       this.controller.signal.throwIfAborted();
+      if (expectedCurrent && !await expectedCurrent()) throw Error('The installed launcher changed before activation. Check again.');
       if (now.ino !== before.ino || now.size !== before.size || now.mtimeMs !== before.mtimeMs || await this.writableImage() !== target) throw new Error('The installed launcher changed during download. Retry the update.');
       this.state.phase = 'Installing verified launcher…'; this.changed();
       await fs.copyFile(target, backup, constants.COPYFILE_EXCL); backedUp = true;
-      await fs.rename(temporary, target); replaced = true;
+      await fs.rename(temporary, target); replaced = true; activationCommitted = true;
       const j: Journal = { target, backup, previousVersion: this.version, version: candidate.version };
       const journalFile = path.join(this.userData, 'launcher-update.json');
       await fs.mkdir(this.userData, { recursive: true });
       const journalTemp = `${journalFile}.${randomUUID()}`;
-      try { await fs.writeFile(journalTemp, JSON.stringify(j), { flag: 'wx', mode: 0o600 }); await fs.rename(journalTemp, journalFile); }
-      finally { await fs.rm(journalTemp, { force: true }); }
+      let journalPublished = false;
+      try { await fs.writeFile(journalTemp, JSON.stringify(j), { flag: 'wx', mode: 0o600 }); await fs.rename(journalTemp, journalFile); journalPublished = true; }
+      finally { if (!journalPublished) await fs.rm(journalTemp, { force: true }); }
       this.journal = j; this.targetPath = target;
       this.state.restartRequired = true; this.state.canRollback = true; this.state.phase = 'Update installed. Restart to use it.';
       if (previousJournal?.backup) await fs.rm(previousJournal.backup, { force: true }).catch(() => {});
     } catch (error) {
-      if (replaced && backedUp) { await fs.rename(backup, target); backedUp = false; }
-      this.state.error = (error as Error).message; throw error;
+      failed = true; failure = error;
+      if (replaced && backedUp) {
+        try { await fs.rename(backup, target); backedUp = false; activationCommitted = false; }
+        catch (rollbackError) { rollbackFailed = true; failure = new AggregateError([error, rollbackError], 'The launcher was replaced but restoring its backup failed.'); }
+      }
+      this.state.error = failure instanceof Error ? failure.message : String(failure);
+      throw Object.assign(new Error(this.state.error, { cause: failure }), { committed: activationCommitted });
     } finally {
-      await fs.rm(temporary, { force: true });
-      if (backedUp && !this.state.restartRequired) await fs.rm(backup, { force: true });
-      this.state.updating = false; this.controller = undefined; this.changed();
-      await fs.rm(lockPath, { force: true });
+      let finishingFailure: unknown, finishingFailed = false;
+      try {
+        await fs.rm(temporary, { force: true });
+        if (backedUp && !this.state.restartRequired && !rollbackFailed) await fs.rm(backup, { force: true });
+      } catch (error) { finishingFailed = true; finishingFailure = error; }
+      this.state.updating = false; this.controller = undefined;
+      try { this.changed(); } catch (error) { finishingFailure = finishingFailed ? new AggregateError([finishingFailure,error], 'Launcher cleanup and notification failed.') : error; finishingFailed = true; }
+      if (finishingFailed) {
+        const cause = failed ? new AggregateError([failure,finishingFailure], 'Launcher update needs attention.') : finishingFailure;
+        throw Object.assign(new Error(cause instanceof Error ? cause.message : String(cause), { cause }), { committed: activationCommitted });
+      }
+    }
+    } finally {
+      await lock.close().catch(() => undefined);
+      try { await fs.rm(lockPath, { force: true }); } catch (error) { throw Object.assign(new Error('Launcher update lock cleanup failed.', { cause: error }), { committed: activationCommitted }); }
     }
   }
   async rollback(): Promise<void> {
