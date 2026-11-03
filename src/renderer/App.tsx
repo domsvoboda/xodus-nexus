@@ -1,3 +1,4 @@
+import {useStoreAccess} from './store-access';
 import {GameRuntimeFields} from './GameRuntimeFields';
 import {gameRuntimeAvailable,sameRuntimeBuild,runtimeBuildApproval,type InstalledRuntimeFamily,type RuntimeBuildApproval,type GameRuntimeSelection} from '../shared/runtime-selection';
 import { CloudSaveWarning } from './CloudSaveWarning';
@@ -270,8 +271,8 @@ function CatalogSupportBadge({ product }: { product: CatalogProduct }) {
     aria-label={product.installability === 'unknown' ? ui("ui.package_support_unknown_12fe897") : undefined}>{product.installability === 'supported' ? 'PC' : product.installability === 'unknown' ? '?' : ui("ui.unsupported_5432465")}</span>;
 }
 
-export function StoreProductCard({ product, selected, disabled, label, select, install }: {
-  product: CatalogProduct; selected: boolean; disabled: boolean; label: string;
+export function StoreProductCard({ product, selected, disabled, label, select, install, licensed = false }: {
+  product: CatalogProduct; selected: boolean; disabled: boolean; label: string; licensed?: boolean;
   select: (product: CatalogProduct,openDetails?:boolean) => void; install: (product: CatalogProduct) => void;
 }) {
   return <article className={`catalog-card ${selected ? 'selected' : ''}`} data-gamepad-card>
@@ -281,14 +282,15 @@ export function StoreProductCard({ product, selected, disabled, label, select, i
       <CatalogSupportBadge product={product} />
       <div><GameTitle title={product.title} /><small>{product.publisher ?? product.productId}</small><span>{product.purchasePrice ?? ui("ui.price_unavailable_6a9e657")}{product.includedWith ? ` · ${product.includedWith}` : ''}</span></div>
     </button>
-    <button className="catalog-card-install" data-gamepad-skip data-gamepad-card-action disabled={disabled} onClick={() => install(product)}>
+    {licensed ? <button className="catalog-card-install" data-gamepad-skip data-gamepad-card-action disabled={disabled} onClick={() => install(product)}>
       {label === 'Preparing…' ? <LoaderCircle className="spin" /> : label === 'Installed' ? <Check /> : <Download />}{label}
-    </button>
+    </button> : <button className="catalog-card-install" data-gamepad-skip data-gamepad-card-action onClick={() => window.open(product.storeUrl ?? `https://www.xbox.com/games/store/p/${product.productId}`, '_blank')}>{ui("ui.store_page_9c667df")}</button>}
   </article>;
 }
 
-function StorePage({ data, toast, go, initialQuery }: { data: AppSnapshot; toast: (value: Toast) => void; go: (page: Page) => void; initialQuery: string }) {
+export function StorePage({ data, toast, go, initialQuery }: { data: AppSnapshot; toast: (value: Toast) => void; go: (page: Page) => void; initialQuery: string }) {
   const startPackageInstall = usePackageInstall();
+  const access = useStoreAccess(data);
   const [catalog, setCatalog] = useState<CatalogSearchResult>();
   const [featured, setFeatured] = useState<CatalogSearchResult>();
   const [featuredLoading, setFeaturedLoading] = useState(true);
@@ -303,11 +305,7 @@ function StorePage({ data, toast, go, initialQuery }: { data: AppSnapshot; toast
     wasOpen.current=detailOpen&&Boolean(selected);
   },[detailOpen,selected?.productId]);
   const [loadingMore, setLoadingMore] = useState(false);
-  const [manualProductId, setManualProductId] = useState('');
-  const [manualTitle, setManualTitle] = useState('');
-  const [destination, setDestination] = useState(data.settings.installRoot);
   const [busy, setBusy] = useState<string>();
-  useEffect(() => { if (!selected) setDestination(data.settings.installRoot); }, [data.settings.installRoot, selected]);
   useEffect(() => {
     if (initialQuery.trim().length < 2) return;
     let cancelled = false;
@@ -332,7 +330,6 @@ function StorePage({ data, toast, go, initialQuery }: { data: AppSnapshot; toast
 
   function selectProduct(product: CatalogProduct,openDetails=true) {
     setSelected(product);
-    setDestination(installDestination(product));
     if(openDetails){savedScroll.current=pageRef.current?.closest('.page-scroll')?.scrollTop??0;setDetailOpen(true);}
   }
 
@@ -347,27 +344,15 @@ function StorePage({ data, toast, go, initialQuery }: { data: AppSnapshot; toast
   }
 
   async function install(product: CatalogProduct, target = installDestination(product)) {
+    if (!access.canInstall(product)) return;
     setBusy(product.productId);
     try {
-      if (!await startPackageInstall(catalogInstallRequest(product, target))) return;
+      const request={...catalogInstallRequest(product,target),source:'store' as const};
+      if (!await startPackageInstall(request, () => access.canInstall(product))) return;
       toast({ kind: 'success', message: ui("ui.xodus_is_checking_the_license_and_installing_be774b2", { game: product.title }) });
       go('downloads');
     } catch (error) { toast({ kind: 'error', message: errorMessage(error) }); }
     finally { setBusy(undefined); }
-  }
-
-  async function manualInstall(event: FormEvent) {
-    event.preventDefault(); setBusy('manual');
-    try {
-      if (!await startPackageInstall({ productId: manualProductId, title: manualTitle, destination })) return;
-      toast({ kind: 'success', message: ui("ui.xodus_streaming_started_af5ad62") }); go('downloads');
-    } catch (error) { toast({ kind: 'error', message: errorMessage(error) }); }
-    finally { setBusy(undefined); }
-  }
-
-  async function chooseDestination() {
-    const selected = await window.launcher.chooseDirectory(destination);
-    if (selected) setDestination(selected);
   }
 
   const installedIds = new Set(data.games.flatMap((game) => game.storeId?.toUpperCase() ?? []));
@@ -377,19 +362,18 @@ function StorePage({ data, toast, go, initialQuery }: { data: AppSnapshot; toast
   const productGrid = (products: CatalogProduct[]) => <div className="catalog-grid" data-gamepad-grid>{products.map((product) => {
     const installed = isInstalled(product);
     return <StoreProductCard key={product.productId} product={product} selected={selected?.productId === product.productId}
+      licensed={access.canInstall(product)}
       disabled={product.installability !== 'supported' || Boolean(busy) || !data.backend.capabilities.streaming || installed || isQueued(product)}
       label={installed ? ui("ui.installed_f8b32f4") : isQueued(product) ? ui("ui.in_install_queue_7c818f2") : busy === product.productId ? ui("ui.preparing_5d1fa38") : ui("ui.install_569ca49")}
       select={selectProduct} install={install} />;
   })}</div>;
-  if(detailOpen&&selected)return <main ref={pageRef} className="page store-page library-detail-open"><CatalogGameDetails key={`${selected.productId}:${data.auth.username}:${data.auth.player}:${data.auth.stored}:${data.auth.running}:${data.backend.binaryPath}:${data.settings.market}`} product={selected} data={data} back={()=>setDetailOpen(false)} backLabel={ui('game.back_to_store')} toast={toast}/></main>;
+  if(detailOpen&&selected)return <main ref={pageRef} className="page store-page library-detail-open"><CatalogGameDetails key={`${selected.productId}:${data.auth.username}:${data.auth.player}:${data.auth.stored}:${data.auth.running}:${data.backend.binaryPath}:${data.settings.market}`} product={selected} data={data} storeMode storeAccess={access} back={()=>setDetailOpen(false)} backLabel={ui('game.back_to_store')} toast={toast}/></main>;
   return <main ref={pageRef} className="page store-page">
     <header className="page-header"><div><h1>{ui("ui.store_ee7da93")}</h1></div><span className="catalog-source"><StatusDot />Microsoft Store</span></header>
     {!catalog ? <section className="featured-catalog"><SectionTitle title={ui("ui.featured_c533caf")} />{featuredLoading ? <div className="catalog-loading"><LoaderCircle className="spin" /><span>{ui("ui.loading_live_store_collection_20763b0")}</span></div> : featured?.products.length ? <><div className="featured-rail">{featured.products.slice(0, 3).map((product) => <button className="featured-tile" key={product.productId} data-gamepad-detail-target={product.productId} onClick={() => selectProduct(product)}>{product.heroUrl || product.posterUrl ? <img src={product.heroUrl ?? product.posterUrl} alt="" /> : <div className="featured-tile-placeholder"><Gamepad2 /></div>}<span className="featured-tile-copy"><GameTitle title={product.title} /><small>{product.publisher ?? 'Microsoft Store'} · {product.installability === 'supported' ? ui('store.verified_pc') : ui("ui.check_package_support_79592da")}</small></span></button>)}</div><SectionTitle title={ui("ui.trending_pc_games_2025848")} />{productGrid(featured.products.slice(3))}</> : <div className="catalog-empty"><Store /><h2>{ui("ui.featured_games_are_temporarily_unavailable_3901a69")}</h2><p>{featuredError ?? ui("ui.search_still_works_with_live_microsoft_store_dat_b3eeb72")}</p></div>}</section> : null}
 
     {catalog ? <><SectionTitle title={ui("ui.results_for_343a212", { query: catalog.query })} />{productGrid(catalog.products)}{catalog.products.length === 0 ? <div className="empty-state compact"><div><Search /></div><h2>{ui("ui.no_games_found_6da4c04")}</h2><p>{ui("ui.try_a_different_title_or_a_microsoft_store_produ_326af8c")}</p></div> : null}{catalog.hasMore ? <div className="load-more" data-gamepad-library-footer><button className="secondary" aria-disabled={loadingMore} aria-busy={loadingMore} onClick={() => { if (!loadingMore) void loadMore(); }}>{loadingMore ? <LoaderCircle className="spin" /> : <Plus />}{ui("ui.load_more_results_e03f1e4")}</button></div> : null}</> : null}
 
-    <SectionTitle title={ui("ui.install_by_product_id_d863edd")} />
-    <form className="manual-install" onSubmit={manualInstall}><label>{ui("ui.product_id_c76c9e7")}<input value={manualProductId} onChange={(event) => setManualProductId(event.target.value)} placeholder={ui("ui.for_example_9n4pt8hgcdhq_b6119c7")} required /></label><label>{ui("ui.queue_name_5cb7293")}{' '}<em>{ui("ui.optional_59be713")}</em><input value={manualTitle} onChange={(event) => setManualTitle(event.target.value)} /></label><label>{ui("ui.install_location_af47896")}<div className="input-action"><input value={destination} onChange={(event) => setDestination(event.target.value)} required /><button type="button" onClick={chooseDestination}><FolderOpen /></button></div></label><button className="secondary" disabled={Boolean(busy) || !data.backend.capabilities.streaming}>{busy === 'manual' ? <LoaderCircle className="spin" /> : <Terminal />}{ui("ui.install_unlisted_id_1b85f63")}</button></form>
   </main>;
 }
 
