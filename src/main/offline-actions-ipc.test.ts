@@ -19,7 +19,7 @@ function fixture(){
   const status={enabled:true,requestSuccess:true};
   const read=vi.fn(async()=>status),change=vi.fn(async()=>status),settle=vi.fn(async(value:unknown)=>value),wallet=vi.fn(async()=>{});
   const context:any={path,ipcMain:{handle:(name:string,fn:Function)=>handlers.set(name,fn)},authState,backend,store,
-    shutdownStarted:false,keyringSupport:{busy:false},downloadCancellations:new Set(),preparingInstall:false,preparingContent:false,preparingLaunch:false,finalizingGame:false,
+    authJob:undefined,shutdownStarted:false,keyringSupport:{busy:false},downloadCancellations:new Set(),preparingInstall:false,preparingContent:false,preparingLaunch:false,finalizingGame:false,
     launcherUpdater:{state:{updating:false}},checkingGameUpdates:false,gameRemovalInProgress:false,assertActivityCompatible:vi.fn(),operations:new Map(),gameOperation:undefined,installQueue:{size:0},runtime:{current:{updating:false}},
     accountRefresh:{invalidate:vi.fn()},prepareSystemWallet:wallet,offlineLaunchSupported:async()=>true,offlineLicenseCache:async()=>'/fixture/cache',backendRunner:(binary:string)=>binary,readOfflinePermissions:read,changeOfflinePermissions:change,settleOfflinePermissions:settle};
   runInNewContext(code,context);

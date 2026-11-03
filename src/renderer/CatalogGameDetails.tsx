@@ -21,7 +21,7 @@ export function CatalogGameDetails({product,data,back,backLabel,toast}:{product:
  const [busy,setBusy]=useState(false),pending=useRef(false);
  const installed=catalogGameInstalled(product,data),queued=catalogGameQueued(product,data);
  const disabled=Boolean(installed)||queued||busy||product.installability!=='supported'||!data.backend.capabilities.streaming;
- const scope=JSON.stringify([data.auth.username,data.auth.stored,data.auth.running,data.backend.binaryPath,data.settings.market]);
+ const scope=JSON.stringify([data.auth.username, data.auth.player,data.auth.stored,data.auth.running,data.backend.binaryPath,data.settings.market]);
  const identity=useRef(scope);identity.current=scope;
  useEffect(()=>{identity.current=scope;return()=>{identity.current='';};},[scope]);
  async function install(){

@@ -8,6 +8,7 @@ import { StateStore } from './store.js';
 import { GameContent } from './game-content.js';
 import { ContentCatalog } from './content-catalog.js';
 import { DownloadCleanup } from './download-cleanup.js';
+import { accountCacheKey } from './offline-identity.js';
 import { offerSteamHandoff } from './steam-launch-context.js';
 
 // Run the real IPC/admission/download lifecycle with synthetic child processes.
@@ -43,7 +44,7 @@ const h = vi.hoisted(() => ({
   launchEnvironments: [] as NodeJS.ProcessEnv[],
   launchArguments: [] as string[][],
   backendRefreshes: 0, runtimeRefreshes: 0,
-  accountRequests: 0,
+  accountRequests: 0, accountPlayer: undefined as string | undefined,
   trayCreated: vi.fn(), trayDestroyed: vi.fn(),
   prefixLocales: [] as (string | undefined)[],
   planOverrides: new Map<string, any>(),
@@ -119,7 +120,7 @@ vi.mock('./connectivity.js',()=>({ConnectivityMonitor:class {
 vi.mock('./proton.js', () => ({ prepareProtonRunner: async () => undefined, syncPrefixUserLocale: async (_wine: string, _prefix: string, locale: string | undefined) => { h.prefixLocales.push(locale); }, syncUnrealCultureGameIni: async () => {} }));
 vi.mock('./game-wrapper.js', () => ({ prepareGameWrapper: async () => { await h.wrapperGate; return { command: h.wine, cleanup: async () => {} }; } }));
 vi.mock('./process.js', () => ({
-  run: async (_command: string, args: string[]) => ({ code: 0, output: args[0] === 'account' ? JSON.stringify({ stored: true, username: 'sample@example.test' }) : '' }),
+  run: async (_command: string, args: string[]) => ({ code: 0, output: args[0] === 'account' ? JSON.stringify({ stored: true, username: 'sample@example.test', player: h.accountPlayer ? { username: h.accountPlayer } : null }) : '' }),
   spawnTracked: (_command: string, args: string[], options: any) => {
     if (args[0] === 'library') { h.libraryReads++;return {
       child: { kill: vi.fn(), stderr: { on() {}, removeListener() {} } },
@@ -129,7 +130,7 @@ vi.mock('./process.js', () => ({
       child: { kill: vi.fn(() => true), stdin: { end: vi.fn() } },
       result: h.holdAccountReads
         ? new Promise<{ code: number; output: string }>(resolve => { h.accountReads.push(resolve); })
-        : Promise.resolve({ code: 0, output: JSON.stringify({ stored: true, username: 'sample@example.test' }) }),
+        : Promise.resolve({ code: 0, output: JSON.stringify({ stored: true, username: 'sample@example.test', player: h.accountPlayer ? { username: h.accountPlayer } : null }) }),
     }; }
     let resolve!: (result: { code: number; output: string }) => void, sequence = 0;
     const result = new Promise<{ code: number; output: string }>(done => { resolve = done; });
@@ -286,7 +287,7 @@ it('real account-refresh IPC shares status reads and cannot publish a late old b
     h.backend = { ...backend, binaryPath: path.join(h.root, 'new-synthetic-cli') };
     const current = ipc('account-refresh');
     await vi.waitFor(() => expect(h.accountReads).toHaveLength(2));
-    h.accountReads[1]({ code: 0, output: JSON.stringify({ stored: true, username: 'sample@example.test' }) });
+    h.accountReads[1]({ code: 0, output: JSON.stringify({ stored: true, username: 'sample@example.test', player: h.accountPlayer ? { username: h.accountPlayer } : null }) });
     await current;
     h.accountReads[0]({ code: 0, output: JSON.stringify({ stored: false }) });
     await Promise.all([old, repeated]);
@@ -577,6 +578,23 @@ it('saves and launches locale overrides without catalog or exhaustive manifest l
     if (oldWine === undefined) delete process.env.WINEUSERLOCALE; else process.env.WINEUSERLOCALE = oldWine;
     h.blockDisplay.mockClear(); h.releaseDisplay.mockClear();
   }
+});
+
+it('launches with the player identity cache while keeping Store licensing bound to the Store account', async () => {
+ const prior=h.backend.capabilities.playerAccount;h.backend.capabilities.playerAccount=true;
+ try {
+  for(const player of ['personal-one@example.test','personal-two@example.test']) {
+   h.accountPlayer=player;await ipc('account-refresh');
+   expect(snapshot().auth.player).toBe(player);
+   await ipc('launch-game','sample');
+   expect(h.launchEnvironments.at(-1)!.XODUS_ACCOUNT_HASH).toBe(accountCacheKey(player));
+   expect(h.launchEnvironments.at(-1)!.XODUS_ACCOUNT_HASH).not.toBe(accountCacheKey('sample@example.test'));
+   expect((await fs.readFile(path.join(path.dirname(snapshot().settings.runtimeRoot),'offline-owner'),'utf8')).trim()).toBe(accountCacheKey('sample@example.test'));
+   h.game!.finish(0);await vi.waitFor(()=>expect(snapshot().gameOperation.status).toBe('complete'));
+  }
+ } finally {
+  h.accountPlayer=undefined;h.backend.capabilities.playerAccount=prior;await ipc('account-refresh');
+ }
 });
 
 it('launches offline only with both compatible components and discards inherited identity modes', async () => {

@@ -9,7 +9,7 @@ const start=source.indexOf("  ipcMain.handle('game-details'",source.indexOf('fun
 const code=ts.transpileModule(source.slice(start,source.indexOf("  ipcMain.handle('launch-game'",start)),{compilerOptions:{target:ts.ScriptTarget.ES2022}}).outputText;
 function fixture(){
  const handlers=new Map<string,Function>(),games=demoSnapshot().games;
- const authState={stored:true,running:false,username:'fixture-account'},backend={current:{binaryPath:'/fixture/cli',capabilities:{gameActivity:true,achievements:true}}};
+ const authState={stored:true,running:false,username:'fixture-account',player:undefined as string|undefined},backend={current:{binaryPath:'/fixture/cli',capabilities:{gameActivity:true,achievements:true}}};
  let market='US';const catalog={gameDetails:vi.fn(async()=>({productId:'9AAAAAAAAAAA',xboxTitleId:'123'} as {productId:string;xboxTitleId?:string}))};
  const gameActivities={select:vi.fn(),get:vi.fn(async()=>({status:'available',minutesPlayed:42}))},gameAchievements={select:vi.fn(),get:vi.fn(async()=>({status:'available',items:[]}))};
  const installedTitleId=vi.fn(async()=> '456');
@@ -48,4 +48,16 @@ it('rejects catalog metadata after a market change',async()=>{
  const f=fixture();let resolve!:(value:{productId:string})=>void;
  f.catalog.gameDetails.mockReturnValueOnce(new Promise(done=>resolve=done));const pending=f.call('game-details',{productId:'9AAAAAAAAAAA'});f.setMarket('CZ');resolve({productId:'9AAAAAAAAAAA'});
  await expect(pending).rejects.toThrow('market changed');
+});
+
+it.each(['game-activity','game-achievements'])('%s uses the player identity and rejects a late player switch',async route=>{
+ const f=fixture();f.authState.player='personal-player';
+ await f.call(route,{productId:'9AAAAAAAAAAA'});
+ const selected=route==='game-activity'?f.gameActivities:f.gameAchievements;
+ expect(selected.select).toHaveBeenCalledWith('personal-player','/fixture/cli');
+ let resolve!:(value:{productId:string;xboxTitleId:string})=>void;
+ f.catalog.gameDetails.mockReturnValueOnce(new Promise(done=>resolve=done));
+ const pending=f.call(route,{productId:'9AAAAAAAAAAA'});
+ f.authState.player='other-player';resolve({productId:'9AAAAAAAAAAA',xboxTitleId:'123'});
+ expect(await pending).toEqual({status:'error'});
 });

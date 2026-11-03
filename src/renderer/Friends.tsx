@@ -59,7 +59,7 @@ export function Friends({ data, close, docked=false }: { data: AppSnapshot; clos
         .finally(()=>{if(generation.current===active){setBusy(false);pending.current=false;}});
     }
     return ()=>{generation.current++;void window.launcher.closeXboxSocial().catch(()=>{});};
-  },[available,data.auth.username]);
+  },[available,data.auth.username,data.auth.player]);
 
   function applyConversation(value:XboxConversation){
     setConversation(value);
@@ -101,7 +101,7 @@ export function Friends({ data, close, docked=false }: { data: AppSnapshot; clos
     const visible=()=>{if(document.visibilityState==='visible')polling.wake();};
     document.addEventListener('visibilitychange',visible);
     return()=>{polling.stop();document.removeEventListener('visibilitychange',visible);};
-  },[available,data.auth.username]);
+  },[available,data.auth.username,data.auth.player]);
   function choose(friend:XboxFriend){
     if(pending.current)return;
     setSelected(friend);currentFriend.current=friend;select.current=friend.xuid;setConversation(undefined);setDraft('');setUncertain(false);setAccepted(false);submission.current=undefined;void refresh(friend);
