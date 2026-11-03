@@ -8,7 +8,7 @@ import {approvedRuntimeSettings} from './runtime-settings';
 import type {Game} from '../shared/types';
 import {prepareProtonRunner} from './proton';
 import {createHash} from 'node:crypto';
-import {resolveRuntimeFamily,installedRuntimeFamilies,runtimeFamilyVerificationStats} from './runtime-families';
+import {resolveRuntimeFamily,resolveRuntimeFamilyBuild,retainRuntimeFamilyBuild,installedRuntimeFamilies,runtimeFamilyVerificationStats} from './runtime-families';
 import {resolveGameRuntime,bindRuntimePrefix} from './runtime-prefix-binding';
 import {gameRuntimeSelection} from '../shared/runtime-selection';
 let root:string,release:string;
@@ -261,4 +261,98 @@ it('requires a fresh transient approval and exact expected descriptor, and clear
  const approved=await approvedRuntimeSettings(game,{runtime:family,runtimeSeparatePrefix:true,runtimeApproveBuild:true,runtimeExpectedBuild:expected},root);
  expect(approved.runtimeBuild).toEqual(expected);
  expect(await approvedRuntimeSettings({...game,...approved},{runtime:'default'},root)).toEqual({runtime:'default',runtimeSeparatePrefix:false,runtimeBuild:undefined});
+});
+
+async function installNextFixture() {
+ const previous=release;
+ const next='d'.repeat(64);release=path.join(root,'variants',family,'releases',next);
+ await fs.cp(previous,release,{recursive:true});
+ const manifestFile=path.join(release,'nexus-family.json');
+ const manifest=JSON.parse(await fs.readFile(manifestFile,'utf8'));manifest.buildId=next;
+ const bytes=JSON.stringify(manifest);await fs.writeFile(manifestFile,bytes);
+ const pointer=JSON.parse(await fs.readFile(path.join(root,'variants',family,'current.json'),'utf8'));
+ Object.assign(pointer,{buildId:next,manifestSha256:hash(bytes)});
+ await fs.writeFile(path.join(root,'variants',family,'current.json'),JSON.stringify(pointer));
+ return previous;
+}
+it('retains approved A across current B, and only explicit B approval creates a new prefix',async()=>{
+ await fixture();const a=await approval();
+ const options={runtimeRoot:root,dataRoot:root,gameId:'retained',selection:family,separatePrefix:true,defaultWine:'/default/wine',arch:'x64'};
+ const old=await resolveGameRuntime({...options,approvedBuild:a});await bindRuntimePrefix(old);
+ await fs.writeFile(path.join(old.compatibilityDataPath,'synthetic-save'),'A progress');
+ await retainRuntimeFamilyBuild(root,family,'x64');await retainRuntimeFamilyBuild(root,family,'x64');
+ await installNextFixture();
+ const retained=await resolveGameRuntime({...options,approvedBuild:a});
+ expect(retained.winePath).toBe(old.winePath);expect(retained.compatibilityDataPath).toBe(old.compatibilityDataPath);
+ expect(await fs.readFile(path.join(retained.compatibilityDataPath,'synthetic-save'),'utf8')).toBe('A progress');
+ const game={id:'retained',runtime:family,runtimeSeparatePrefix:true,runtimeBuild:a} as Game;
+ const ordinary=await approvedRuntimeSettings(game,{},root);expect(ordinary.runtimeBuild).toEqual(a);
+ const b=await approval();const patch=await approvedRuntimeSettings(game,{runtimeApproveBuild:true,runtimeExpectedBuild:b},root);
+ const fresh=await resolveGameRuntime({...options,approvedBuild:patch.runtimeBuild});await bindRuntimePrefix(fresh);
+ expect(fresh.compatibilityDataPath).not.toBe(old.compatibilityDataPath);
+ expect(await fs.readdir(fresh.compatibilityDataPath)).toEqual(['.nexus-runtime-family.json']);
+});
+it('does not reconstruct missing A receipts from an approved identity or an existing release directory',async()=>{
+ await fixture();const a=await approval();await installNextFixture();
+ await expect(resolveRuntimeFamilyBuild(root,family,a,'x64')).rejects.toThrow();
+});
+it('keeps matching legacy current usable read-only, without fabricating retained receipts',async()=>{
+ await fixture();expect((await resolveRuntimeFamilyBuild(root,family,await approval(),'x64')).buildId).toBe(buildId);
+ await expect(fs.access(path.join(root,'variants',family,'receipts'))).rejects.toThrow();
+});
+it('fails closed for corrupt retained receipt even if matching current still exists',async()=>{
+ await fixture();const a=await approval();await retainRuntimeFamilyBuild(root,family,'x64');
+ const receipt=path.join(root,'variants',family,'receipts',buildId+'.json');
+ await fs.writeFile(receipt,'{');await expect(resolveRuntimeFamilyBuild(root,family,a,'x64')).rejects.toThrow();
+ await expect(retainRuntimeFamilyBuild(root,family,'x64')).rejects.toThrow('Conflicting');
+ expect(await fs.readFile(receipt,'utf8')).toBe('{');
+});
+it('isolates retained cache from current and invalidates changed retained payload or receipt',async()=>{
+ await fixture();const a=await approval();await retainRuntimeFamilyBuild(root,family,'x64');const previous=await installNextFixture();
+ expect((await resolveRuntimeFamily(root,family,'x64')).buildId).not.toBe(buildId);
+ expect((await resolveRuntimeFamilyBuild(root,family,a,'x64')).buildId).toBe(buildId);
+ const receipt=path.join(root,'variants',family,'receipts',buildId+'.json');const original=await fs.readFile(receipt,'utf8');
+ await fs.writeFile(receipt,original.replace(sourceRepository,'attacker/runtime'));
+ await expect(resolveRuntimeFamilyBuild(root,family,a,'x64')).rejects.toThrow();
+ await fs.writeFile(receipt,original);await resolveRuntimeFamilyBuild(root,family,a,'x64');
+ await fs.appendFile(path.join(previous,'files/bin/wine'),'changed');
+ await expect(resolveRuntimeFamilyBuild(root,family,a,'x64')).rejects.toThrow();
+ expect((await resolveRuntimeFamily(root,family,'x64')).buildId).not.toBe(buildId);
+});
+it('rejects retained receipt and directory symlinks rather than falling back to current',async()=>{
+ await fixture();const a=await approval();await retainRuntimeFamilyBuild(root,family,'x64');
+ const directory=path.join(root,'variants',family,'receipts'),receipt=path.join(directory,buildId+'.json');
+ await fs.unlink(receipt);await fs.symlink('../current.json',receipt);
+ await expect(resolveRuntimeFamilyBuild(root,family,a,'x64')).rejects.toThrow();
+ await expect(retainRuntimeFamilyBuild(root,family,'x64')).rejects.toThrow();
+ await fs.unlink(receipt);await fs.rmdir(directory);await fs.symlink('.',directory);
+ await expect(resolveRuntimeFamilyBuild(root,family,a,'x64')).rejects.toThrow();
+ await expect(retainRuntimeFamilyBuild(root,family,'x64')).rejects.toThrow();
+});
+it('publishes no partial receipt when publication fails, and supports concurrent idempotent retention',async()=>{
+ await fixture();const link=vi.spyOn(fs,'link').mockRejectedValueOnce(Object.assign(Error('synthetic full disk'),{code:'ENOSPC'}));
+ await expect(retainRuntimeFamilyBuild(root,family,'x64')).rejects.toThrow('synthetic full disk');link.mockRestore();
+ const directory=path.join(root,'variants',family,'receipts');expect(await fs.readdir(directory)).toEqual([]);
+ const results=await Promise.all([retainRuntimeFamilyBuild(root,family,'x64'),retainRuntimeFamilyBuild(root,family,'x64')]);
+ expect(results.map(item=>item.buildId)).toEqual([buildId,buildId]);
+ expect(await fs.readdir(directory)).toEqual([buildId+'.json']);
+ expect((await resolveRuntimeFamily(root,family,'x64')).buildId).toBe(buildId);
+});
+it('uses the same retained receipt contract for the standard managed family without changing legacy default',async()=>{
+ await fixture();const directory=path.join(root,'variants','nexus');await fs.rename(path.join(root,'variants',family),directory);
+ const manifestFile=path.join(directory,'releases',buildId,'nexus-family.json');
+ const manifest=JSON.parse(await fs.readFile(manifestFile,'utf8'));Object.assign(manifest,{family:'nexus',sourceRepository:'domsvoboda/nexus-runtime'});
+ const bytes=JSON.stringify(manifest);await fs.writeFile(manifestFile,bytes);
+ const receipt=path.join(directory,'current.json');const pointer=JSON.parse(await fs.readFile(receipt,'utf8'));
+ Object.assign(pointer,{family:'nexus',sourceRepository:'domsvoboda/nexus-runtime',manifestSha256:hash(bytes)});await fs.writeFile(receipt,JSON.stringify(pointer));
+ await fs.writeFile(path.join(root,'current.json'),'legacy-default-pointer');
+ const retained=await retainRuntimeFamilyBuild(root,'nexus','x64');await fs.unlink(receipt);
+ expect((await resolveRuntimeFamilyBuild(root,'nexus',retained,'x64')).buildId).toBe(buildId);
+ expect(await fs.readFile(path.join(root,'current.json'),'utf8')).toBe('legacy-default-pointer');
+});
+it('fails closed when retained A payload disappears while current B remains valid',async()=>{
+ await fixture();const a=await approval();await retainRuntimeFamilyBuild(root,family,'x64');const previous=await installNextFixture();
+ await fs.rm(previous,{recursive:true});
+ await expect(resolveRuntimeFamilyBuild(root,family,a,'x64')).rejects.toThrow('default was not used');
+ expect((await resolveRuntimeFamily(root,family,'x64')).buildId).not.toBe(buildId);
 });

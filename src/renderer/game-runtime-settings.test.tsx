@@ -29,40 +29,43 @@ beforeEach(async()=>{
  document.body.innerHTML='<div id="root"></div>';root=createRoot(document.getElementById('root')!);await render();
 });
 afterEach(async()=>{await act(async()=>root.unmount());vi.restoreAllMocks();vi.unstubAllGlobals();document.body.innerHTML='';});
-it('permits same-family A-to-B recovery only after a fresh consent interaction',async()=>{
- await openSettings();expect(consent().checked).toBe(false);
- expect(document.querySelector('[role="alert"]')?.textContent).toContain('runtime build changed');
- const select=[...document.querySelectorAll<HTMLSelectElement>('[role="dialog"] select')].find(select=>select.value===family)!;
- expect(select).toBeTruthy(); // Same family remains selected, no default detour.
- await click(consent());await save();
+const chooseInstalled=()=>click([...document.querySelectorAll('[role="dialog"] button')].find(button=>button.textContent==='Use the newly installed build with a separate prefix')!);
+it('preserves approved A while B is current and unrelated settings Save sends no new approval',async()=>{
+ await openSettings();expect(consent().checked).toBe(true);
+ expect(document.querySelector('[role="alert"]')?.textContent).toContain('approved build');
+ await save();expect(window.launcher.updateGame).toHaveBeenCalledWith(data.games[0].id,expect.objectContaining({runtime:family,runtimeSeparatePrefix:true,runtimeApproveBuild:false,runtimeExpectedBuild:undefined}));
+});
+it('permits same-family A-to-B only after explicit choice of the installed build',async()=>{
+ await openSettings();await chooseInstalled();await save();
  expect(window.launcher.updateGame).toHaveBeenCalledWith(data.games[0].id,expect.objectContaining({runtime:family,runtimeSeparatePrefix:true,runtimeApproveBuild:true,runtimeExpectedBuild:b}));
 });
-it('ordinary Save of an already approved build sends no fresh build approval',async()=>{
+it('ordinary Save of an already current approved build sends no fresh build approval',async()=>{
  data.runtime.variants=[installed(a)];await render();await openSettings();expect(consent().checked).toBe(true);
  await save();expect(window.launcher.updateGame).toHaveBeenCalledWith(data.games[0].id,expect.objectContaining({runtimeApproveBuild:false,runtimeExpectedBuild:undefined}));
 });
-it('clears pending B consent when a C snapshot arrives, requiring a fresh C interaction',async()=>{
- await openSettings();await click(consent());data.runtime.variants=[installed(c)];await render();
- expect(consent().checked).toBe(false);await save();expect(window.launcher.updateGame).not.toHaveBeenCalled();
- await click(consent());await save();
- expect(window.launcher.updateGame).toHaveBeenCalledWith(data.games[0].id,expect.objectContaining({runtimeApproveBuild:true,runtimeExpectedBuild:c}));
+it('invalidates pending B approval when C arrives, retaining A until explicit C choice',async()=>{
+ await openSettings();await chooseInstalled();data.runtime.variants=[installed(c)];await render();
+ expect(consent().checked).toBe(true);await save();expect(window.launcher.updateGame).toHaveBeenLastCalledWith(data.games[0].id,expect.objectContaining({runtimeApproveBuild:false,runtimeExpectedBuild:undefined}));
+ await openSettings();await chooseInstalled();await save();
+ expect(window.launcher.updateGame).toHaveBeenLastCalledWith(data.games[0].id,expect.objectContaining({runtimeApproveBuild:true,runtimeExpectedBuild:c}));
 });
-it('clears prefilled A consent when the installed build changes while the form stays open',async()=>{
+it('preserves A approval when current changes while the form stays open',async()=>{
  data.runtime.variants=[installed(a)];await render();await openSettings();expect(consent().checked).toBe(true);
- data.runtime.variants=[installed(b)];await render();expect(consent().checked).toBe(false);
- await save();expect(window.launcher.updateGame).not.toHaveBeenCalled();
- await click(consent());await save();
- expect(window.launcher.updateGame).toHaveBeenCalledWith(data.games[0].id,expect.objectContaining({runtimeApproveBuild:true,runtimeExpectedBuild:b}));
+ data.runtime.variants=[installed(b)];await render();expect(consent().checked).toBe(true);
+ await save();expect(window.launcher.updateGame).toHaveBeenCalledWith(data.games[0].id,expect.objectContaining({runtimeSeparatePrefix:true,runtimeApproveBuild:false}));
 });
-it('resets fresh approval after closing and reopening the same-family settings form',async()=>{
- await openSettings();await click(consent());await click(document.querySelector('[role="dialog"] [data-gamepad-cancel]')!);
- await openSettings();expect(consent().checked).toBe(false);
+it('resets fresh B approval after closing and reopening, preserving A',async()=>{
+ await openSettings();await chooseInstalled();await click(document.querySelector('[role="dialog"] [data-gamepad-cancel]')!);
+ await openSettings();expect(consent().checked).toBe(true);await save();
+ expect(window.launcher.updateGame).toHaveBeenCalledWith(data.games[0].id,expect.objectContaining({runtimeApproveBuild:false}));
 });
-
-it('refreshes verified families locally when opening settings, recovering B from a stale A snapshot',async()=>{
+it('refreshes verified current B locally without clearing saved A approval',async()=>{
  data.runtime.variants=[installed(a)];await render();vi.mocked(window.launcher.getRuntimeFamilies).mockResolvedValue([installed(b)]);
- await openSettings();expect(window.launcher.getRuntimeFamilies).toHaveBeenCalledOnce();expect(consent().checked).toBe(false);
- expect(document.querySelector('[role="alert"]')?.textContent).toContain('runtime build changed');
- await click(consent());await save();
+ await openSettings();expect(window.launcher.getRuntimeFamilies).toHaveBeenCalledOnce();expect(consent().checked).toBe(true);
+ await chooseInstalled();await save();
  expect(window.launcher.updateGame).toHaveBeenCalledWith(data.games[0].id,expect.objectContaining({runtime:family,runtimeApproveBuild:true,runtimeExpectedBuild:b}));
+});
+it('does not fabricate valid approval for a legacy family-wide consent',async()=>{
+ data.games=[{...data.games[0],runtimeBuild:undefined}];await render();await openSettings();expect(consent().checked).toBe(false);
+ await click(consent());await save();expect(window.launcher.updateGame).toHaveBeenCalledWith(data.games[0].id,expect.objectContaining({runtimeApproveBuild:true,runtimeExpectedBuild:b}));
 });

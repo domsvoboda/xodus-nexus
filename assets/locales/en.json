@@ -10,6 +10,8 @@
   "auth.sign_out_active_help": "Signs out active Store and player accounts and removes device registration. Saved Store accounts remain available until forgotten.",
   "auth.active_signed_out": "Active accounts signed out. Saved Store accounts are retained.",
   "auth.sign_out_all": "Sign out all accounts",
+  "runtime.new_build_available": "Another runtime build is installed. Your approved build and its local saves remain selected until you choose another build.",
+  "runtime.use_installed_build": "Use the newly installed build with a separate prefix",
   "runtime.build_changed": "The installed runtime build changed or has not been approved. Review it and explicitly choose a new separate prefix. Existing local saves stay in the old prefix.",
   "runtime.game_runtime": "Game runtime",
   "runtime.use_default": "Use default runtime",

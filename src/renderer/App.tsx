@@ -649,7 +649,8 @@ export function LibraryPage({ data, toast, filters, onFiltersChange, selection, 
   useBrowserLayoutEffect(()=>{
     if(!dialogGame||dialogGame.kind!=='settings'){runtimeChoice.current=undefined;return;}
     if(runtimeChoice.current?.gameId===dialogGame.id&&runtimeChoice.current.key!==installedChoiceKey){
-      setEditSeparatePrefix(false);setEditApproveRuntimeBuild(false);setEditExpectedRuntimeBuild(undefined);
+      const game=data.games.find(item=>item.id===dialogGame.id);
+      setEditSeparatePrefix(game?.runtime===editRuntime&&game.runtimeSeparatePrefix===true&&sameRuntimeBuild(game.runtimeBuild,game.runtimeBuild));setEditApproveRuntimeBuild(false);setEditExpectedRuntimeBuild(undefined);
     }
     runtimeChoice.current={gameId:dialogGame.id,key:installedChoiceKey};
   },[dialogGame?.id,dialogGame?.kind,installedChoiceKey]);
@@ -731,13 +732,12 @@ export function LibraryPage({ data, toast, filters, onFiltersChange, selection, 
     setEditTitle(game.title);
     setEditLocale(game.locale ?? '');
     setEditRuntime(game.runtime ?? 'default');
-    const installed=runtimeChoices.find(item=>item.id===game.runtime);
-    setEditSeparatePrefix(game.runtimeSeparatePrefix===true&&sameRuntimeBuild(game.runtimeBuild,installed));
+    setEditSeparatePrefix(game.runtimeSeparatePrefix===true&&sameRuntimeBuild(game.runtimeBuild,game.runtimeBuild));
     setEditApproveRuntimeBuild(false);setEditExpectedRuntimeBuild(undefined);
     setEditTools({ ...defaultLaunchTools, ...game.launchTools });
     setLocaleOptions([]);
     const request = ++localeRequest.current;
-    if(kind==='settings')void window.launcher.getRuntimeFamilies().then(families=>{if(request===localeRequest.current){setRuntimeChoices(families);if(!sameRuntimeBuild(game.runtimeBuild,families.find(item=>item.id===game.runtime))){setEditSeparatePrefix(false);setEditApproveRuntimeBuild(false);setEditExpectedRuntimeBuild(undefined);}}}).catch(error=>{if(request===localeRequest.current){setRuntimeChoices([]);toast({kind:'error',message:errorMessage(error)});}});
+    if(kind==='settings')void window.launcher.getRuntimeFamilies().then(families=>{if(request===localeRequest.current){setRuntimeChoices(families);}}).catch(error=>{if(request===localeRequest.current){setRuntimeChoices([]);toast({kind:'error',message:errorMessage(error)});}});
     if (kind === 'settings') void window.launcher.getGameLocales(game.id).then(locales => {
       if (request === localeRequest.current) setLocaleOptions(locales);
     }).catch((error) => { if (request === localeRequest.current) toast({ kind: 'error', message: errorMessage(error) }); });
@@ -859,7 +859,7 @@ export function LibraryPage({ data, toast, filters, onFiltersChange, selection, 
         <h2>{ui("ui.game_settings_fece860")}</h2>
         <label>{ui("ui.display_name_2b7f6a8")}<input data-gamepad-initial required value={editTitle} onChange={(event) => setEditTitle(event.target.value)} /></label>
         <GameLanguage value={editLocale} locales={localeOptions} onChange={setEditLocale} />
-        <GameRuntimeFields value={editRuntime} separate={editSeparatePrefix} approved={modalGame.runtimeBuild} installed={runtimeChoices} change={value=>{setEditRuntime(value);setEditSeparatePrefix(false);setEditApproveRuntimeBuild(false);setEditExpectedRuntimeBuild(undefined);}} changeSeparate={value=>{setEditSeparatePrefix(value);setEditApproveRuntimeBuild(value);const installed=runtimeChoices.find(item=>item.id===editRuntime);setEditExpectedRuntimeBuild(value&&installed?runtimeBuildApproval(installed):undefined);}}/>
+        <GameRuntimeFields value={editRuntime} separate={editSeparatePrefix} approved={editRuntime===(modalGame.runtime??'default')?modalGame.runtimeBuild:undefined} installed={runtimeChoices} change={value=>{setEditRuntime(value);setEditSeparatePrefix(false);setEditApproveRuntimeBuild(false);setEditExpectedRuntimeBuild(undefined);}} changeSeparate={value=>{setEditSeparatePrefix(value);setEditApproveRuntimeBuild(value);const installed=runtimeChoices.find(item=>item.id===editRuntime);setEditExpectedRuntimeBuild(value&&installed?runtimeBuildApproval(installed):undefined);}}/>
         <GameLaunchToolFields value={editTools} change={setEditTools} />
         <div className="dialog-actions"><button type="button" className="secondary" disabled={dialogBusy} data-gamepad-cancel onClick={() => setDialogGame(undefined)}>{ui("ui.cancel_19766ed")}</button><button className="primary" disabled={dialogBusy || !editTitle.trim()}><Check />{ui("ui.save_1509f56")}</button></div>
       </form>}

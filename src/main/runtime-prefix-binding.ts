@@ -1,7 +1,7 @@
 import {promises as fs} from 'node:fs';
 import path from 'node:path';
 import {gameRuntimeSelection,sameRuntimeBuild,type GameRuntimeSelection} from '../shared/runtime-selection.js';
-import {resolveRuntimeFamily,type ResolvedRuntimeFamily} from './runtime-families.js';
+import {resolveRuntimeFamilyBuild,type ResolvedRuntimeFamily} from './runtime-families.js';
 export interface GameRuntimeContext {
   readonly selection:GameRuntimeSelection;readonly family:'default'|'nexus'|'nexus-cachyos';
   readonly winePath:string;readonly compatibilityDataPath:string;readonly legacyPrefixRoot:string;readonly dataRoot:string;
@@ -22,7 +22,7 @@ export async function resolveGameRuntime(options:{runtimeRoot:string;dataRoot:st
       compatibilityDataPath:path.join(options.dataRoot,'compatdata',options.gameId),legacyPrefixRoot:path.join(options.dataRoot,'prefixes',options.gameId)});
   }
   if(options.separatePrefix!==true)throw Error('Choose a separate runtime prefix before using this family. Existing local saves remain in the old prefix.');
-  const managed=await resolveRuntimeFamily(options.runtimeRoot,selection,options.arch);
+  const managed=await resolveRuntimeFamilyBuild(options.runtimeRoot,selection,options.approvedBuild,options.arch).catch(error=>{throw Error('The selected runtime build changed, has not been approved or failed verification. Explicitly choose an installed build in Game settings. Existing prefix and local saves were preserved.',{cause:error});});
   if(!sameRuntimeBuild(options.approvedBuild,managed))throw Error('The selected runtime build changed or has not been approved. Explicitly choose the installed build in Game settings. Existing prefix and local saves were preserved.');
   const root=path.join(options.dataRoot,'runtime-prefixes',selection,managed.buildId,options.gameId);
   return Object.freeze({selection,family:selection,winePath:managed.winePath,dataRoot:options.dataRoot,managed,
