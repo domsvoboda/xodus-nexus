@@ -671,3 +671,11 @@ button.primary, button.secondary { border-radius: 5px; min-height: 40px; font-si
 .managed-runtime-family + .managed-runtime-family { padding-top: 20px; border-top: 1px solid var(--line); }
 .managed-runtime-family p { overflow-wrap: anywhere; }
 .managed-runtime-settings > button { margin-top: 16px; }
+
+.component-update-results { list-style: none; padding: 0; margin: 20px 0 0; }
+.component-update-results li { display: flex; align-items: center; justify-content: space-between; gap: 16px; padding: 14px 0; border-top: 1px solid var(--line); }
+.component-update-results li > div { display: grid; gap: 4px; min-width: 0; overflow-wrap: anywhere; }
+.component-update-results li small { color: var(--muted); }
+.component-update-results li > button { flex-shrink: 0; }
+@media (max-width: 900px) { .component-update-results li { flex-wrap: wrap; } }
+.component-updates button, .managed-runtime-settings button { min-height: 44px; }

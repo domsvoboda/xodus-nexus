@@ -1,3 +1,4 @@
+import {ComponentUpdates} from './ComponentUpdates';
 import {ManagedRuntimeSettings} from './ManagedRuntimeSettings';
 import {useGameRuntimeReady} from './useGameRuntimeReady';
 import {useStoreAccess} from './store-access';
@@ -996,6 +997,8 @@ export function SettingsPage({ data, toast }: { data: AppSnapshot; toast: (value
       <CheckField className="tray-toggle" role="switch" label={ui('settings.close_to_tray')} description={ui('settings.close_to_tray_help')} checked={form.closeToTray===true} disabled={Boolean(busy)} onChange={event=>{const closeToTray=event.target.checked;setForm({...form,closeToTray});void invoke('close-to-tray',()=>window.launcher.updateSettings({closeToTray}),ui('settings.tray_saved'));}}/>
     </section>
 
+    <ComponentUpdates data={data} disabled={Boolean(busy)||data.auth.running||data.backend.updating||data.runtime.updating||Boolean(data.launcherUpdate?.updating)||Boolean(data.gameOperation&&['preparing','running','stopping'].includes(data.gameOperation.status))||data.downloads.some(task=>['queued','running','paused'].includes(task.status))} onBusyChange={value=>setBusy(value?'component-updates':undefined)}/>
+
     <section className="settings-card compact launcher-card">
       {data.launcherUpdate?.phase ? <p>{uiText(data.launcherUpdate.phase)}</p> : null}
       {data.launcherUpdate?.updating ? <div className="progress-track"><i style={{ width: `${data.launcherUpdate.progress ?? 0}%` }} /></div> : null}
@@ -1004,7 +1007,7 @@ export function SettingsPage({ data, toast }: { data: AppSnapshot; toast: (value
       <div className="button-row">
         {data.launcherUpdate?.latestVersion && data.launcherUpdate.canInstall && !data.launcherUpdate.restartRequired ? <button className="primary" disabled={data.launcherUpdate.updating || Boolean(busy)} onClick={async () => { if (await confirm({ title: ui("ui.install_launcher_update_15498d2"), message: ui("ui.the_current_appimage_will_be_backed_up_games_and_8e8c5e5"), confirmLabel: ui("ui.install_update_cada421") })) void invoke('launcher-install', () => window.launcher.installLauncherUpdate()); }}><ArrowDownToLine />{data.launcherUpdate.updating ? ui("ui.updating_dfe40ef") : ui("ui.install_launcher_update_d1988d9")}</button> : null}
         {data.launcherUpdate?.releaseUrl && !data.launcherUpdate.canInstall ? <a className="primary" href={data.launcherUpdate.releaseUrl} target="_blank" rel="noreferrer"><ArrowDownToLine />{ui("ui.download_update_4f494b2")}</a> : null}
-        {data.launcherUpdate?.restartRequired ? <button className="primary" onClick={() => invoke('launcher-restart', () => window.launcher.restartLauncher())}><RefreshCw />{ui("ui.restart_launcher_b076da9")}</button> : null}
+        {data.launcherUpdate?.restartRequired ? <button className="primary" disabled={Boolean(busy)||data.componentUpdates?.running} onClick={() => invoke('launcher-restart', () => window.launcher.restartLauncher())}><RefreshCw />{ui("ui.restart_launcher_b076da9")}</button> : null}
         {data.launcherUpdate?.canRollback ? <button className="secondary" disabled={data.launcherUpdate.updating || Boolean(busy)} onClick={async () => { if (await confirm({ title: ui("ui.restore_previous_launcher_ab5c227"), message: ui("ui.your_settings_and_games_will_not_change_3e99619"), confirmLabel: ui("ui.restore_launcher_a0520ac") })) void invoke('launcher-rollback', () => window.launcher.rollbackLauncherUpdate()); }}>{ui("ui.restore_previous_launcher_9b5f101")}</button> : null}
         <button className="secondary" disabled={data.launcherUpdate?.checking || data.launcherUpdate?.updating || data.launcherUpdate?.restartRequired} onClick={() => invoke('update-check', () => window.launcher.checkLauncherUpdate(), ui("ui.update_check_finished_3f30d8a"))}>{data.launcherUpdate?.checking ? <LoaderCircle className="spin" /> : <RefreshCw />}{ui("ui.check_for_updates_f26f327")}</button>
         <button className="secondary" disabled={Boolean(busy)} title={ui("ui.add_nexus_with_artwork_including_while_steam_is_f7d03b8")} onClick={() => invoke('steam-launcher', () => window.launcher.addToSteam(), ui("ui.nexus_added_to_steam_2f6a699"))}><Plus />{ui("ui.add_nexus_to_steam_790c35e")}</button>
@@ -1060,7 +1063,7 @@ export function SettingsPage({ data, toast }: { data: AppSnapshot; toast: (value
       {data.runtime.updating || runtimeLogs.length > 0 ? <pre className="build-log">{runtimeLogs.join('\n') || ui("ui.waiting_for_output_f05fefe")}</pre> : null}
     </section>
 
-    <ManagedRuntimeSettings data={data} disabled={Boolean(busy)||data.auth.running||data.backend.updating||data.runtime.updating||Boolean(data.launcherUpdate?.updating)||Boolean(data.gameOperation&&['preparing','running','stopping'].includes(data.gameOperation.status))||data.downloads.some(task=>['queued','running','paused'].includes(task.status))} onBusyChange={value=>setBusy(value?'managed-runtime':undefined)}/>
+    <ManagedRuntimeSettings data={data} disabled={Boolean(busy)||data.componentUpdates?.running===true||data.auth.running||data.backend.updating||data.runtime.updating||Boolean(data.launcherUpdate?.updating)||Boolean(data.gameOperation&&['preparing','running','stopping'].includes(data.gameOperation.status))||data.downloads.some(task=>['queued','running','paused'].includes(task.status))} onBusyChange={value=>setBusy(value?'managed-runtime':undefined)}/>
 
     <div className="settings-storage">
       <section className="settings-card compact">
