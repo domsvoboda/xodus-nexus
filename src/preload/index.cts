@@ -135,6 +135,7 @@ const api: LauncherApi = {
   updateGame: (id: string, patch: Partial<Pick<Game, 'title' | 'executable' | 'launchArgs' | 'locale' | 'launchTools'>>) => ipcRenderer.invoke('update-game', id, patch),
   getGameLocales: (id: string) => ipcRenderer.invoke('game-locales', id),
   removeGame: (id: string, mode: 'library' | 'delete-files') => ipcRenderer.invoke('remove-game', id, mode),
+  getGameRuntimeReadiness: (id: string) => ipcRenderer.invoke('game-runtime-readiness', id),
   getGameLaunchOptions: (id: string) => ipcRenderer.invoke('game-launch-options', id),
   getGameDetails: (id: import('../shared/types').GameDetailsTarget) => ipcRenderer.invoke('game-details', id),
   getGameActivity: (id: import('../shared/types').GameDetailsTarget, refresh?: boolean) => ipcRenderer.invoke('game-activity', id, refresh),

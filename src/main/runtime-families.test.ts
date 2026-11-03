@@ -1,3 +1,4 @@
+import {gameRuntimeReadiness,type RuntimeReadinessState} from './game-runtime-readiness';
 import {afterEach,beforeEach,describe,expect,it,vi} from 'vitest';
 import {promises as fs} from 'node:fs';
 import path from 'node:path';
@@ -355,4 +356,21 @@ it('fails closed when retained A payload disappears while current B remains vali
  await fs.rm(previous,{recursive:true});
  await expect(resolveRuntimeFamilyBuild(root,family,a,'x64')).rejects.toThrow('default was not used');
  expect((await resolveRuntimeFamily(root,family,'x64')).buildId).not.toBe(buildId);
+});
+
+it('reports retained A ready with missing or corrupt current B, but never missing or corrupt A',async()=>{
+ await fixture();const a=await approval();await retainRuntimeFamilyBuild(root,family,'x64');const previous=await installNextFixture();
+ const state:RuntimeReadinessState={game:{id:'readiness',runtime:family,runtimeSeparatePrefix:true,runtimeBuild:a},runtimeRoot:root,dataRoot:root,defaultWine:undefined,arch:'x64'};
+ const current=path.join(root,'variants',family,'current.json');await fs.writeFile(current,'{corrupt B');
+ expect(await gameRuntimeReadiness(()=>state)).toBe(true);await fs.unlink(current);expect(await gameRuntimeReadiness(()=>state)).toBe(true);
+ await fs.appendFile(path.join(previous,'files/bin/wine'),'corrupt A');expect(await gameRuntimeReadiness(()=>state)).toBe(false);
+ await fs.rm(previous,{recursive:true});expect(await gameRuntimeReadiness(()=>state)).toBe(false);
+ await expect(fs.access(path.join(root,'runtime-prefixes'))).rejects.toThrow();
+});
+it.each(['approval','runtimeRoot'])('rejects readiness if %s changes during verification',async changed=>{
+ await fixture();const state:RuntimeReadinessState={game:{id:'readiness',runtime:family,runtimeSeparatePrefix:true,runtimeBuild:await approval()},runtimeRoot:root,dataRoot:root,defaultWine:undefined,arch:'x64'};
+ let resume!:()=>void;const held=new Promise<void>(resolve=>resume=resolve);
+ const result=gameRuntimeReadiness(()=>state,async options=>{await held;return resolveGameRuntime(options);});
+ if(changed==='approval')state.game={...state.game!,runtimeBuild:{...state.game!.runtimeBuild!,buildId:'d'.repeat(64)}};else state.runtimeRoot+='-changed';
+ resume();expect(await result).toBe(false);
 });

@@ -4,7 +4,7 @@ import type {AppSnapshot,CatalogProduct} from '../shared/types';
 import {GameDetails} from './GameDetails';
 import {catalogInstallRequest,usePackageInstall} from './PackageInstall';
 import {useStoreAccess} from './store-access';
-import {gameRuntimeAvailable} from '../shared/runtime-selection';
+import {useGameRuntimeReady} from './useGameRuntimeReady';
 import {ui,uiText} from './i18n';
 
 export function catalogGameInstalled(product:CatalogProduct,data:AppSnapshot){
@@ -36,7 +36,8 @@ export function CatalogGameDetails({product,data,back,backLabel,toast,storeAcces
   }catch(error){if(identity.current===scope)toast({kind:'error',message:error instanceof Error?error.message:String(error)});}
   finally{pending.current=false;setBusy(false);}
  }
- const playDisabled=busy||installed?.installState!=='ready'||!data.backend.capabilities.run||!gameRuntimeAvailable(installed?.runtime,installed?.runtimeSeparatePrefix,Boolean(data.settings.winePath||data.runtime.winePath),data.runtime.variants??[]);
+ const runtimeReady=useGameRuntimeReady(installed,data);
+ const playDisabled=busy||installed?.installState!=='ready'||!data.backend.capabilities.run||!runtimeReady;
  async function play(){
   if(!installed||playDisabled)return;setBusy(true);
   try{await window.launcher.launchGame(installed.id);}

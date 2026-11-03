@@ -633,6 +633,7 @@ export interface LauncherApi {
   updateGame(id: string, patch: Partial<Pick<Game, 'title' | 'executable' | 'launchArgs' | 'locale' | 'launchTools' | 'runtime' | 'runtimeSeparatePrefix'>> & {runtimeApproveBuild?:boolean;runtimeExpectedBuild?:RuntimeBuildApproval}): Promise<Game>;
   getGameLocales(id: string): Promise<string[]>;
   removeGame(id: string, mode: 'library' | 'delete-files'): Promise<void>;
+  getGameRuntimeReadiness(id: string): Promise<boolean>;
   getGameLaunchOptions(id: string): Promise<GameLaunchOptions>;
   getGameDetails(id: GameDetailsTarget): Promise<GameStoreDetails | undefined>;
   getGameActivity(id: GameDetailsTarget, refresh?: boolean): Promise<GameActivity>;

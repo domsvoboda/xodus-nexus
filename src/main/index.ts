@@ -1,3 +1,4 @@
+import {gameRuntimeReadiness} from './game-runtime-readiness.js';
 import {approvedRuntimeSettings,type RuntimeSettingsRequest} from './runtime-settings.js';
 import {gameRuntimeSelection} from '../shared/runtime-selection.js';
 import {resolveGameRuntime,bindRuntimePrefix} from './runtime-prefix-binding.js';
@@ -1708,6 +1709,7 @@ function registerDemoIpc(catalogMarket: () => string): void {
     return { ...game, ...patch };
   });
   ipcMain.handle('remove-game', () => {});
+  ipcMain.handle('game-runtime-readiness', () => false); // Synthetic demo never validates managed payloads.
   ipcMain.handle('game-launch-options', () => demoLaunchOptions);
   ipcMain.handle('game-details', async (_event, id: unknown) => {
     const game = demoGames.find(game => game.id === id);
@@ -2076,6 +2078,7 @@ function registerIpc(): void {
       gameRemovalInProgress = false;
     }
   });
+  ipcMain.handle('game-runtime-readiness', (_event, id: string) => gameRuntimeReadiness(()=>({game:store.games.find(game=>game.id===id),runtimeRoot:store.settings.runtimeRoot,dataRoot:path.dirname(store.settings.runtimeRoot),defaultWine:selectedWinePath(store.settings.winePath,store.settings.runtimeRoot,runtime.current.winePath)})));
   ipcMain.handle('game-launch-options', (_event, id: string) => gameLaunchOptions(id));
   ipcMain.handle('game-details', async (_event, id: unknown) => {
     const target=gameDetailsTarget(id,store.games);

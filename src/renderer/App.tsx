@@ -1,6 +1,7 @@
+import {useGameRuntimeReady} from './useGameRuntimeReady';
 import {useStoreAccess} from './store-access';
 import {GameRuntimeFields} from './GameRuntimeFields';
-import {gameRuntimeAvailable,sameRuntimeBuild,runtimeBuildApproval,type InstalledRuntimeFamily,type RuntimeBuildApproval,type GameRuntimeSelection} from '../shared/runtime-selection';
+import {sameRuntimeBuild,runtimeBuildApproval,type InstalledRuntimeFamily,type RuntimeBuildApproval,type GameRuntimeSelection} from '../shared/runtime-selection';
 import { CloudSaveWarning } from './CloudSaveWarning';
 import { CheckField } from './CheckField';
 import { useDialogFocus } from './use-dialog-focus';
@@ -221,7 +222,8 @@ export function HomePage({ data, go, action, openGame, returnFocusKey }: {
   data: AppSnapshot; go: (page: Page) => void; action: (fn: () => Promise<unknown>, success?: string) => void; openGame?: (id: string, returnKey: string) => void; returnFocusKey?: string;
 }) {
   const featured = data.games[0];
-  const canPlay = Boolean(featured?.installState === 'ready' && data.backend.capabilities.run && gameRuntimeAvailable(featured?.runtime,featured?.runtimeSeparatePrefix,Boolean(data.settings.winePath||data.runtime.winePath),data.runtime.variants??[]));
+  const featuredRuntimeReady=useGameRuntimeReady(featured,data);
+  const canPlay = Boolean(featured?.installState === 'ready' && data.backend.capabilities.run && featuredRuntimeReady);
   const launchOptions = useGameLaunchOptions(featured, data);
   const spotlightArt = featured?.heroUrl ?? featured?.coverUrl;
   const home = useRef<HTMLElement>(null);
@@ -812,6 +814,7 @@ export function LibraryPage({ data, toast, filters, onFiltersChange, selection, 
 
   const selectedOperation = selected && data.gameOperation?.gameId === selected.id ? data.gameOperation : undefined;
   const gameBusy = Boolean(selectedOperation && ['preparing', 'running', 'stopping'].includes(selectedOperation.status));
+  const selectedRuntimeReady=useGameRuntimeReady(selected,data);
   const launchOptions = useGameLaunchOptions(selected, data);
   const menuGame = data.games.find((game) => game.id === menu?.id);
   const modalGame = data.games.find((game) => game.id === dialogGame?.id);
@@ -836,7 +839,7 @@ export function LibraryPage({ data, toast, filters, onFiltersChange, selection, 
     contentDisabled: !game.storeId || data.auth.stored !== true || !data.backend.capabilities.library,
   });
   const selectedPanel = catalogProduct&&detailVisible?<CatalogGameDetails key={catalogProduct.productId+catalogScope} product={catalogProduct} data={data} back={closeDetails} toast={toast}/>:!catalogSelection&&selected&&detailVisible ? <GameDetails key={`${selected.id}:${data.auth.username}:${data.auth.player}:${data.auth.stored}:${data.auth.running}:${data.backend.binaryPath}:${data.settings.market}`} game={selected} data={data} back={closeDetails} backLabel={returnHomeKey.current ? ui('game.back_to_home') : undefined} play={<>
-          <button className="primary" data-gamepad-play disabled={gameBusy || selected.installState !== 'ready' || !data.backend.capabilities.run || !gameRuntimeAvailable(selected.runtime,selected.runtimeSeparatePrefix,Boolean(data.settings.winePath||data.runtime.winePath),data.runtime.variants??[])} onClick={() => play()}>{gameBusy ? <LoaderCircle className="spin" /> : <Play fill="currentColor" />}{gameBusy ? ui("ui.working_5474eef") : ui("ui.play_436e610")}</button>
+          <button className="primary" data-gamepad-play disabled={gameBusy || selected.installState !== 'ready' || !data.backend.capabilities.run || !selectedRuntimeReady} onClick={() => play()}>{gameBusy ? <LoaderCircle className="spin" /> : <Play fill="currentColor" />}{gameBusy ? ui("ui.working_5474eef") : ui("ui.play_436e610")}</button>
           {gameBusy && !(selectedOperation?.kind === 'prerequisite' && selectedOperation.status === 'running') ? <button className="secondary danger" onClick={stopGame}><X />{ui("ui.stop_cae7d57")}</button> : null}
         </>} manage={<GameMenuActions {...managementProps(selected)} />} technical={<dl><div><dt>{ui("ui.store_id_4a3eac6")}</dt><dd>{selected.storeId ?? ui("ui.not_found_e3ebaa1")}</dd></div><div><dt>{ui("ui.executable_72cd8a6")}</dt><dd>{selected.executable ?? ui("ui.not_found_e3ebaa1")}</dd></div><div><dt>{ui("ui.location_15b6197")}</dt><dd>{selected.path}</dd></div></dl>} notices={<>
       {selected.installMessage ? <div className="alert amber"><CircleAlert /><span>{uiText(selected.installMessage)}</span></div> : null}
