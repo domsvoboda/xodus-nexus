@@ -23,6 +23,7 @@ it('shows player credentials independently after Store sign-out and explains ful
 
 it('keeps notification reads and broker acknowledgements scoped to the effective Xbox player', async () => {
   vi.stubGlobal('IS_REACT_ACT_ENVIRONMENT', true);
+  vi.stubGlobal('localStorage', (globalThis as unknown as { jsdom: { window: Window } }).jsdom.window.localStorage);
   const data = demoSnapshot();
   data.auth = { ...data.auth, stored: true, username: 'shared-store', player: 'player-one' };
   data.backend.capabilities.nativeSocial = true;
