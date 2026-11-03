@@ -1040,7 +1040,7 @@ export function SettingsPage({ data, toast }: { data: AppSnapshot; toast: (value
         <strong>{name}</strong>
         {name === data.auth.username ? <span className="status-label ready">{ui("ui.account_in_use_5b09d3f")}</span>
           : <button className="secondary" disabled={data.auth.running} onClick={() => invoke('use-account', () => window.launcher.useAccount(name), ui("ui.account_switched_6a2e91c"))}>{ui("ui.use_this_account_e71c0a8")}</button>}
-        <button className="secondary" disabled={data.auth.running} onClick={() => invoke('forget-account', () => window.launcher.forgetAccount(name), ui("ui.account_forgotten_c05d7e3"))}>{ui("ui.forget_account_3d8f6b1")}</button>
+        <button className="secondary" disabled={data.auth.running || data.auth.stored === null} onClick={() => invoke('forget-account', () => window.launcher.forgetAccount(name), ui("ui.account_forgotten_c05d7e3"))}>{ui("ui.forget_account_3d8f6b1")}</button>
       </div>)}
       <small>{ui("ui.saved_store_accounts_help_94be2d0")}</small>
     </div> : null}
@@ -1294,7 +1294,7 @@ export default function App() {
   if (loading) return <div className="boot"><div className="brand-mark">X</div><LoaderCircle className="spin" /><span>{ui("ui.loading_xodus_nexus_2e92cfd")}</span></div>;
   return <ConfirmationProvider><PackageInstallProvider><div className="app-shell">
     {!data.settings.firstRunCompleted ? <FirstRunWizard data={data} toast={(value) => setToast(value)} /> : null}
-    <Sidebar data={data} page={page} go={go} openGame={openLibraryGame} openProfile={() => data.auth.stored === true && data.backend.capabilities.nativeSocial ? action(() => window.launcher.nativeSocial.openXboxPlayerProfile('me')) : go('settings')} inert={socialOpen} notifications={<NotificationBell key={JSON.stringify([data.auth.player??data.auth.username,data.backend.binaryPath])} notices={notifications.notices} failed={notifications.failed} unsupported={notifications.unsupported} onSelect={notice=>{
+    <Sidebar data={data} page={page} go={go} openGame={openLibraryGame} openProfile={() => (data.auth.player || data.auth.stored === true) && data.backend.capabilities.nativeSocial ? action(() => window.launcher.nativeSocial.openXboxPlayerProfile('me')) : go('settings')} inert={socialOpen} notifications={<NotificationBell key={JSON.stringify([data.auth.player??data.auth.username,data.backend.binaryPath])} notices={notifications.notices} failed={notifications.failed} unsupported={notifications.unsupported} onSelect={notice=>{
       notifications.acknowledge(notice);
       if(notice.kind==='update')openLibraryGame(notice.target);
       else{setSocialChat(previous=>({id:(previous?.id??0)+1,xuid:notice.target,identity:JSON.stringify([data.auth.player??data.auth.username,data.backend.binaryPath])}));setSocialMounted(true);setSocialOpen(true);}

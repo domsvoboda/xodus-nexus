@@ -41,7 +41,7 @@ function XboxGameGuide(){
   return()=>{unsubscribe();profiles();preferences();invitations();visibility();languages();disconnect();};
  },[]);
  useEffect(()=>{setChats([]);chatIds.current=[];setProfile(undefined);setExpanded(false);},[auth.username,auth.player]);
- const account=auth.stored===true&&!auth.running?(auth.player??auth.username):undefined;
+ const account=!auth.running?(auth.player??(auth.stored===true?auth.username:undefined)):undefined;
  return <main className={'game-guide-shell'+(overlay.overlaySide==='right'?' is-right':'')} aria-label={ui("social.in_game_xbox_guide_b68219")}>
   <div className={'game-guide-panel'+(expanded?' is-expanded':'')}>
    {expanded?<div className="game-guide-full-toolbar"><button onClick={()=>setExpanded(false)}>{overlay.overlaySide==='right'?<PanelRightClose/>:<PanelLeftClose/>}{ui("social.return_to_shelf_4df4fc")}</button><span>{ui("social.xbox_social_9dd063")}</span></div>:null}

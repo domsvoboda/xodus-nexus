@@ -61,3 +61,10 @@ it.each(['game-activity','game-achievements'])('%s uses the player identity and 
  f.authState.player='other-player';resolve({productId:'9AAAAAAAAAAA',xboxTitleId:'123'});
  expect(await pending).toEqual({status:'error'});
 });
+
+it.each(['game-activity','game-achievements'])('%s supports an independent player after Store sign-out',async route=>{
+ const f=fixture();f.authState.stored=false;f.authState.username='';f.authState.player='personal-player';
+ expect(await f.call(route,{productId:'9AAAAAAAAAAA'})).toMatchObject({status:'available'});
+ const selected=route==='game-activity'?f.gameActivities:f.gameAchievements;
+ expect(selected.select).toHaveBeenCalledWith('personal-player','/fixture/cli');
+});

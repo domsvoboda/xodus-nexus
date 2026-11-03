@@ -15,7 +15,7 @@ export function XboxChatDesktop({xuid}:{xuid:string}){
   return()=>document.removeEventListener('visibilitychange',visible);
  },[]);
  const auth=snapshot?.auth;
- const account=auth?.stored===true&&!auth.running?(auth.player??auth.username):undefined;
+ const account=auth&&!auth.running?(auth.player??(auth.stored===true?auth.username:undefined)):undefined;
  const binary=snapshot?.backend.binaryPath;
  const supported=Boolean(snapshot?.backend.available&&snapshot.backend.capabilities.nativeSocial&&binary);
  const problems={account:ui('social.desktop_account_failed'),close:ui('social.desktop_close_failed'),profile:ui('social.desktop_profile_failed')};

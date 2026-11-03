@@ -7,9 +7,9 @@ import { ui } from './i18n';
 import './notifications.css';
 
 export function useNotifications(data:AppSnapshot) {
-  const account=data.auth.player??data.auth.username;
-  const identity=JSON.stringify([data.auth.stored===true?account:null,data.backend.binaryPath]);
-  const storageKey=data.auth.stored===true&&account?'nexus.notifications.v1.'+encodeURIComponent(account):undefined;
+  const account=data.auth.player??(data.auth.stored===true?data.auth.username:undefined);
+  const identity=JSON.stringify([account??null,data.backend.binaryPath]);
+  const storageKey=account?'nexus.notifications.v1.'+encodeURIComponent(account):undefined;
   const [reads,setReads]=useState<{identity:string;keys:string[]}>({identity:'',keys:[]});
   const [inbox,setInbox]=useState<{identity:string;value:XboxConversation[]}>();
   const [names,setNames]=useState<{identity:string;value:Map<string,string>}>();
@@ -17,7 +17,7 @@ export function useNotifications(data:AppSnapshot) {
   const snapshot=useRef(data);snapshot.current=data;
   const currentIdentity=useRef(identity);currentIdentity.current=identity;
   const lastViewed=useRef<{identity:string;keys:string[]}>({identity,keys:[]});
-  const supported=data.auth.stored===true&&!data.auth.running&&data.backend.available&&data.backend.capabilities.nativeSocial===true;
+  const supported=Boolean(account)&&!data.auth.running&&data.backend.available&&data.backend.capabilities.nativeSocial===true;
   useEffect(()=>{
     let keys:string[]=[];
     try{if(storageKey)keys=parseNotificationReads(localStorage.getItem(storageKey));}catch{/* Read state is optional if storage is unavailable. */}
@@ -83,7 +83,7 @@ export function useNotifications(data:AppSnapshot) {
     return()=>{active=false;clearInterval(timer);};
   },[identity]);
   const notices=notificationItems(data,supported&&inbox?.identity===identity?inbox.value:undefined,names?.identity===identity?names.value:new Map(),reads.identity===identity?reads.keys:[]);
-  return {notices,readKeys:reads.identity===identity?reads.keys:[],failed:supported&&failed,unsupported:data.auth.stored===true&&!data.backend.capabilities.nativeSocial,
+  return {notices,readKeys:reads.identity===identity?reads.keys:[],failed:supported&&failed,unsupported:Boolean(account)&&!data.backend.capabilities.nativeSocial,
     acknowledge:(notice:Notice)=>{if(notice.kind==='update')remember([notice.key]);},
     viewed:(peer:string,ids:string[])=>{
       const keys=ids.map(id=>messageNoticeKey(peer,id));

@@ -39,7 +39,7 @@ it('keeps notification reads and broker acknowledgements scoped to the effective
     expect(notices.readKeys).toEqual([key]);
     await act(async () => notices.viewed('42', ['two']));
     expect(window.launcher.viewedXboxChat).toHaveBeenLastCalledWith('player-one', '/synthetic/cli', '42', ['two']);
-    data.auth = { ...data.auth, player: 'player-two' };
+    data.auth = { ...data.auth, stored: false, username: undefined, player: 'player-two' };
     await act(async () => root.render(<Fixture />));
     expect(notices.readKeys).toEqual([]);
     await act(async () => notices.viewed('43', ['three']));

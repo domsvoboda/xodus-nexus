@@ -150,9 +150,8 @@ let gameGuide:XboxGameGuide;
 let overlayShortcut:XboxOverlayShortcut|undefined;
 const nativeSocialSnapshots:(()=>void)[]=[];
 function nativeSocialConnection(){
- const status=backend?.current;
- // Xbox Live sees the player account when one is stored, otherwise the license account.
- return !demoMode&&!authState.running&&authState.stored===true&&authState.username&&status?.available&&status.binaryPath&&status.capabilities.nativeSocial?{account:authState.player??authState.username,binary:status.binaryPath}:undefined;
+ const status=backend?.current,account=authState.player??(authState.stored===true?authState.username:undefined);
+ return !demoMode&&!authState.running&&account&&status?.available&&status.binaryPath&&status.capabilities.nativeSocial?{account,binary:status.binaryPath}:undefined;
 }
 function resetNativeSocial(){for(const reset of nativeSocialResets)reset();xboxNativeSocial?.clear();resetSocialTransport();}
 let nativeSocialBackend:string|undefined;
@@ -228,9 +227,10 @@ const launcherTray=new LauncherTray(()=>{
 const walletUnlocker = new WalletUnlocker();
 const xboxSocial = new XboxSocialSessions(() => {
   const status = backend?.current;
-  return !shutdownStarted && !authState.running && authState.stored === true && authState.username
+  const account = authState.player ?? (authState.stored === true ? authState.username : undefined);
+  return !shutdownStarted && !authState.running && account
     && status?.available && status.binaryPath && status.capabilities.commands.includes('social')
-    ? { account: authState.player ?? authState.username, binary: status.binaryPath } : undefined;
+    ? { account, binary: status.binaryPath } : undefined;
 });
 const keyringSupport = new KeyringSupport(process.env, undefined, process.platform, undefined, {
   diagnostic: value => backendDiagnostic({ operation: 'keyring', event: 'diagnostic', keyring: value, elapsedMs: value.elapsedMs }),
@@ -557,9 +557,9 @@ async function refreshAccount(emit = true, afterAuth = false): Promise<AuthStatu
     const selectedAuth = authState;
     accountLibrary.select(authState.stored === true ? authState.username : undefined,
       status.capabilities.library ? status.binaryPath : undefined, currentMarket());
-    gameActivities.select(authState.stored === true ? authState.player ?? authState.username : undefined,
+    gameActivities.select(authState.player ?? (authState.stored === true ? authState.username : undefined),
       status.capabilities.gameActivity ? status.binaryPath : undefined);
-    gameAchievements.select(authState.stored === true ? authState.player ?? authState.username : undefined,
+    gameAchievements.select(authState.player ?? (authState.stored === true ? authState.username : undefined),
       status.capabilities.achievements ? status.binaryPath : undefined);
     await accountProfile?.select(authState.player ?? (authState.stored === true ? authState.username : undefined),
       status.capabilities.profile ? status.binaryPath : undefined, emit);
@@ -726,6 +726,8 @@ function requestSavedAccount(action: 'use' | 'forget', name: unknown): Promise<v
   ensureIdle();
   const binary = backend.current.binaryPath;
   if (typeof name !== 'string' || !binary || !backend.current.capabilities.savedAccounts) return Promise.reject(Error('Saved accounts are not available.'));
+  if (action === 'forget' && authState.stored === null) return Promise.reject(Error('Refresh account status before forgetting a saved Store account.'));
+  const forgetActiveStore = action === 'forget' && name === authState.username;
   const job = Promise.resolve().then(async () => {
     authState = { ...authState, running: true };
     accountRefresh.invalidate();
@@ -742,7 +744,10 @@ function requestSavedAccount(action: 'use' | 'forget', name: unknown): Promise<v
       else await forgetSavedAccount(binary, name);
     } finally {
       accountRefresh.invalidate();
-      try { if (!shutdownStarted) await refreshAccount(false, true); }
+      try {
+        try { if (forgetActiveStore) await revokeOffline('sign-out'); }
+        finally { if (!shutdownStarted) await refreshAccount(false, true); }
+      }
       finally { authState.running = false; emitSnapshot(); }
     }
   });
@@ -890,6 +895,7 @@ async function prepareInstall(request: InstallRequest, updateGame?: Game, conten
 }
 
 async function runDownload(task: DownloadTask, binary: string, market: string, updateGame?: Game, content?: { game: Game; pkg: ContentPackage; manager: GameContent }): Promise<void> {
+  const installAccount = authState.stored === true ? authState.username : undefined;
   const { id, productId, destination, selectedContentId } = task;
   const structured = Boolean(backend.current.capabilities.streamingProgressJson);
   const controllable = structured && Boolean(backend.current.capabilities.streamingControls);
@@ -986,7 +992,7 @@ async function runDownload(task: DownloadTask, binary: string, market: string, u
             delete gameUpdates[updateGame.id];
           }
         }
-        else await store.upsertGame({ ...inspected, licenseAccount: authState.username, offerProductId: /^[A-Z0-9]{12}$/.test(task.productId) ? task.productId : undefined });
+        else await store.upsertGame({ ...inspected, licenseAccount: installAccount, offerProductId: /^[A-Z0-9]{12}$/.test(task.productId) ? task.productId : undefined });
       } catch (error) {
         if (updateGame) await refreshIncompleteUpdate(updateGame).catch(() => {});
         if (updateGame && task.status === 'complete') {
@@ -1150,11 +1156,20 @@ async function prepareGameLaunch(id: string, steam?: SteamGameContext): Promise<
     // Changing Store credentials must not race a download using another account.
     assertActivityCompatible(operations.keys(), store.downloads, gameOperation, installQueue.size);
     // The game was installed with another saved Store account: use that one, no sign-in needed.
-    for (const prepare of nativeSocialBeforeAuth) await prepare();
-    resetNativeSocial(); xboxSocial.close();
-    await useSavedAccount(backend.current.binaryPath, game.licenseAccount);
+    authState = { ...authState, running: true };
     accountRefresh.invalidate();
-    await refreshAccount(false, true);
+    emitSnapshot();
+    try {
+      for (const prepare of nativeSocialBeforeAuth) await prepare();
+      resetNativeSocial(); xboxSocial.close();
+      await accountProfile.select(undefined);
+      await licenseProfile?.select(undefined);
+      await useSavedAccount(backend.current.binaryPath, game.licenseAccount);
+    } finally {
+      accountRefresh.invalidate();
+      try { await refreshAccount(false, true); }
+      finally { authState.running = false; emitSnapshot(); }
+    }
     if (authState.stored !== true || authState.username !== game.licenseAccount) throw Error('The saved Store account could not be activated. Sign in to it again.');
   }
   const inspected = await inspectGameDirectory(game.path);
@@ -2046,7 +2061,7 @@ function registerIpc(): void {
   ipcMain.handle('game-activity', async (_event, id: unknown, refresh = false) => {
     if (typeof refresh !== 'boolean') throw Error('Invalid activity request.');
     const target=gameDetailsTarget(id,store.games),market=currentMarket();
-    if (authState.running || authState.stored !== true || !authState.username) return { status: 'signed-out' };
+    if (authState.running || !(authState.player ?? (authState.stored === true ? authState.username : undefined))) return { status: 'signed-out' };
     if (!backend.current.capabilities.gameActivity || !backend.current.binaryPath) return { status: 'unsupported' };
     const account = authState.player ?? authState.username, binary = backend.current.binaryPath;
     gameActivities.select(account, binary);
@@ -2054,15 +2069,15 @@ function registerIpc(): void {
     try{title=target.game?await installedTitleId(target.game.path):await catalog.gameDetails(target.productId!,market).then(details=>details?.xboxTitleId);}
     catch{return {status:'error'};}
     if (!title) return { status: 'unavailable' };
-    if (authState.running || authState.stored !== true || account !== (authState.player ?? authState.username) || binary !== backend.current.binaryPath || !target.game&&market!==currentMarket()) return { status: 'error' };
+    if (authState.running || (!authState.player && authState.stored !== true) || account !== (authState.player ?? authState.username) || binary !== backend.current.binaryPath || !target.game&&market!==currentMarket()) return { status: 'error' };
     const activity = await gameActivities.get(title, refresh);
-    if (authState.running || authState.stored !== true || account !== (authState.player ?? authState.username) || binary !== backend.current.binaryPath || !target.game&&market!==currentMarket()) return { status: 'error' };
+    if (authState.running || (!authState.player && authState.stored !== true) || account !== (authState.player ?? authState.username) || binary !== backend.current.binaryPath || !target.game&&market!==currentMarket()) return { status: 'error' };
     return activity;
   });
   ipcMain.handle('game-achievements', async (_event, id: unknown, refresh = false) => {
     if (typeof refresh !== 'boolean') throw Error('Invalid achievements request.');
     const target=gameDetailsTarget(id,store.games),market=currentMarket();
-    if (authState.running || authState.stored !== true || !authState.username) return { status: 'signed-out' };
+    if (authState.running || !(authState.player ?? (authState.stored === true ? authState.username : undefined))) return { status: 'signed-out' };
     if (!backend.current.capabilities.achievements || !backend.current.binaryPath) return { status: 'unsupported' };
     const account = authState.player ?? authState.username, binary = backend.current.binaryPath;
     gameAchievements.select(account, binary);
@@ -2070,9 +2085,9 @@ function registerIpc(): void {
     try{title=target.game?await installedTitleId(target.game.path):await catalog.gameDetails(target.productId!,market).then(details=>details?.xboxTitleId);}
     catch{return {status:'error'};}
     if (!title) return { status: 'unavailable' };
-    if (authState.running || authState.stored !== true || account !== (authState.player ?? authState.username) || binary !== backend.current.binaryPath || !target.game&&market!==currentMarket()) return { status: 'error' };
+    if (authState.running || (!authState.player && authState.stored !== true) || account !== (authState.player ?? authState.username) || binary !== backend.current.binaryPath || !target.game&&market!==currentMarket()) return { status: 'error' };
     const value = await gameAchievements.get(title, refresh);
-    if (authState.running || authState.stored !== true || account !== (authState.player ?? authState.username) || binary !== backend.current.binaryPath || !target.game&&market!==currentMarket()) return { status: 'error' };
+    if (authState.running || (!authState.player && authState.stored !== true) || account !== (authState.player ?? authState.username) || binary !== backend.current.binaryPath || !target.game&&market!==currentMarket()) return { status: 'error' };
     return value;
   });
   ipcMain.handle('launch-game', (_event, id: string) => launchGame(id));
