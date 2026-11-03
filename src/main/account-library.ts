@@ -170,13 +170,23 @@ export class AccountLibrary {
    * leaving the load to finish for the next launch. Never throws.
    */
   startLaunchAccess(): (waitMs: number) => Promise<AccountLibraryPage['accessByProductId']> {
-    if (!this.identity || (this.cached && this.cached.until > Date.now())) return async () => this.peekAccess();
-    const loaded = this.access().then(result => result.accessByProductId, () => undefined);
+    const identity = this.identity, generation = this.generation;
+    const current = () => identity === this.identity && generation === this.generation;
+    const cachedAccess = () => current() ? this.peekAccess() : {};
+    // A launch reader belongs to this selection, including the signed-out
+    // selection. Never adopt another account's cache after a reset or switch.
+    if (!identity || (this.cached && this.cached.until > Date.now())) return async () => cachedAccess();
+    const loaded = this.access().then(() => undefined, () => undefined);
     return async (waitMs) => {
+      if (!current()) return {};
       let timer: NodeJS.Timeout | undefined;
       const timeout = new Promise<undefined>(resolve => { timer = setTimeout(resolve, waitMs, undefined); });
-      try { return await Promise.race([loaded, timeout]) ?? this.peekAccess(); }
-      finally { clearTimeout(timer); }
+      try {
+        await Promise.race([loaded, timeout]);
+        // Preparation can outlive the cache or a license. Re-evaluate access
+        // now instead of retaining the map returned by the original load.
+        return cachedAccess();
+      } finally { clearTimeout(timer); }
     };
   }
   async access(refresh = false): Promise<{ checkedAt: string; accessByProductId: AccountLibraryPage['accessByProductId'] }> {

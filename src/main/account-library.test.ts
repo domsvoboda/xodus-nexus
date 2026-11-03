@@ -455,3 +455,40 @@ it('does not extend an entitlement that expires between access evaluation and re
  let calls=0;const clock=vi.spyOn(Date,'now').mockImplementation(()=>++calls<3?now:end+1);
  try{await expect(library.storeAccess()).rejects.toThrow('expired');}finally{clock.mockRestore();}
 });
+
+it.each(['cached','pending','signed-out'] as const)('keeps a %s launch-access reader bound to its original Store identity',async mode=>{
+ let finishOld!:(value:string)=>void;
+ const reader=vi.fn(async()=>output([row(B)],'two@example.test'));
+ if(mode==='pending')reader.mockImplementationOnce(()=>new Promise<string>(resolve=>{finishOld=resolve;}));
+ else if(mode==='cached')reader.mockResolvedValueOnce(output([row(A)]));
+ const library=new AccountLibrary(async ids=>ids.map(product),reader);
+ if(mode!=='signed-out')library.select('one@example.test','/backend','US');
+ if(mode==='cached')await library.access();
+ const oldLaunch=library.startLaunchAccess();
+ const pending=mode==='pending'?oldLaunch(1_000):undefined;
+ library.select('two@example.test','/backend','US');await library.access();
+ if(mode==='pending')finishOld(output([row(A)]));
+ if(pending)expect(await pending).toEqual({});
+ expect(await oldLaunch(0)).toEqual({});
+ expect(await library.startLaunchAccess()(0)).toEqual({[B]:'owned'});
+});
+
+it.each(['backend','market','reset','same-name-reauth'] as const)('invalidates a captured launch-access reader after %s without suppressing the current identity',async change=>{
+ let fresh=false;
+ const library=new AccountLibrary(async ids=>ids.map(product),async(_binary,market)=>output([row(fresh?B:A)],'one@example.test',market));
+ library.select('one@example.test','/backend','US');await library.access();const oldLaunch=library.startLaunchAccess();
+ expect(await oldLaunch(0)).toEqual({[A]:'owned'});fresh=true;
+ if(change==='backend')library.select('one@example.test','/replacement-backend','US');
+ else if(change==='market')library.select('one@example.test','/backend','CZ');
+ else if(change==='reset')library.reset();
+ else {library.select('two@example.test','/backend','US');library.select('one@example.test','/backend','US');}
+ await library.access();expect(await oldLaunch(0)).toEqual({});expect(await library.startLaunchAccess()(0)).toEqual({[B]:'owned'});
+});
+
+it.each(['cache-ttl','license-expiry'] as const)('rechecks %s when a launch retains an already-resolved access reader',async expiry=>{
+ const now=Date.now(),endDate=new Date(now+1_000).toISOString();
+ const library=new AccountLibrary(async ids=>ids.map(product),async()=>output([row(A,expiry==='license-expiry'?{endDate}:{})]));
+ library.select('one@example.test','/backend','US');const read=library.startLaunchAccess();expect(await read(1_000)).toEqual({[A]:'owned'});
+ const clock=vi.spyOn(Date,'now').mockReturnValue(now+(expiry==='cache-ttl'?300_001:1_001));
+ try {expect(await read(0)).toEqual({});}finally{clock.mockRestore();}
+});
