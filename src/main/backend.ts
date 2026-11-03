@@ -94,7 +94,7 @@ export class BackendManager {
         const profileHelp = await run(binaryPath, ['profile', '--help']);
         capabilities.licenseProfile = profileHelp.code === 0 && /(?:^|\s)--license(?:\s|$)/m.test(profileHelp.output);
         const saved = await run(binaryPath, ['saved-accounts', '--help']);
-        capabilities.savedAccounts = saved.code === 0;
+        capabilities.savedAccounts = saved.code === 0 && /(?:^|\s)--enable(?:\s|$)/m.test(saved.output);
       }
       return capabilities.login && capabilities.streaming ? capabilities : null;
     } catch (error) { if (error instanceof BackendPrerequisiteError) throw error; return null; }

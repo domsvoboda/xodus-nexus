@@ -1,4 +1,9 @@
 {
+  "auth.sign_out_unknown_help": "Signs out active accounts and removes device registration. Saved Store accounts may remain available.",
+  "auth.active_signed_out_unknown": "Active accounts signed out. Refresh account status to check saved Store accounts.",
+  "auth.manage_multiple": "Manage multiple accounts",
+  "auth.hide_management": "Hide account management",
+  "auth.active_player": "Xbox player: {{name}}",
   "auth.store_signed_out": "Store signed out",
   "auth.store_account": "Store account",
   "auth.change_player_account": "Change player account",

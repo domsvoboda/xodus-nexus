@@ -40,19 +40,22 @@ async function capture(window) {
   await ready(window,'.sidebar nav button');
   await evaluate(window,()=>[...document.querySelectorAll('.sidebar-bottom button')].find(button=>button.textContent.trim()==='Settings').click());
   await ready(window,'.account-card');
-  for(const [width,height] of [[1280,800],[800,600]])for(const playerOnly of [false,true]) {
+  for(const [width,height] of [[1280,800],[800,600]])for(const state of ['single','enabled','collapsed-player']) {
     window.setContentSize(width,height);
     const fixture=structuredClone(snapshot);
     Object.assign(fixture.backend.capabilities,{playerAccount:true,savedAccounts:true,licenseProfile:true});
-    fixture.auth={running:false,stored:!playerOnly,username:playerOnly?undefined:'shared.store@example.test',player:'personal.player@example.test',gamertag:'PersonalPlayer',saved:['shared.store@example.test','purchased.games@example.test'],note:playerOnly?'No Microsoft Store account is signed in.':'Synthetic Store licensing account with a separate Xbox player.'};
+    fixture.settings.multiAccountEnabled=state==='enabled';
+    fixture.auth=state==='single'?{running:false,stored:true,username:'single.account@example.test',gamertag:'SinglePlayer',saved:[],savedAccountsEnabled:false,note:'Sign-in saved on this device.'}:{running:false,stored:true,username:'shared.store@example.test',player:'personal.player@example.test',gamertag:'PersonalPlayer',saved:['shared.store@example.test','purchased.games@example.test'],savedAccountsEnabled:true,note:'Synthetic Store licensing account with a separate Xbox player.'};
     window.webContents.send('snapshot',fixture);await settle(window);
     await evaluate(window,()=>document.querySelector('.account-card').scrollIntoView({block:'start'}));await settle(window);
     const bounds=await evaluate(window,()=>({viewport:[innerWidth,innerHeight],documentWidth:document.documentElement.scrollWidth,language:document.documentElement.lang,cards:[...document.querySelectorAll('.account-card')].map(card=>({text:card.textContent,box:(()=>{const r=card.getBoundingClientRect();return {left:r.left,right:r.right,top:r.top,bottom:r.bottom};})()}))}));
-    if(bounds.documentWidth>width||bounds.language!=='en'||bounds.cards.length!==2||bounds.cards.some(card=>card.box.left<0||card.box.right>width))throw Error('Account UI bounds/language failed: '+JSON.stringify(bounds));
-    if(!bounds.cards[1].text.includes('personal.player@example.test')||!bounds.cards[0].text.includes('purchased.games@example.test'))throw Error('Independent synthetic identities missing');
-    const state=playerOnly?'player-only':'dual';
+    if(bounds.documentWidth>width||bounds.language!=='en'||bounds.cards.length!==(state==='enabled'?2:1)||bounds.cards.some(card=>card.box.left<0||card.box.right>width))throw Error('Account UI bounds/language failed: '+JSON.stringify(bounds));
+    if(state==='enabled'&&(!bounds.cards[1].text.includes('personal.player@example.test')||!bounds.cards[0].text.includes('purchased.games@example.test')))throw Error('Independent synthetic identities missing');
+    if(state!=='enabled'&&bounds.cards[0].text.includes('purchased.games@example.test'))throw Error('Saved Store list visible before opt-in');
+    if(state==='single'&&!bounds.cards[0].text.includes('Manage multiple accounts'))throw Error('Missing minimal opt-in action');
+    if(state==='collapsed-player'&&!bounds.cards[0].text.includes('Xbox player: personal.player@example.test'))throw Error('Collapsed player identity missing');
     await fs.writeFile(path.join(output,`accounts-${state}-${width}x${height}.png`),(await window.webContents.capturePage()).toPNG());
-    if(bounds.cards[1].box.bottom>height) {
+    if(state==='enabled'&&bounds.cards[1].box.bottom>height) {
       await evaluate(window,()=>document.querySelectorAll('.account-card')[1].scrollIntoView({block:'center'}));await settle(window);
       await fs.writeFile(path.join(output,`accounts-${state}-player-${width}x${height}.png`),(await window.webContents.capturePage()).toPNG());
     }

@@ -44,6 +44,7 @@ const h = vi.hoisted(() => ({
   launchEnvironments: [] as NodeJS.ProcessEnv[],
   launchArguments: [] as string[][],
   backendRefreshes: 0, runtimeRefreshes: 0,
+  retentionEnables:0, retentionEnabled:false, retentionFailure:false,
   accountRequests: 0, accountPlayer: undefined as string | undefined,
   trayCreated: vi.fn(), trayDestroyed: vi.fn(),
   prefixLocales: [] as (string | undefined)[],
@@ -51,6 +52,10 @@ const h = vi.hoisted(() => ({
   libraryRows: [] as any[],
   accountReads: [] as ((result: { code: number; output: string }) => void)[],
   posters: vi.fn(async (ids: string[]) => new Map(ids.map(id => [id, `https://store-images.s-microsoft.com/${id}`]))),
+}));
+vi.mock('./saved-accounts.js',async original=>({...(await original<typeof import('./saved-accounts.js')>()),
+ enableSavedAccounts:async()=>{h.retentionEnables++;if(h.retentionFailure)throw Error('Account retention could not be verified.');h.retentionEnabled=true;},
+ listSavedAccounts:async()=>({accounts:h.retentionEnabled?['sample@example.test']:[],active:'sample@example.test',enabled:h.retentionEnabled}),
 }));
 vi.mock('./launcher-tray-desktop.js',()=>({desktopTrayAvailable:()=>true}));
 vi.mock('electron', () => ({
@@ -182,6 +187,23 @@ it('saves shader cache limits through real IPC without refreshing components or 
   expect(snapshot().downloads).toEqual(downloads);expect(snapshot().games).toEqual(library);
   for(const value of [0,-1,'bad',2048])await expect(ipc('update-settings',{shaderCacheLimitGiB:value})).rejects.toThrow('Shader cache limit');
   expect(snapshot().settings.shaderCacheLimitGiB).toBe(8.5);expect([h.backendRefreshes,h.runtimeRefreshes]).toEqual(refreshes);
+});
+
+it('opts into retention before persisting presentation and hides it without changing credentials',async()=>{
+ const prior=h.backend.capabilities.savedAccounts;h.backend.capabilities.savedAccounts=true;
+ try{
+  expect(snapshot().settings.multiAccountEnabled).toBe(false);
+  h.retentionFailure=true;await expect(ipc('update-settings',{multiAccountEnabled:true})).rejects.toThrow('could not be verified');
+  expect(snapshot().settings.multiAccountEnabled).toBe(false);
+  h.retentionFailure=false;await ipc('update-settings',{multiAccountEnabled:true});
+  expect(snapshot().settings.multiAccountEnabled).toBe(true);expect(snapshot().auth.savedAccountsEnabled).toBe(true);
+  const beforeReset=h.retentionEnables;h.retentionEnabled=false;await ipc('account-refresh');
+  expect(snapshot().settings.multiAccountEnabled).toBe(true);expect(snapshot().auth.savedAccountsEnabled).toBe(false);
+  await ipc('update-settings',{multiAccountEnabled:true});expect(h.retentionEnables).toBe(beforeReset+1);expect(snapshot().auth.savedAccountsEnabled).toBe(true);
+  const enabled=h.retentionEnables,reads=h.accountRequests,auth=snapshot().auth;
+  await ipc('update-settings',{multiAccountEnabled:false});
+  expect(h.retentionEnables).toBe(enabled);expect(h.accountRequests).toBe(reads);expect(snapshot().auth).toEqual(auth);expect(h.retentionEnabled).toBe(true);
+ } finally {h.retentionFailure=false;h.backend.capabilities.savedAccounts=prior;}
 });
 
 it('saves ordinary launcher preferences without re-probing components or reading the account', async () => {

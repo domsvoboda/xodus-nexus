@@ -68,7 +68,7 @@ import { acceptSteamHandoff, captureSteamLaunchEnvironment, offerSteamHandoff, s
   type SteamHandoff, type SteamLaunchEnvironment, type SteamLaunchLease } from './steam-launch-context.js';
 import { loadShortcutIcon } from './shortcut-icon.js';
 import { AccountProfile } from './account-profile.js';
-import { forgetSavedAccount, listSavedAccounts, useSavedAccount, validAccountName } from './saved-accounts.js';
+import { enableSavedAccounts, forgetSavedAccount, listSavedAccounts, useSavedAccount, validAccountName } from './saved-accounts.js';
 import { AccountRefresh, readAccount } from './account-refresh.js';
 import { AccountLibrary } from './account-library.js';
 import { RecentPcGamePass } from './gamepass-recent.js';
@@ -261,6 +261,7 @@ let shortcuts: GameShortcuts;
 let accountProfile: AccountProfile;
 let licenseProfile: AccountProfile | undefined;
 let savedAccounts: string[] = [];
+let savedAccountsEnabled: boolean | undefined;
 let preparingLaunch = false;
 let preparingInstall = false;
 let preparingContent = false;
@@ -366,7 +367,7 @@ function snapshot(): AppSnapshot {
     downloads: structuredClone(store.downloads.map(task => downloadCancellations.has(task.id)
       ? { ...task, cancelling: true, canPause: false, phase: 'Cancelling download and checking files…' } : task)),
     settings: structuredClone(store.settings),
-    auth: structuredClone({ ...authState, gamertag: accountProfile?.value?.gamertag, avatarDataUrl: accountProfile?.value?.avatarDataUrl, saved: savedAccounts, licenseAvatarDataUrl: authState.player ? licenseProfile?.value?.avatarDataUrl : undefined, subscription: (authState.player ? licenseProfile : accountProfile)?.value?.subscription }),
+    auth: structuredClone({ ...authState, gamertag: accountProfile?.value?.gamertag, avatarDataUrl: accountProfile?.value?.avatarDataUrl, saved: savedAccounts, savedAccountsEnabled, licenseAvatarDataUrl: authState.player ? licenseProfile?.value?.avatarDataUrl : undefined, subscription: (authState.player ? licenseProfile : accountProfile)?.value?.subscription }),
     launcherUpdate: structuredClone(launcherUpdater.state),
     gameUpdates: structuredClone(gameUpdates),
     overlayShortcut:overlayShortcut?.current,
@@ -563,9 +564,10 @@ async function refreshAccount(emit = true, afterAuth = false): Promise<AuthStatu
       status.capabilities.achievements ? status.binaryPath : undefined);
     await accountProfile?.select(authState.player ?? (authState.stored === true ? authState.username : undefined),
       status.capabilities.profile ? status.binaryPath : undefined, emit);
-    const saved = status.capabilities.savedAccounts && status.binaryPath ? (await listSavedAccounts(status.binaryPath).catch(() => null))?.accounts ?? [] : [];
+    const saved = status.capabilities.savedAccounts && status.binaryPath ? await listSavedAccounts(status.binaryPath).catch(() => null) : null;
     if (authState !== selectedAuth) return;
-    savedAccounts = saved;
+    savedAccounts = saved?.accounts ?? [];
+    savedAccountsEnabled = saved?.enabled;
     await licenseProfile?.select(authState.stored === true && authState.player ? authState.username : undefined,
       status.capabilities.licenseProfile ? status.binaryPath : undefined, emit);
   }, () => key === accountRefreshKey() && (!authState.running || afterAuth));
@@ -722,7 +724,7 @@ function requestAuth(command: 'login' | 'logout', player = false): Promise<void>
 }
 
 /** Reserve the auth job before any asynchronous preparation or credential mutation. */
-function requestSavedAccount(action: 'use' | 'forget', name: unknown): Promise<void> {
+function requestSavedAccount(action: 'use' | 'forget' | 'enable', name: unknown): Promise<void> {
   ensureIdle();
   const binary = backend.current.binaryPath;
   if (typeof name !== 'string' || !binary || !backend.current.capabilities.savedAccounts) return Promise.reject(Error('Saved accounts are not available.'));
@@ -740,7 +742,8 @@ function requestSavedAccount(action: 'use' | 'forget', name: unknown): Promise<v
       await accountProfile.select(undefined);
       await licenseProfile?.select(undefined);
       if (shutdownStarted) throw Error('The launcher is closing.');
-      if (action === 'use') await useSavedAccount(binary, name);
+      if (action === 'enable') await enableSavedAccounts(binary);
+      else if (action === 'use') await useSavedAccount(binary, name);
       else await forgetSavedAccount(binary, name);
     } finally {
       accountRefresh.invalidate();
@@ -2197,9 +2200,11 @@ function registerIpc(): void {
     if (typeof patch.externalXodusRoot === 'string') allowed.externalXodusRoot = patch.externalXodusRoot.trim() ? path.resolve(patch.externalXodusRoot) : '';
     if (typeof patch.runtimeRoot === 'string') allowed.runtimeRoot = path.resolve(patch.runtimeRoot);
     if (typeof patch.verboseLogs === 'boolean') allowed.verboseLogs = patch.verboseLogs;
+    if (patch.multiAccountEnabled !== undefined) {if(typeof patch.multiAccountEnabled !== 'boolean')throw Error('Invalid account-management setting.');allowed.multiAccountEnabled=patch.multiAccountEnabled;}
     if (patch.closeToTray !== undefined) {if(typeof patch.closeToTray !== 'boolean')throw Error('Invalid close-to-tray setting.');allowed.closeToTray=patch.closeToTray;}
     if (typeof patch.firstRunCompleted === 'boolean') allowed.firstRunCompleted = patch.firstRunCompleted;
     const previous = store.settings;
+    if (allowed.multiAccountEnabled === true && (previous.multiAccountEnabled !== true || savedAccountsEnabled !== true)) await requestSavedAccount('enable', '');
     const settings = await store.setSettings(allowed);
     if(patch.closeToTray!==undefined){
       if(!launcherTray.configure(settings.closeToTray===true)){

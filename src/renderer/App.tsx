@@ -964,6 +964,14 @@ export function SettingsPage({ data, toast }: { data: AppSnapshot; toast: (value
   const [form, setForm] = useState<Settings>(data.settings);
   const previousSettings = useRef(data.settings);
   const [busy, setBusy] = useState<string>();
+  const [accountManagement, setAccountManagement] = useState(data.settings.multiAccountEnabled === true);
+  useEffect(() => setAccountManagement(data.settings.multiAccountEnabled === true), [data.settings.multiAccountEnabled]);
+  const managingAccounts = accountManagement && data.auth.savedAccountsEnabled === true;
+  async function showAccountManagement(enabled: boolean) {
+    await window.launcher.updateSettings({ multiAccountEnabled: enabled });
+    setAccountManagement(enabled);
+    setForm(current => ({ ...current, multiAccountEnabled: enabled }));
+  }
   const [logs, setLogs] = useState<string[]>([]);
   const [runtimeLogs, setRuntimeLogs] = useState<string[]>([]);
   useEffect(() => {
@@ -1030,11 +1038,13 @@ export function SettingsPage({ data, toast }: { data: AppSnapshot; toast: (value
     </section>
 
     <section className="settings-card account-card">
-      <div className="settings-heading"><AccountAvatar auth={data.auth} large license={Boolean(data.auth.player)} /><div><span className="overline">{caps.playerAccount ? ui("auth.store_account") : ui("ui.microsoft_account_90f90f6")}</span><h2>{(data.auth.player ? data.auth.username : data.auth.gamertag ?? data.auth.username) ?? (data.auth.stored === false ? ui("ui.not_signed_in_491fc91") : ui("ui.account_status_unavailable_3b97a47"))}</h2><p>{data.auth.stored === true ? ui("ui.credentials_stored_by_xodus_bca3867") : ui("ui.authentication_uses_the_original_xodus_webview_cf2dcb9")}</p></div><span className={`status-label ${data.auth.stored === true ? 'ready' : data.auth.stored === false ? 'off' : 'unknown'}`}><StatusDot tone={data.auth.stored === true ? 'green' : data.auth.stored === false ? 'red' : 'amber'} />{data.auth.stored === true ? ui("ui.stored_1afc73e") : data.auth.stored === false ? ui("ui.signed_out_db8436b") : ui("ui.unknown_2375999")}</span></div>
+      <div className="settings-heading"><AccountAvatar auth={data.auth} large license={Boolean(data.auth.player)} /><div><span className="overline">{(managingAccounts || data.auth.player) && caps.playerAccount ? ui("auth.store_account") : ui("ui.microsoft_account_90f90f6")}</span><h2>{(data.auth.player ? data.auth.username : data.auth.gamertag ?? data.auth.username) ?? (data.auth.stored === false ? ui("ui.not_signed_in_491fc91") : ui("ui.account_status_unavailable_3b97a47"))}</h2><p>{data.auth.stored === true ? ui("ui.credentials_stored_by_xodus_bca3867") : ui("ui.authentication_uses_the_original_xodus_webview_cf2dcb9")}</p></div><span className={`status-label ${data.auth.stored === true ? 'ready' : data.auth.stored === false ? 'off' : 'unknown'}`}><StatusDot tone={data.auth.stored === true ? 'green' : data.auth.stored === false ? 'red' : 'amber'} />{data.auth.stored === true ? ui("ui.stored_1afc73e") : data.auth.stored === false ? ui("ui.signed_out_db8436b") : ui("ui.unknown_2375999")}</span></div>
       <div className="account-note"><CircleAlert /><span>{uiText(data.auth.note)}</span></div>
       <KeyringSetup compact disabled={data.auth.running} />
-      <div className="button-row"><button className="primary" disabled={!caps.login || data.auth.running} onClick={() => invoke('login', () => window.launcher.login(), ui("ui.xodus_sign_in_completed_8240737"))}>{data.auth.running ? <LoaderCircle className="spin" /> : <LogIn />}{data.auth.stored ? ui("ui.sign_in_again_51fbe1d") : ui("ui.sign_in_with_xodus_252572f")}</button><button className="secondary" disabled={!caps.logout || data.auth.running || (data.auth.stored === false && !data.auth.player)} title={caps.savedAccounts ? ui("auth.sign_out_active_help") : ui("ui.remove_saved_sign_in_credentials_and_local_devic_6485324")} onClick={() => invoke('logout', () => window.launcher.logout(), caps.savedAccounts ? ui("auth.active_signed_out") : ui("ui.saved_sign_in_credentials_and_local_device_regis_c9738bd"))}>{data.auth.player ? ui("auth.sign_out_all") : ui("ui.sign_out_48f0d3d")}</button><button className="secondary" disabled={!caps.account || data.auth.running} onClick={() => invoke('account', () => window.launcher.refreshAccount())}><RefreshCw />{ui("ui.refresh_status_442c4b8")}</button></div>
-      {(data.auth.saved?.length ?? 0) > 0 && caps.savedAccounts ? <div className="saved-accounts" role="list" aria-label={ui("ui.saved_store_accounts_a1c4e72")}>
+      <div className="button-row"><button className="primary" disabled={!caps.login || data.auth.running} onClick={() => invoke('login', () => window.launcher.login(), ui("ui.xodus_sign_in_completed_8240737"))}>{data.auth.running ? <LoaderCircle className="spin" /> : <LogIn />}{data.auth.stored ? ui("ui.sign_in_again_51fbe1d") : ui("ui.sign_in_with_xodus_252572f")}</button><button className="secondary" disabled={!caps.logout || data.auth.running || (data.auth.stored === false && !data.auth.player)} title={data.auth.savedAccountsEnabled === true ? ui("auth.sign_out_active_help") : caps.savedAccounts && data.auth.savedAccountsEnabled === undefined ? ui("auth.sign_out_unknown_help") : ui("ui.remove_saved_sign_in_credentials_and_local_devic_6485324")} onClick={() => invoke('logout', () => window.launcher.logout(), data.auth.savedAccountsEnabled === true ? ui("auth.active_signed_out") : caps.savedAccounts && data.auth.savedAccountsEnabled === undefined ? ui("auth.active_signed_out_unknown") : ui("ui.saved_sign_in_credentials_and_local_device_regis_c9738bd"))}>{data.auth.player ? ui("auth.sign_out_all") : ui("ui.sign_out_48f0d3d")}</button><button className="secondary" disabled={!caps.account || data.auth.running} onClick={() => invoke('account', () => window.launcher.refreshAccount())}><RefreshCw />{ui("ui.refresh_status_442c4b8")}</button></div>
+      {!managingAccounts && data.auth.player ? <p className="fine-print account-player-summary">{ui("auth.active_player", { name: data.auth.player })}</p> : null}
+      {managingAccounts || caps.savedAccounts ? <div className="button-row"><button className="secondary" aria-expanded={managingAccounts} disabled={Boolean(busy) || data.auth.running} onClick={() => invoke('account-management', () => showAccountManagement(!managingAccounts))}>{managingAccounts ? ui("auth.hide_management") : ui("auth.manage_multiple")}</button></div> : null}
+      {managingAccounts && (data.auth.saved?.length ?? 0) > 0 && caps.savedAccounts ? <div className="saved-accounts" role="list" aria-label={ui("ui.saved_store_accounts_a1c4e72")}>
       <span className="overline">{ui("ui.saved_store_accounts_a1c4e72")}</span>
       {data.auth.saved!.map(name => <div key={name} className="button-row" role="listitem">
         <strong title={name}>{name}</strong>
@@ -1047,7 +1057,7 @@ export function SettingsPage({ data, toast }: { data: AppSnapshot; toast: (value
       <PasskeySignInNotice />
     </section>
 
-    {caps.playerAccount && (data.auth.stored === true || data.auth.player) ? <section className="settings-card account-card">
+    {managingAccounts && caps.playerAccount && (data.auth.stored === true || data.auth.player) ? <section className="settings-card account-card">
       <div className="settings-heading">{data.auth.player ? <AccountAvatar auth={data.auth} large /> : null}<div><span className="overline">{ui("ui.xbox_player_account_021c236")}</span><h2>{data.auth.player ? (data.auth.gamertag ? `${data.auth.gamertag} · ${data.auth.player}` : data.auth.player) : ui("ui.no_separate_player_account_44980b5")}</h2><p>{ui("ui.player_account_help_1d6f365")}</p></div></div>
       <div className="button-row">
         <button className="primary" disabled={data.auth.running} onClick={() => invoke('login-player', () => window.launcher.login(true), ui("ui.player_account_signed_in_ac36aa2"))}>{data.auth.player ? ui("auth.change_player_account") : ui("ui.sign_in_player_account_c15aa58")}</button>

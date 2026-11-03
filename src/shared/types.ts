@@ -46,6 +46,7 @@ export interface AuthStatus {
   avatarDataUrl?: string;
   licenseAvatarDataUrl?: string;
   saved?: string[];
+  savedAccountsEnabled?: boolean;
   subscription?: GamePassSubscription;
   lastResult?: 'success' | 'failed';
   lastAction?: 'login' | 'logout';
@@ -200,6 +201,7 @@ export interface GameOperation {
 
 export interface Settings {
   closeToTray?: boolean;
+  multiAccountEnabled?: boolean;
   interfaceLanguage?: string;
   installRoot: string;
   market: string;
