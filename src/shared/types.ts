@@ -73,6 +73,7 @@ export interface BackendStatus {
   prerequisites: { git: boolean; cargo: boolean; rustc: boolean; protoc: boolean };
   blockReason?: string;
   linuxRunPatch?: string;
+  recipeSha256?: string;
   version?: string;
   delivery?: 'release' | 'local';
   releaseAvailable?: boolean;

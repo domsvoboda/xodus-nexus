@@ -1,3 +1,6 @@
+import { ComponentUpdateAdmission, type ComponentUpdateOwner } from './component-update-admission.js';
+import { ComponentUpdates, type PreparedComponentUpdate } from './component-updates.js';
+import { prepareManagedComponentUpdates, prepareLegacyComponentUpdate } from './component-update-runtime.js';
 import {gameRuntimeReadiness} from './game-runtime-readiness.js';
 import {approvedRuntimeSettings,type RuntimeSettingsRequest} from './runtime-settings.js';
 import {gameRuntimeSelection} from '../shared/runtime-selection.js';
@@ -256,6 +259,8 @@ const keyringSupport = new KeyringSupport(process.env, undefined, process.platfo
 });
 const demoArtwork = new Map<string, DemoArtwork>();
 let launcherUpdater: LauncherUpdater;
+let componentUpdates: ComponentUpdates | undefined;
+const componentUpdateAdmission = new ComponentUpdateAdmission(() => ensureActivityIdle());
 const gameUpdates: Record<string, GameUpdate> = {};
 let checkingGameUpdates = false;
 let gameUpdateController: AbortController | undefined;
@@ -373,6 +378,7 @@ function snapshot(): AppSnapshot {
     settings: structuredClone(store.settings),
     auth: structuredClone({ ...authState, gamertag: accountProfile?.value?.gamertag, avatarDataUrl: accountProfile?.value?.avatarDataUrl, saved: savedAccounts, savedAccountsEnabled, licenseAvatarDataUrl: authState.player ? licenseProfile?.value?.avatarDataUrl : undefined, subscription: (authState.player ? licenseProfile : accountProfile)?.value?.subscription }),
     launcherUpdate: structuredClone(launcherUpdater.state),
+    componentUpdates: componentUpdates?.current,
     gameUpdates: structuredClone(gameUpdates),
     overlayShortcut:overlayShortcut?.current,
     downloadProgressSupported: Boolean(backend.current.capabilities.streamingProgressJson),
@@ -482,22 +488,69 @@ function requireBackend(command: keyof typeof backend.current.capabilities): str
   return status.binaryPath;
 }
 
-function ensureIdle(mode?: 'install' | 'launch' | 'remove', ownRuntimeReservation?: RuntimeSettingsReservation): void {
-  if (ownRuntimeReservation) runtime.assertSettingsReservation(ownRuntimeReservation);
-  if (offlinePermissionChanging) throw Error('Wait for the offline-permission change to finish.');
-  if (keyringSupport.busy) throw Error('Wait for the wallet operation to finish.');
-  if (authState.running || authJob) throw Error('A sign-in operation is already in progress.');
-  if (shutdownStarted) throw Error('The launcher is closing.');
-  if (downloadCancellations.size) throw Error('A download is being cancelled. Wait for its cleanup to finish.');
-  if (preparingInstall || preparingContent) throw new Error('An installation is being prepared.');
-  if (preparingLaunch) throw new Error('A game launch is already being prepared.');
-  if (finalizingGame) throw new Error('The previous game is still finishing cleanup.');
-  if (launcherUpdater?.state.updating) throw new Error('The launcher is being updated.');
-  if (checkingGameUpdates) throw new Error('A game update check is in progress.');
-  if (gameRemovalInProgress) throw new Error('A game is being removed. Wait for it to finish.');
-  assertActivityCompatible(operations.keys(), store.downloads, gameOperation, installQueue.size, mode);
-  if (backend.current.updating) throw new Error('The backend is being updated.');
-  if ((runtime.current.updating || runtime.busy) && !ownRuntimeReservation) throw new Error('Xodus Runtime is being installed.');
+function ensureIdle(mode?: 'install' | 'launch' | 'remove', ownRuntimeReservation?: RuntimeSettingsReservation, owner?: ComponentUpdateOwner): void {
+    componentUpdateAdmission.assertAllowed(owner);
+    ensureActivityIdle(mode, ownRuntimeReservation);
+}
+
+function ensureActivityIdle(mode?: 'install' | 'launch' | 'remove', ownRuntimeReservation?: RuntimeSettingsReservation): void {
+    if (ownRuntimeReservation)
+        runtime.assertSettingsReservation(ownRuntimeReservation);
+    if (offlinePermissionChanging)
+        throw Error('Wait for the offline-permission change to finish.');
+    if (keyringSupport.busy)
+        throw Error('Wait for the wallet operation to finish.');
+    if (authState.running || authJob)
+        throw Error('A sign-in operation is already in progress.');
+    if (shutdownStarted)
+        throw Error('The launcher is closing.');
+    if (downloadCancellations.size)
+        throw Error('A download is being cancelled. Wait for its cleanup to finish.');
+    if (preparingInstall || preparingContent)
+        throw new Error('An installation is being prepared.');
+    if (preparingLaunch)
+        throw new Error('A game launch is already being prepared.');
+    if (finalizingGame)
+        throw new Error('The previous game is still finishing cleanup.');
+    if (launcherUpdater?.busy)
+        throw new Error('The launcher is being updated.');
+    if (checkingGameUpdates)
+        throw new Error('A game update check is in progress.');
+    if (gameRemovalInProgress)
+        throw new Error('A game is being removed. Wait for it to finish.');
+    assertActivityCompatible(operations.keys(), store.downloads, gameOperation, installQueue.size, mode);
+    if (backend.current.updating)
+        throw new Error('The backend is being updated.');
+    if ((runtime.current.updating || runtime.busy) && !ownRuntimeReservation)
+        throw new Error('Xodus Runtime is being installed.');
+}
+
+function componentActivityRunning(): boolean {
+    return offlinePermissionChanging || keyringSupport.busy || authState.running || Boolean(authJob) || shutdownStarted ||
+        downloadCancellations.size > 0 || preparingInstall || preparingContent || preparingLaunch || finalizingGame ||
+        checkingGameUpdates || gameRemovalInProgress || operations.size > 0 || installQueue.size > 0 || Boolean(gameOperation && ['preparing', 'running', 'stopping'].includes(gameOperation.status)) ||
+        store.downloads.some(task => task.status === 'queued' || task.status === 'running');
+}
+
+async function prepareComponentUpdates(): Promise<PreparedComponentUpdate[]> {
+    const backendPlan = await backend.prepareComponentUpdate(emitSnapshot);
+    const backendApply = backendPlan.apply, backendReconcile = backendPlan.reconcile;
+    backendPlan.apply = async (owner) => {
+        const result = await backendApply(owner);
+        try {
+            await refreshAccount(false);
+            emitSnapshot();
+        }
+        catch (error) {
+            throw Object.assign(new Error('Backend activated, but refreshing the account failed.', { cause: error }), { committed: result.committed });
+        }
+        return result;
+    };
+    if (backendReconcile)
+        backendPlan.reconcile = async (owner) => { const result = await backendReconcile(owner); await refreshAccount(false); emitSnapshot(); return result; };
+    return [backendPlan, ...await prepareManagedComponentUpdates(runtime, emitSnapshot),
+        await prepareLegacyComponentUpdate(runtime, { configuredWine: () => store.settings.winePath, persistSelection: async (winePath) => { await store.setSettings({ winePath }); }, refreshAccount: async () => { await refreshAccount(false); } }, emitSnapshot),
+        await launcherUpdater.prepareComponentUpdate()];
 }
 
 async function syncManagedWinePath(): Promise<void> {
@@ -1067,6 +1120,7 @@ function cancellableDownload(id: string): DownloadTask {
 }
 
 function cancelDownload(id: string, mode: 'keep' | 'delete-files' = 'keep'): Promise<void> {
+  componentUpdateAdmission.assertAllowed();
   if (mode !== 'keep' && mode !== 'delete-files') return Promise.reject(Error('Invalid cancellation option.'));
   if (downloadCancellations.has(id)) return Promise.reject(Error('This download is already being cancelled.'));
   if (shutdownStarted || preparingInstall || preparingContent || gameRemovalInProgress) return Promise.reject(Error('Wait for the current operation to finish.'));
@@ -1657,6 +1711,10 @@ async function loadDemoCovers(): Promise<void> {
 // the live Microsoft Store catalog so demo screenshots show real data.
 function registerDemoIpc(catalogMarket: () => string): void {
   ipcMain.handle('get-snapshot', () => snapshot());
+  ipcMain.handle('component-updates-status', () => ({running:false}));
+  ipcMain.handle('component-updates-plan', () => {throw Error('Component updates are unavailable in demo mode.');});
+  ipcMain.handle('component-updates-apply', () => {throw Error('Component updates are unavailable in demo mode.');});
+  ipcMain.handle('component-updates-retry', () => {throw Error('Component updates are unavailable in demo mode.');});
   ipcMain.handle('backend-refresh', () => snapshot().backend);
   ipcMain.handle('backend-check-update', () => snapshot().backend);
   ipcMain.handle('backend-update', () => {});
@@ -1823,8 +1881,12 @@ function registerIpc(): void {
   ipcMain.handle('get-snapshot', () => snapshot());
   ipcMain.handle('backend-refresh', async () => { const value = await backend.refresh(); await refreshAccount(false); emitSnapshot(); return value; });
   ipcMain.handle('backend-check-update', async () => { const value = await backend.checkUpdate(); emitSnapshot(); return value; });
-  ipcMain.handle('backend-update', async () => { await backend.update(emitSnapshot); await refreshAccount(); });
-  ipcMain.handle('backend-rebuild', async () => { await backend.rebuild(emitSnapshot); await refreshAccount(); });
+  ipcMain.handle('component-updates-status', () => componentUpdates!.current);
+  ipcMain.handle('component-updates-plan', () => componentUpdates!.plan());
+  ipcMain.handle('component-updates-apply', (_event,id:unknown) => {if(typeof id!=='string'||id.length>80)throw Error('Invalid update plan.');return componentUpdates!.apply(id);});
+  ipcMain.handle('component-updates-retry', (_event,id:unknown,item:unknown) => {if(typeof id!=='string'||id.length>80||typeof item!=='string'||item.length>80)throw Error('Invalid update retry.');return componentUpdates!.apply(id,item);});
+  ipcMain.handle('backend-update', async () => { ensureIdle(); await backend.update(emitSnapshot); await refreshAccount(); });
+  ipcMain.handle('backend-rebuild', async () => { ensureIdle(); await backend.rebuild(emitSnapshot); await refreshAccount(); });
   ipcMain.handle('runtime-refresh', async () => {
     ensureIdle();
     return runtime.refreshSelection(emitSnapshot, async () => {
@@ -1893,8 +1955,11 @@ function registerIpc(): void {
   ipcMain.handle('check-launcher-update', async () => { await checkLauncherUpdate(); emitSnapshot(); return snapshot().launcherUpdate; });
   ipcMain.handle('install-launcher-update', async () => { ensureIdle(); if (authState.running) throw new Error('Wait for sign-in to finish.'); await launcherUpdater.install(); });
   ipcMain.handle('rollback-launcher-update', async () => { ensureIdle(); await launcherUpdater.rollback(); });
-  ipcMain.handle('restart-launcher', () => {
+  ipcMain.handle('restart-launcher', async () => {
     ensureIdle();
+    const owner=componentUpdateAdmission.reserve();
+    try {
+    await launcherUpdater.assertRestartReady();
     if (!launcherUpdater.state.restartRequired || !launcherUpdater.targetPath) throw new Error('No launcher restart is pending.');
     // AppImage sets these again for the new mount. Do not reuse the old mount.
     for (const key of ['APPIMAGE', 'APPDIR', 'ARGV0', 'OWD']) delete process.env[key];
@@ -1904,6 +1969,7 @@ function registerIpc(): void {
       else process.env[key] = externalEnvironment[key];
     }
     app.relaunch({ execPath: launcherUpdater.targetPath, args: [] }); app.quit();
+    } finally {componentUpdateAdmission.release(owner);}
   });
   ipcMain.handle('stop-game-update-check', () => stopGameUpdateCheck());
   ipcMain.handle('check-game-updates', (_event, id?: string) => {
@@ -2005,12 +2071,14 @@ function registerIpc(): void {
   });
   ipcMain.handle('cancel-download', async (_event, id: string, mode?: 'keep' | 'delete-files') => cancelDownload(id, mode));
   ipcMain.handle('pause-download', (_event, id: string) => {
+    componentUpdateAdmission.assertAllowed();
     if (downloadCancellations.has(id)) throw Error('This download is being cancelled.');
     const control = downloadControls.get(id);
     if (!control) throw new Error('Pause requires a backend with download controls. Update the Nexus backend in Settings.');
     return control(true);
   });
   ipcMain.handle('resume-download', (_event, id: string) => {
+    componentUpdateAdmission.assertAllowed();
     if (downloadCancellations.has(id)) throw Error('This download is being cancelled.');
     const control = downloadControls.get(id);
     if (!control) {
@@ -2036,8 +2104,8 @@ function registerIpc(): void {
     }
     return control(false);
   });
-  ipcMain.handle('remove-download', async (_event, id: string) => { if (downloadCancellations.size) throw Error('Wait for cancellation cleanup.'); await store.removeDownload(id); emitSnapshot(); });
-  ipcMain.handle('clear-finished-downloads', async () => { if (downloadCancellations.size) throw Error('Wait for cancellation cleanup.'); await store.clearFinishedDownloads(); emitSnapshot(); });
+  ipcMain.handle('remove-download', async (_event, id: string) => { componentUpdateAdmission.assertAllowed(); if (downloadCancellations.size) throw Error('Wait for cancellation cleanup.'); await store.removeDownload(id); emitSnapshot(); });
+  ipcMain.handle('clear-finished-downloads', async () => { componentUpdateAdmission.assertAllowed(); if (downloadCancellations.size) throw Error('Wait for cancellation cleanup.'); await store.clearFinishedDownloads(); emitSnapshot(); });
   ipcMain.handle('import-game', (_event, input?: string) => importGame(input));
   ipcMain.handle('game-locales', async (_event, id: string) => {
     const game = store.games.find((entry) => entry.id === id);
@@ -2356,6 +2424,7 @@ async function prepareFirstRunBackend(): Promise<void> {
       backend.current.updating || !backend.current.releaseAvailable || !backend.current.updateAvailable) return;
   try {
     // Uses the same checksum-verified managed installer and activity guards as Settings.
+    ensureIdle();
     await backend.update(emitSnapshot);
     if (!shutdownStarted && mainWindow?.isVisible()) void refreshInitialAccount().catch(() => {});
   } catch { /* Keep the installer error visible for an explicit retry in the wizard. */ }
@@ -2591,10 +2660,11 @@ app.whenReady().then(async () => {
     }
   }
   await store.patchGames(inspectedGames);
-  runtime = new RuntimeManager(store.settings.runtimeRoot, emitLog, () => preparingLaunch || finalizingGame || downloadCancellations.size > 0 || operations.size > 0 || installQueue.size > 0 || preparingInstall || backend?.current.updating === true, fetch, process.arch, () => ({launcher:app.getVersion(),backend:backend?.current.version??'0.0.0'}), emitSnapshot);
-  backend = new BackendManager(app.getPath('userData'), store.settings.externalXodusRoot, emitLog, () => keyringSupport.busy || downloadCancellations.size > 0 || operations.size > 0 || installQueue.size > 0 || preparingInstall || runtime?.busy === true);
+  runtime = new RuntimeManager(store.settings.runtimeRoot, emitLog, () => componentActivityRunning() || backend?.current.updating === true || launcherUpdater?.busy === true, fetch, process.arch, () => ({launcher:app.getVersion(),backend:backend?.current.version??'0.0.0'}), emitSnapshot);
+  backend = new BackendManager(app.getPath('userData'), store.settings.externalXodusRoot, emitLog, () => componentActivityRunning() || runtime?.busy === true || launcherUpdater?.busy === true);
   await backend.refresh();
   await runtime.refresh();
+  componentUpdates = new ComponentUpdates(componentUpdateAdmission,prepareComponentUpdates,emitSnapshot,()=>launcherUpdater.state.restartRequired===true,()=>JSON.stringify([store.settings.runtimeRoot,authState.username??null,authState.player??null,authState.stored??null,store.settings.market]));
   if (!demoMode) {
     // Reachability of Microsoft's sign-in hosts, kept current for the header
     // and consulted before a launch so offline play starts without waiting

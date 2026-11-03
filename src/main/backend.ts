@@ -18,7 +18,7 @@ const EMPTY_CAPABILITIES: BackendCapabilities = {
 
 interface ManagedPointer { commit: string; binaryPath: string; builtAt: string; linuxRunPatch?: string; recipeSha256?: string; version?: string; delivery?: 'release' | 'local' }
 type BackendMutation = 'update' | 'rebuild';
-export type BackendMutationTarget = Readonly<Pick<ManagedPointer, 'commit' | 'binaryPath' | 'version' | 'delivery'>>;
+export type BackendMutationTarget = Readonly<Pick<ManagedPointer, 'commit' | 'binaryPath' | 'version' | 'delivery' | 'linuxRunPatch' | 'recipeSha256'>>;
 /** Publication of current.json is a commit boundary, not a durability claim. */
 export class BackendMutationError extends Error {
   readonly target?: BackendMutationTarget;
@@ -233,18 +233,56 @@ export class BackendManager {
       item: { ...item, targetVersion: artifact.manifest.version, state: newer ? 'ready' : 'unchanged', reason: undefined },
       isCurrent: same,
       apply: async () => {
-        try { await this.performUpdate(onStatus, artifact, same); target = { commit: this.status.commit!, binaryPath: this.status.binaryPath!, version: this.status.version, delivery: this.status.delivery }; }
+        try { await this.performUpdate(onStatus, artifact, same); target = { commit: this.status.commit!, binaryPath: this.status.binaryPath!, version: this.status.version, delivery: this.status.delivery, linuxRunPatch: this.status.linuxRunPatch, recipeSha256: this.status.recipeSha256 }; }
         catch (error) { if (error instanceof BackendMutationError && error.committed) target = error.target; throw error; }
         return { committed: true };
       },
       reconcile: async () => {
         const pointer = await this.readPointer();
-        if (!target || pointer?.binaryPath !== target.binaryPath || pointer.commit !== target.commit || pointer.version !== target.version) throw Error('The activated backend changed. Check again.');
+        if (!target || !pointer || (['binaryPath','commit','version','delivery','linuxRunPatch','recipeSha256'] as const).some(key=>pointer[key]!==target![key]) || !await this.matchesPreparedPayload(target,artifact)) throw Object.assign(Error('The activated backend changed. Check again.'), {retryable:false});
         const refreshed = await this.refresh();
         if (!refreshed.available || refreshed.source !== 'managed' || refreshed.binaryPath !== target.binaryPath) throw Error('The activated backend is not available.');
         onStatus(); return {};
       },
     };
+  }
+
+  private async matchesPreparedPayload(target: BackendMutationTarget, artifact: BackendArtifact): Promise<boolean> {
+      try {
+          const directory = path.dirname(target.binaryPath), relative = path.relative(this.managedRoot, directory);
+          if (relative.startsWith('..') || path.isAbsolute(relative))
+              return false;
+          let parent = this.managedRoot;
+          for (const part of ['', ...relative.split(path.sep)]) {
+              parent = path.join(parent, part);
+              if (!(await fs.lstat(parent)).isDirectory())
+                  return false;
+          }
+          for (const [name, expected] of Object.entries(artifact.manifest.files)) {
+              const filename = path.join(directory, name), before = await fs.lstat(filename);
+              if (!before.isFile())
+                  return false;
+              const file = await fs.open(filename, constants.O_RDONLY | constants.O_NOFOLLOW);
+              try {
+                  const opened = await file.stat();
+                  if (opened.dev !== before.dev || opened.ino !== before.ino)
+                      return false;
+                  const digest = createHash('sha256');
+                  for await (const bytes of file.createReadStream({ autoClose: false }))
+                      digest.update(bytes);
+                  const after = await file.stat(), named = await fs.lstat(filename);
+                  if (digest.digest('hex') !== expected || before.dev !== after.dev || before.ino !== after.ino || before.mode !== after.mode || before.size !== after.size || before.mtimeMs !== after.mtimeMs || before.ctimeMs !== after.ctimeMs || named.dev !== before.dev || named.ino !== before.ino || named.ctimeMs !== before.ctimeMs)
+                      return false;
+              }
+              finally {
+                  await file.close();
+              }
+          }
+          return true;
+      }
+      catch {
+          return false;
+      }
   }
 
   async update(onStatus: () => void): Promise<void> { return this.performUpdate(onStatus); }
@@ -267,7 +305,7 @@ export class BackendManager {
       // release checks, which may replace the manager's discovery cache.
       if (expectedCurrent && !await expectedCurrent()) throw Error('The installed backend changed. Check again.');
       const artifact = selected ?? await discoverBackend(this.fetcher);
-      this.artifact = artifact;
+      if (!selected) this.artifact = artifact;
       const binaryPath = await installBackend(this.managedRoot, artifact, this.fetcher, async cli => {
         const caps = await this.validate(cli);
         if (!caps?.account || !caps.run || !caps.streaming || !caps.login || !caps.logout || !caps.download || !caps.externalAuth || !caps.packageSelection) {
@@ -283,7 +321,7 @@ export class BackendManager {
       const manifest = artifact.manifest;
       const pointer: ManagedPointer = { commit: manifest.commit, binaryPath, builtAt: new Date().toISOString(),
         linuxRunPatch: manifest.compatibility, recipeSha256: manifest.recipeSha256, version: manifest.version, delivery: 'release' };
-      target = { commit: pointer.commit, binaryPath, version: pointer.version, delivery: pointer.delivery };
+      target = { commit: pointer.commit, binaryPath, version: pointer.version, delivery: pointer.delivery, linuxRunPatch: pointer.linuxRunPatch, recipeSha256: pointer.recipeSha256 };
       const temporary = `${this.pointerFile}.${randomUUID()}.tmp`;
       try {
         await fs.writeFile(temporary, JSON.stringify(pointer, null, 2));
@@ -304,7 +342,8 @@ export class BackendManager {
       }
       reconciled = true;
       // A concurrent read-only check may have discovered a newer release.
-      const latest = this.artifact?.manifest;
+      const cached = this.artifact?.manifest;
+      const latest = cached && compareVersions(cached.version, manifest.version) >= 0 ? cached : manifest;
       Object.assign(this.status, { releaseAvailable: Boolean(latest), releaseVersion: latest?.version,
         updateAvailable: Boolean(latest && compareVersions(manifest.version, latest.version) < 0), phase: 'Backend is ready.' });
     } catch (error) {
@@ -388,7 +427,7 @@ export class BackendManager {
       await fs.writeFile(path.join(releaseDir, 'metadata.json'), JSON.stringify({ commit, builtAt: new Date().toISOString(), capabilities, linuxRunPatch: LINUX_RUN_PATCH }, null, 2));
       const pointer: ManagedPointer = { commit, binaryPath: managedCli, builtAt: new Date().toISOString(), linuxRunPatch: LINUX_RUN_PATCH,
         recipeSha256: backendRecipeSha256, version: backendLock.version, delivery: 'local' };
-      targetIdentity = { commit, binaryPath: managedCli, version: pointer.version, delivery: pointer.delivery };
+      targetIdentity = { commit, binaryPath: managedCli, version: pointer.version, delivery: pointer.delivery, linuxRunPatch: pointer.linuxRunPatch, recipeSha256: pointer.recipeSha256 };
       const pointerTmp = `${this.pointerFile}.${randomUUID()}.tmp`;
       try {
         await fs.writeFile(pointerTmp, JSON.stringify(pointer, null, 2));

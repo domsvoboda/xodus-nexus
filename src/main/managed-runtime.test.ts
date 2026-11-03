@@ -344,3 +344,18 @@ it('checks updates within the recorded prerelease channel even when a stable rel
  vi.mocked(f.fetcher).mockImplementation(async(input,init)=>String(input).includes('/releases?')?new Response(JSON.stringify([stable.release,f.remote.release])):original(input,init));
  const checked=await f.manager.checkManagedRuntimeUpdate('nexus-cachyos','prerelease');expect(checked.available?.sourceCommit).toBe(f.remote.commit);await expect(f.manager.checkManagedRuntimeUpdate('nexus-cachyos','stable')).rejects.toThrow('channel changed');await f.preserved();
 });
+
+it('does not fall back past a newest candidate with an unknown channel flag',async()=>{
+ const f=await fixture();await f.install();f.setRemote(await payload(f.root,'b'));const malformed=await payload(f.root,'c');delete (malformed.release as {prerelease?:boolean}).prerelease;malformed.release.published_at='2026-11-05T00:00:00Z';const original=vi.mocked(f.fetcher).getMockImplementation()!;
+ vi.mocked(f.fetcher).mockImplementation(async(input,init)=>String(input).includes('/releases?')?new Response(JSON.stringify([malformed.release,f.remote.release])):original(input,init));
+ const checked=await f.manager.checkManagedRuntimeUpdate('nexus-cachyos','prerelease');expect(checked.available).toBeUndefined();expect(checked.error).toContain('prerelease');await f.preserved();
+});
+
+it('installs an exact issued target after a later check selects another release, never the replacement',async()=>{
+ const f=await fixture();await f.install();f.setRemote(await payload(f.root,'b'));await f.manager.checkManagedRuntimeUpdate('nexus-cachyos','prerelease');const prepared=f.manager.managedTarget('nexus-cachyos')!;
+ const selectedCommit=prepared.commit,old=f.remote;f.setRemote(await payload(f.root,'c'));await f.manager.checkManagedRuntime('nexus-cachyos',policy);expect(f.manager.managedTarget('nexus-cachyos')!.commit).not.toBe(selectedCommit);
+ const latest=f.remote,original=vi.mocked(f.fetcher).getMockImplementation()!;
+ vi.mocked(f.fetcher).mockImplementation(async(input,init)=>{const name=String(input).split('/').pop()!;const bytes=old.assets.get(name);return bytes?new Response(bytes):original(input,init);});
+ const forged=await f.manager.installPreparedManagedRuntime('nexus-cachyos',{...prepared},policy);expect(forged.committed).toBe(false);expect(forged.success).toBe(false);
+ const result=await f.manager.installPreparedManagedRuntime('nexus-cachyos',prepared,policy);expect(result.success).toBe(true);expect(f.manager.current.managedFamilies!.find(row=>row.id==='nexus-cachyos')!.installed!.sourceCommit).toBe(selectedCommit);expect(latest.commit).not.toBe(selectedCommit);await f.preserved();
+});

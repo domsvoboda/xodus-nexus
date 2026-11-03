@@ -1,3 +1,4 @@
+import {prepareLegacyComponentUpdate} from './component-update-runtime.js';
 import {afterEach,expect,it,vi} from 'vitest';
 import {promises as fs} from 'node:fs';import path from 'node:path';import os from 'node:os';import {createHash} from 'node:crypto';import {execFile} from 'node:child_process';import {promisify} from 'node:util';
 import {RuntimeManager} from './runtime';import * as processModule from './process';
@@ -102,4 +103,23 @@ it('requires genuine fixed-repository installed-tag channel evidence for an old 
 });
 it('supports an ordinary old managed install through an installed tag reference when release target is a branch',async()=>{
  const f=await fixture(),original=vi.mocked(f.fetcher).getMockImplementation()!;f.old.release.target_commitish='main';vi.mocked(f.fetcher).mockImplementation(async(input,init)=>String(input).includes('/git/ref/tags/')?new Response(JSON.stringify({object:{type:'commit',sha:f.old.commit}})):original(input,init));expect((await f.manager.prepareLegacyManagedUpdate(f.callbacks.configuredWine())).target?.channel).toBe('stable');await f.preserved();
+});
+
+it.each(['before','after'] as const)('releases the legacy lease and reports %s notification failure truthfully',async phase=>{
+ const f=await fixture(),{target}=await f.manager.prepareLegacyManagedUpdate(f.callbacks.configuredWine());let calls=0;
+ const result=await f.manager.applyLegacyManagedUpdate(target,f.callbacks,()=>{calls++;if(phase==='before'||calls===2)throw Error('notification fixture');});
+ expect(result.success).toBe(false);expect(result.committed).toBe(phase==='after');expect(f.manager.busy).toBe(false);
+ const pointer=await fs.readFile(f.pointerFile,'utf8');if(phase==='before')expect(pointer).toBe(f.oldPointer);else expect(JSON.parse(pointer).candidateSha256).toBe(target!.candidateSha256);await f.preserved();
+});
+it('reports staging cleanup failure after activation without claiming the old runtime stayed active',async()=>{
+ const f=await fixture(),{target}=await f.manager.prepareLegacyManagedUpdate(f.callbacks.configuredWine()),original=fs.rm;let injected=false;
+ vi.spyOn(fs,'rm').mockImplementation(async(file,options)=>{if(!injected&&String(file).startsWith(path.join(f.runtimeRoot,'.staging-'))){injected=true;throw Error('staging fixture');}return original(file,options);});
+ const result=await f.manager.applyLegacyManagedUpdate(target,f.callbacks);expect(result.success).toBe(false);expect(result.committed).toBe(true);expect(result.error).toContain('staging');expect(f.manager.busy).toBe(false);expect(JSON.parse(await fs.readFile(f.pointerFile,'utf8')).candidateSha256).toBe(target!.candidateSha256);await f.preserved();
+});
+
+it('executes the Update all legacy adapter with the exact target and preserves existing progress',async()=>{
+ const f=await fixture(),entry=await prepareLegacyComponentUpdate(f.manager,f.callbacks,()=>{});expect(entry.item.state).toBe('ready');expect(await entry.isCurrent()).toBe(true);expect((await entry.apply({identity:Symbol()})).committed).toBe(true);expect(f.callbacks.persistSelection).toHaveBeenCalledOnce();await f.preserved();
+});
+it('keeps legacy postcommit failures manual instead of redownloading on targeted retry',async()=>{
+ const f=await fixture(),entry=await prepareLegacyComponentUpdate(f.manager,f.callbacks,()=>{});f.callbacks.persistSelection.mockRejectedValue(Error('settings fault'));await expect(entry.apply({identity:Symbol()})).rejects.toMatchObject({committed:true,retryable:false});expect(entry.reconcile).toBeUndefined();await f.preserved();
 });

@@ -67,8 +67,19 @@ type AfterInstall = ((winePath: string) => Promise<void>) | {
   persistSelection(winePath:string):Promise<void>;
   refreshAccount?():Promise<void>;
 };
-export interface LegacyRuntimeUpdateTarget {readonly kind:'legacy-standard';readonly root:string;readonly installed:Readonly<LegacyManagedState>;readonly version:string;readonly candidateSha256:string;readonly channel:'stable'|'prerelease';}
-export interface LegacyRuntimeUpdateCallbacks {configuredWine():string;persistSelection(wine:string):Promise<void>;refreshAccount?():Promise<void>;}
+export interface LegacyRuntimeUpdateTarget {
+    readonly kind: 'legacy-standard';
+    readonly root: string;
+    readonly installed: Readonly<LegacyManagedState>;
+    readonly version: string;
+    readonly candidateSha256: string;
+    readonly channel: 'stable' | 'prerelease';
+}
+export interface LegacyRuntimeUpdateCallbacks {
+    configuredWine(): string;
+    persistSelection(wine: string): Promise<void>;
+    refreshAccount?(): Promise<void>;
+}
 interface Activation {winePath:string;pointer:PointerCommitResult;}
 
 export class RuntimeManager {
@@ -104,7 +115,23 @@ export class RuntimeManager {
   checkManagedRuntime(family:unknown,options:unknown,onStatus:()=>void=()=>{}) {return this.managedCheck(family,options,onStatus);}
   private async managedCheck(family:unknown,options:unknown,onStatus:()=>void) {try{onStatus();return await this.managed.check(family,options);}finally{onStatus();}}
   async installManagedRuntime(family:unknown,expected:unknown,options:unknown,onStatus:()=>void=()=>{}) {const result=await this.managed.install(family,expected,options);try{await this.refreshFamilies();onStatus();}catch(error){return {...result,success:false,error:[result.error,'Updating runtime status failed: '+(error as Error).message].filter(Boolean).join(' ')};}return result;}
-  async checkManagedRuntimeUpdate(family:unknown,channel:unknown,onStatus:()=>void=()=>{}) {try{return await this.managed.checkInstalledUpdate(family,channel);}finally{onStatus();}}
+  async installPreparedManagedRuntime(family: unknown, target: Readonly<VerifiedManagedFamilyRelease>, options: unknown, onStatus: () => void = () => { }) {
+      const result = await this.managed.install(family, target.candidateSha256, options, target);
+      try {
+          await this.refreshFamilies();
+          onStatus();
+      }
+      catch (error) {
+          return { ...result, success: false, error: [result.error, 'Updating runtime status failed: ' + (error instanceof Error ? error.message : String(error))].filter(Boolean).join(' ') };
+      }
+      return result;
+  }
+  async checkManagedRuntimeUpdate(family: unknown, channel: unknown, onStatus: () => void = () => { }) { try {
+      return await this.managed.checkInstalledUpdate(family, channel);
+  }
+  finally {
+      onStatus();
+  } }
   managedTarget(family:unknown){return this.managed.target(family);}
   get busy(): boolean { return this.mutation !== undefined; }
   setRoot(root: string): void {
@@ -344,62 +371,150 @@ export class RuntimeManager {
     }
   }
 
-  private async activateVerifiedPayload(candidateRoot:string,candidateWine:string,commit:string,onStatus:()=>void,releaseName:string,root:string,precommit?:()=>Promise<void>,releaseIdentity?:{sourceRepository:string;candidateSha256:string;prerelease:boolean}):Promise<Activation>{
+  private async activateVerifiedPayload(candidateRoot: string, candidateWine: string, commit: string, onStatus: () => void, releaseName: string, root: string, precommit?: () => Promise<void>, releaseIdentity?: {
+      sourceRepository: string;
+      candidateSha256: string;
+      prerelease: boolean;
+  }): Promise<Activation> {
       await this.validateWine(candidateWine, 'The downloaded Wine failed --version validation.');
-      if (this.isOperationActive()) throw new Error('Another operation started during installation; the runtime was not activated.');
-
+      if (this.isOperationActive())
+          throw new Error('Another operation started during installation; the runtime was not activated.');
       const releases = path.join(root, 'releases');
       const releaseRoot = path.join(releases, releaseName);
       await fs.mkdir(releases, { recursive: true });
       let existing = true;
-      try { await fs.lstat(releaseRoot); }
+      try {
+          await fs.lstat(releaseRoot);
+      }
       catch (error) {
-        if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error;
-        existing = false;
+          if ((error as NodeJS.ErrnoException).code !== 'ENOENT')
+              throw error;
+          existing = false;
       }
       if (existing) {
-        if (!await runtimePayloadMatches(candidateRoot, releaseRoot)) {
-          throw new Error('The existing runtime folder does not match the verified download. It was left unchanged.');
-        }
-      } else {
-        await fs.rename(candidateRoot, releaseRoot);
+          if (!await runtimePayloadMatches(candidateRoot, releaseRoot)) {
+              throw new Error('The existing runtime folder does not match the verified download. It was left unchanged.');
+          }
+      }
+      else {
+          await fs.rename(candidateRoot, releaseRoot);
       }
       const winePath = path.join(releaseRoot, path.relative(candidateRoot, candidateWine));
-      if (!await this.validateWine(winePath)) throw new Error('The activated runtime is not executable.');
+      if (!await this.validateWine(winePath))
+          throw new Error('The activated runtime is not executable.');
       await precommit?.();
-      const pointer: RuntimePointer = { name: releaseName, winePath, commit, installedAt: new Date().toISOString(),...releaseIdentity };
+      const pointer: RuntimePointer = { name: releaseName, winePath, commit, installedAt: new Date().toISOString(), ...releaseIdentity };
       await fs.mkdir(root, { recursive: true });
-      const pointerResult=await commitRuntimePointer(root,pointer);
+      const pointerResult = await commitRuntimePointer(root, pointer);
       Object.assign(this.status, { installed: true, name: releaseName, winePath, commit, phase: 'Runtime activated; finishing setup.', error: undefined });
-      try{this.emitLog('runtime', `Active Wine: ${winePath}`);}catch(error){pointerResult.errors.push(new Error('Runtime activation log failed: '+(error as Error).message,{cause:error}));}
-      return {winePath,pointer:pointerResult};
+      try {
+          this.emitLog('runtime', `Active Wine: ${winePath}`);
+      }
+      catch (error) {
+          pointerResult.errors.push(new Error('Runtime activation log failed: ' + (error as Error).message, { cause: error }));
+      }
+      return { winePath, pointer: pointerResult };
   }
-  async prepareLegacyManagedUpdate(configuredWine:string):Promise<{target?:Readonly<LegacyRuntimeUpdateTarget>;skipReason?:string}>{
-    const root=this.status.runtimeRoot,installed=await legacyManagedState(root,configuredWine);
-    if(!installed)return{skipReason:'The default runtime is custom, unavailable or not a supported managed Standard installation.'};
-    const channel=installed.channel??await this.managed.legacyInstalledChannel(installed.releaseTag,installed.name,installed.sourceCommit);
-    if(!channel)return{skipReason:'The installed Standard runtime release channel could not be verified.'};
-    const checked=await this.managed.check('nexus',{allowCachyos:false,allowPrerelease:channel==='prerelease'},channel);const release=this.managed.target('nexus');
-    if(!release||checked.error)return{skipReason:checked.error??'No trusted Standard runtime update is available.'};
-    if(root!==this.status.runtimeRoot||(await legacyManagedState(root,configuredWine))?.identity!==installed.identity)return{skipReason:'The installed Standard runtime changed while checking.'};
-    if(installed.candidateSha256===release.candidateSha256)return{skipReason:'The managed Standard runtime is already current.'};
-    const target=Object.freeze({kind:'legacy-standard' as const,root,installed,version:release.tag,candidateSha256:release.candidateSha256,channel});this.legacyTargets.set(target,release);return{target};
+  async prepareLegacyManagedUpdate(configuredWine: string): Promise<{
+      target?: Readonly<LegacyRuntimeUpdateTarget>;
+      skipReason?: string;
+      state: 'ready' | 'unchanged' | 'skipped' | 'deferred';
+      currentVersion?: string;
+  }> {
+      const root = this.status.runtimeRoot, installed = await legacyManagedState(root, configuredWine);
+      if (!installed)
+          return { state: 'skipped', skipReason: 'The default runtime is custom, unavailable or not a supported managed Standard installation.' };
+      const currentVersion = installed.releaseTag;
+      const channel = installed.channel ?? await this.managed.legacyInstalledChannel(installed.releaseTag, installed.name, installed.sourceCommit);
+      if (!channel)
+          return { state: 'skipped', currentVersion, skipReason: 'The installed Standard runtime release channel could not be verified.' };
+      const checked = await this.managed.check('nexus', { allowCachyos: false, allowPrerelease: channel === 'prerelease' }, channel);
+      const release = this.managed.target('nexus');
+      if (!release || checked.error)
+          return { state: 'deferred', currentVersion, skipReason: checked.error ?? 'No trusted Standard runtime update is available.' };
+      if (checked.available?.candidateSha256 !== release.candidateSha256 || release.prerelease !== (channel === 'prerelease'))
+          return { state: 'deferred', currentVersion, skipReason: 'Runtime release selection changed while checking. Check again.' };
+      if (root !== this.status.runtimeRoot || (await legacyManagedState(root, configuredWine))?.identity !== installed.identity)
+          return { state: 'deferred', currentVersion, skipReason: 'The installed Standard runtime changed while checking.' };
+      if (installed.candidateSha256 === release.candidateSha256)
+          return { state: 'unchanged', currentVersion, skipReason: 'The managed Standard runtime is already current.' };
+      const target = Object.freeze({ kind: 'legacy-standard' as const, root, installed, version: release.tag, candidateSha256: release.candidateSha256, channel });
+      this.legacyTargets.set(target, release);
+      return { target, state: 'ready', currentVersion };
   }
-  async applyLegacyManagedUpdate(value:unknown,callbacks:LegacyRuntimeUpdateCallbacks,onStatus:()=>void=()=>{}):Promise<{success:boolean;committed:boolean;durability:'confirmed'|'unknown'|'not-committed';error?:string}>{
-    if(!value||typeof value!=='object'||!this.legacyTargets.has(value as LegacyRuntimeUpdateTarget))throw Error('Unknown prepared Standard runtime update');
-    const target=value as LegacyRuntimeUpdateTarget,release=this.legacyTargets.get(target)!,lease=this.reserveMutation();let staging:string|undefined,activation:Activation|undefined,operationError:unknown;
-    let outcome:{success:boolean;committed:boolean;durability:'confirmed'|'unknown'|'not-committed';error?:string}={success:false,committed:false,durability:'not-committed'};
-    try{
-      const unchanged=async()=>{if(this.status.runtimeRoot!==target.root||lease.root!==target.root||(await legacyManagedState(target.root,callbacks.configuredWine()))?.identity!==target.installed.identity||callbacks.configuredWine()!==target.installed.configuredWine)throw Error('The selected Standard runtime changed; check updates again.');};await unchanged();
-      staging=path.join(lease.root,'.staging-'+randomUUID());await fs.mkdir(staging,{mode:0o700});const archive=path.join(staging,release.assets.binary.name);
-      await this.managed.downloadPreparedRelease(release,lease.root,archive,{allowCachyos:false,allowPrerelease:target.channel==='prerelease'});const extracted=path.join(staging,'payload');await fs.mkdir(extracted,{mode:0o700});const name=nexusReleaseName(release.assets.binary.name),payload=await materializeRuntimeArchive(archive,extracted,name);
-      const file=path.join(payload,'XODUS_NEXUS_PATCH.json'),stat=await fs.lstat(file);if(!stat.isFile()||stat.size>2*1024*1024)throw Error('Missing bounded runtime source metadata');const metadata=JSON.parse(await fs.readFile(file,'utf8'));
-      if(metadata.schema!==1||!isDeepStrictEqual(metadata.sourceGraph,release.sourceGraph)||metadata.requiresBackendVersion!==release.requiresBackendVersion||metadata.requiresLauncherVersion!==release.requiresLauncherVersion||typeof metadata.sourceLockSha256!=='string'||!/^[a-f0-9]{64}$/.test(metadata.sourceLockSha256))throw Error('Standard runtime payload does not match its verified release identity');
-      const wine=await runtimeLoader(payload,this.hostArch,false);await unchanged();activation=await this.activateVerifiedPayload(payload,wine,release.tag,onStatus,name,lease.root,unchanged,{sourceRepository:release.repository,candidateSha256:release.candidateSha256,prerelease:target.channel==='prerelease'});
-      await this.completeActivation(activation,{persistSelection:callbacks.persistSelection,refreshAccount:callbacks.refreshAccount});outcome={success:true,committed:true,durability:activation.pointer.durability};
-    }catch(error){operationError=error;this.status.error=(error as Error).message;if(!activation)this.status.phase='Active runtime selection was not changed.';outcome={success:false,committed:Boolean(activation),durability:activation?.pointer.durability??'not-committed',error:this.status.error};}
-    finally{if(staging)await fs.rm(staging,{recursive:true,force:true}).catch(()=>{});lease.release();try{this.notifyCompletion(onStatus,operationError,Boolean(activation));}catch(error){this.status.error=(error as Error).message;outcome={...outcome,success:false,error:this.status.error};}}
-    return outcome;
+
+  async applyLegacyManagedUpdate(value: unknown, callbacks: LegacyRuntimeUpdateCallbacks, onStatus: () => void = () => { }): Promise<{
+      success: boolean;
+      committed: boolean;
+      durability: 'confirmed' | 'unknown' | 'not-committed';
+      error?: string;
+  }> {
+      if (!value || typeof value !== 'object' || !this.legacyTargets.has(value as LegacyRuntimeUpdateTarget))
+          throw Error('Unknown prepared Standard runtime update');
+      const target = value as LegacyRuntimeUpdateTarget, release = this.legacyTargets.get(target)!;
+      const lease = this.reserveMutation();
+      let staging: string | undefined, activation: Activation | undefined, operationError: Error | undefined;
+      let outcome: {
+          success: boolean;
+          committed: boolean;
+          durability: 'confirmed' | 'unknown' | 'not-committed';
+          error?: string;
+      } = { success: false, committed: false, durability: 'not-committed' };
+      const fail = (error: unknown) => {
+          const next = error instanceof Error ? error : new Error(String(error), { cause: error });
+          operationError = operationError ? new AggregateError([operationError, next], operationError.message + ' ' + next.message) : next;
+          this.status.error = operationError.message;
+          this.status.phase = activation ? 'Runtime activated; finishing setup needs attention.' : 'Active runtime selection was not changed.';
+          outcome = { success: false, committed: Boolean(activation), durability: activation?.pointer.durability ?? 'not-committed', error: this.status.error };
+      };
+      try {
+          this.status.phase = 'Checking the selected Standard runtime update.';
+          onStatus();
+          const unchanged = async () => {
+              const configured = callbacks.configuredWine();
+              if (this.status.runtimeRoot !== target.root || lease.root !== target.root || configured !== target.installed.configuredWine || (await legacyManagedState(target.root, configured))?.identity !== target.installed.identity)
+                  throw Error('The selected Standard runtime changed; check updates again.');
+          };
+          await unchanged();
+          staging = path.join(lease.root, '.staging-' + randomUUID());
+          await fs.mkdir(staging, { mode: 0o700 });
+          const archive = path.join(staging, release.assets.binary.name);
+          await this.managed.downloadPreparedRelease(release, lease.root, archive, { allowCachyos: false, allowPrerelease: target.channel === 'prerelease' });
+          const extracted = path.join(staging, 'payload');
+          await fs.mkdir(extracted, { mode: 0o700 });
+          const name = nexusReleaseName(release.assets.binary.name), payload = await materializeRuntimeArchive(archive, extracted, name);
+          const file = path.join(payload, 'XODUS_NEXUS_PATCH.json'), stat = await fs.lstat(file);
+          if (!stat.isFile() || stat.size > 2 * 1024 * 1024)
+              throw Error('Missing bounded runtime source metadata');
+          const metadata = JSON.parse(await fs.readFile(file, 'utf8'));
+          if (metadata.schema !== 1 || !isDeepStrictEqual(metadata.sourceGraph, release.sourceGraph) || metadata.requiresBackendVersion !== release.requiresBackendVersion || metadata.requiresLauncherVersion !== release.requiresLauncherVersion || typeof metadata.sourceLockSha256 !== 'string' || !/^[a-f0-9]{64}$/.test(metadata.sourceLockSha256))
+              throw Error('Standard runtime payload does not match its verified release identity');
+          const wine = await runtimeLoader(payload, this.hostArch, false);
+          await unchanged();
+          activation = await this.activateVerifiedPayload(payload, wine, release.tag, onStatus, name, lease.root, unchanged, { sourceRepository: release.repository, candidateSha256: release.candidateSha256, prerelease: target.channel === 'prerelease' });
+          await this.completeActivation(activation, { persistSelection: callbacks.persistSelection, refreshAccount: callbacks.refreshAccount });
+          outcome = { success: true, committed: true, durability: activation.pointer.durability };
+      }
+      catch (error) {
+          fail(error);
+      }
+      finally {
+          if (staging)
+              try {
+                  await fs.rm(staging, { recursive: true, force: true });
+              }
+              catch (error) {
+                  fail(new Error('Cleaning runtime staging failed.', { cause: error }));
+              }
+          lease.release();
+          try {
+              onStatus();
+          }
+          catch (error) {
+              fail(new Error('Updating runtime status failed.', { cause: error }));
+          }
+      }
+      return outcome;
   }
   private notifyCompletion(onStatus:()=>void,prior:unknown,activated=false):void {
     try{onStatus();}catch(error){

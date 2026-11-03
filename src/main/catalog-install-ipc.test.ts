@@ -20,7 +20,7 @@ function fixture(){
  let granted=true;
  const plan=vi.fn(async()=>({choices:[{supported:true,contentId:'content',kind:'Game',productId:id}]}));
  const run=vi.fn(async()=>{}),prepare=vi.fn(async()=>{});
- const context:any={path,assertStoreOfferAccess,authState:{stored:true,running:false,username:'store'},backend:{current:{binaryPath:'/backend',capabilities:{library:true,packageSelection:true,streamingControls:true}},externalDownloadRunning:async()=>false},
+ const context:any={componentUpdateAdmission:{assertAllowed:vi.fn()},path,assertStoreOfferAccess,authState:{stored:true,running:false,username:'store'},backend:{current:{binaryPath:'/backend',capabilities:{library:true,packageSelection:true,streamingControls:true}},externalDownloadRunning:async()=>false},
   store:{settings:{market:'US',runtimeRoot:'/synthetic/runtime'},games:[],downloads,addDownload:async(task:any)=>{downloads.push(task);},updateDownload:async()=>{},removeDownload:async()=>{}},
   currentMarket:()=> 'US',accountLibrary:{select:vi.fn(),storeAccess:async()=>({account:'store',backend:'/backend',market:'US',configuredMarket:'US',checkedAt:new Date().toISOString(),expiresAt:new Date(Date.now()+60_000).toISOString(),accessByProductId:granted?{[id]:'owned'}:{}})},
   stopGameUpdateCheck:async()=>{},ensureIdle:()=>{},prepareSystemWallet:async()=>{},preparingInstall:false,gameOperation:undefined,requireBackend:()=>'/backend',safeProductId:(value:string)=>value,

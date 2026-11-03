@@ -3,6 +3,7 @@ import { promises as fs } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { createHash } from 'node:crypto';
+import { ComponentUpdateAdmission } from './component-update-admission.js';
 import { LauncherUpdater, launcherCandidate } from './launcher-update.js';
 import { APPIMAGE_ARCH_SUFFIX, ELF_MACHINE, currentArch, type NexusArch } from './arch.js';
 const roots: string[] = [];
@@ -50,7 +51,7 @@ describe('AppImage updater', () => {
     const {root,target,updater}=await fixture();const write=fs.writeFile,rename=fs.rename;
     vi.spyOn(fs,'writeFile').mockImplementation(async(p,data,options)=>{if(String(p).includes('launcher-update.json.'))throw Error('journal failed');return write(p,data,options);});
     vi.spyOn(fs,'rename').mockImplementation(async(a,b)=>{if(String(a).includes('.nexus-backup-'))throw Error('restore failed');return rename(a,b);});
-    await expect(updater.install()).rejects.toMatchObject({committed:true});expect(await fs.readFile(target)).toEqual(image(2));expect(updater.state.updating).toBe(false);
+    await expect(updater.install()).rejects.toMatchObject({committed:true,retryable:false});expect(await fs.readFile(target)).toEqual(image(2));expect(updater.state.updating).toBe(false);
     const backups=(await fs.readdir(root)).filter(name=>name.includes('.nexus-backup-'));expect(backups).toHaveLength(1);expect(await fs.readFile(path.join(root,backups[0]))).toEqual(image(1));
   });
   it('does not remove a consumed journal temporary path after publication', async () => {
@@ -59,7 +60,25 @@ describe('AppImage updater', () => {
   it('rejects concurrent installation before awaited image validation', async () => {
     const {updater}=await fixture();let release!:()=>void;const hold=new Promise<void>(r=>release=r);
     const internal=updater as unknown as {writableImage():Promise<string>};const original=internal.writableImage.bind(updater);vi.spyOn(internal,'writableImage').mockImplementation(async()=>{await hold;return original();});
-    const pending=updater.install();await expect(updater.install()).rejects.toThrow('pending');release();await pending;
+    const pending=updater.install();const admission=new ComponentUpdateAdmission(()=>{if(updater.busy)throw Error('launcher busy');});expect(()=>admission.reserve()).toThrow('busy');await expect(updater.install()).rejects.toThrow('pending');await expect(updater.rollback()).rejects.toThrow('pending');release();await pending;
+  });
+  it('reserves rollback before awaited image validation and excludes installation', async () => {
+    const {updater}=await fixture();await updater.install();let release!:()=>void;const hold=new Promise<void>(r=>release=r);
+    const internal=updater as unknown as {writableImage():Promise<string>};const original=internal.writableImage.bind(updater);vi.spyOn(internal,'writableImage').mockImplementation(async()=>{await hold;return original();});
+    const pending=updater.rollback();const admission=new ComponentUpdateAdmission(()=>{if(updater.busy)throw Error('launcher busy');});expect(()=>admission.reserve()).toThrow('busy');await expect(updater.rollback()).rejects.toThrow('pending');await expect(updater.install()).rejects.toThrow('pending');release();await pending;
+  });
+  it.each(['changed','deleted'])('rejects %s activated bytes during targeted reconciliation',async change=>{
+    const {root,target,fetcher}=await fixture();let updater!:LauncherUpdater;
+    updater=new LauncherUpdater('0.2.2',target,root,()=>{if(updater.state.restartRequired)throw Error('notify after commit');},fetcher);await updater.initialize();const plan=await updater.prepareComponentUpdate();
+    await expect(plan.apply({identity:Symbol()})).rejects.toMatchObject({committed:true});
+    if(change==='changed')await fs.writeFile(target,image(7));else await fs.rm(target);
+    await expect(plan.reconcile!({identity:Symbol()})).rejects.toMatchObject({retryable:false});
+  });
+  it('rejects a checksum changed after plan approval without replacing installed bytes',async()=>{
+    const {root,target,fetcher}=await fixture();let tamper=false;
+    const guarded=(async(input:URL|RequestInfo,options?:RequestInit)=>tamper&&String(input).endsWith('.sha512sum')?new Response('0'.repeat(128)+'  '+release().assets[0].name+'\n'):fetcher(input,options)) as typeof fetch;
+    const updater=new LauncherUpdater('0.2.2',target,root,()=>{},guarded);await updater.initialize();const plan=await updater.prepareComponentUpdate();tamper=true;
+    await expect(plan.apply({identity:Symbol()})).rejects.toMatchObject({committed:false});expect(await fs.readFile(target)).toEqual(image(1));expect(updater.busy).toBe(false);
   });
   it('rejects a changed installed image from an approved component plan', async () => {
     const {updater,target}=await fixture();const plan=await updater.prepareComponentUpdate();expect(plan.item.state).toBe('ready');await fs.writeFile(target,image(7));expect(await plan.isCurrent()).toBe(false);await expect(plan.apply({identity:Symbol()})).rejects.toThrow('changed');expect(await fs.readFile(target)).toEqual(image(7));

@@ -6,7 +6,7 @@ import {expect,it,vi} from 'vitest';
 
 const source=readFileSync(new URL('./index.ts',import.meta.url),'utf8');
 const parsed=ts.createSourceFile('index.ts',source,ts.ScriptTarget.Latest,true);
-const names=new Set(['requireBackend','ensureIdle','offlineDataRoot','assertOfflineScope']);
+const names=new Set(['requireBackend','ensureIdle','ensureActivityIdle','offlineDataRoot','assertOfflineScope']);
 const functions=parsed.statements.filter(node=>ts.isFunctionDeclaration(node)&&node.name&&names.has(node.name.text)).map(node=>node.getText(parsed)).join('\n');
 const start=source.indexOf("  ipcMain.handle('offline-permissions'",source.indexOf('function registerIpc():'));
 const routes=source.slice(start,source.indexOf("  ipcMain.handle('catalog-search'",start));
@@ -18,7 +18,7 @@ function fixture(){
   const store={settings:{runtimeRoot:'/fixture/data/runtimes'},downloads:[]};
   const status={enabled:true,requestSuccess:true};
   const read=vi.fn(async()=>status),change=vi.fn(async()=>status),settle=vi.fn(async(value:unknown)=>value),wallet=vi.fn(async()=>{});
-  const context:any={path,ipcMain:{handle:(name:string,fn:Function)=>handlers.set(name,fn)},authState,backend,store,
+  const context:any={componentUpdateAdmission:{assertAllowed:vi.fn()},path,ipcMain:{handle:(name:string,fn:Function)=>handlers.set(name,fn)},authState,backend,store,
     authJob:undefined,shutdownStarted:false,keyringSupport:{busy:false},downloadCancellations:new Set(),preparingInstall:false,preparingContent:false,preparingLaunch:false,finalizingGame:false,
     launcherUpdater:{state:{updating:false}},checkingGameUpdates:false,gameRemovalInProgress:false,assertActivityCompatible:vi.fn(),operations:new Map(),gameOperation:undefined,installQueue:{size:0},runtime:{current:{updating:false}},
     accountRefresh:{invalidate:vi.fn()},prepareSystemWallet:wallet,offlineLaunchSupported:async()=>true,offlineLicenseCache:async()=>'/fixture/cache',backendRunner:(binary:string)=>binary,readOfflinePermissions:read,changeOfflinePermissions:change,settleOfflinePermissions:settle};
@@ -63,7 +63,7 @@ it('cache recovery keeps its original data root across asynchronous filesystem c
   const helper=parsed.statements.filter(node=>ts.isFunctionDeclaration(node)&&node.name&&['offlineDataRoot','offlineLicenseCache'].includes(node.name.text)).map(node=>node.getText(parsed)).join('\n');
   const check=deferred<boolean>(),store={settings:{runtimeRoot:'/original/runtimes'}};
   const revoke=vi.fn(async()=>{}),ready=vi.fn(async()=>{});
-  const context:any={path,store,backend:{current:{capabilities:{licenseCache:true}}},offlineAccessRevoked:()=>check.promise,revokeOfflineAccess:revoke,assertOfflineAccessReady:ready,licenseCacheDirectory:(root:string)=>path.join(root,'license-cache')};
+  const context:any={componentUpdateAdmission:{assertAllowed:vi.fn()},path,store,backend:{current:{capabilities:{licenseCache:true}}},offlineAccessRevoked:()=>check.promise,revokeOfflineAccess:revoke,assertOfflineAccessReady:ready,licenseCacheDirectory:(root:string)=>path.join(root,'license-cache')};
   runInNewContext(ts.transpileModule(helper+'\nglobalThis.recover=offlineLicenseCache;',{compilerOptions:{target:ts.ScriptTarget.ES2022}}).outputText,context);
   const pending=context.recover();store.settings.runtimeRoot='/different/runtimes';check.resolve(true);
   await expect(pending).resolves.toBe('/original/license-cache');

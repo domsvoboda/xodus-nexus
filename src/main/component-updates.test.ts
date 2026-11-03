@@ -25,6 +25,10 @@ describe('component update coordinator', () => {
   it('retries committed attention by reconciliation only, never reinstallation', async () => {
     const e=entry('a');e.apply=vi.fn(async()=>{throw Object.assign(Error('account refresh'),{committed:true});});e.reconcile=vi.fn(async()=>({})); const {updates}=fixture([e]);const plan=await updates.plan(),first=await updates.apply(plan.id);expect(first.items[0]).toMatchObject({outcome:'committed-needs-attention',retryable:true});const retry=await updates.apply(plan.id,'a');expect(retry.items[0].outcome).toBe('updated');expect(e.apply).toHaveBeenCalledOnce();expect(e.reconcile).toHaveBeenCalledOnce();
   });
+  it('does not offer endless retry for a committed activation requiring manual repair', async () => {
+    const e=entry('a');e.apply=vi.fn(async()=>{throw Object.assign(Error('backup restore failed'),{committed:true,retryable:false});});e.reconcile=vi.fn(async()=>({}));
+    const {updates}=fixture([e]);const plan=await updates.plan(),result=await updates.apply(plan.id);expect(result.items[0]).toMatchObject({committed:true,retryable:false,outcome:'committed-needs-attention'});await expect(updates.apply(plan.id,'a')).rejects.toThrow('cannot');expect(e.reconcile).not.toHaveBeenCalled();
+  });
   it('rechecks activity before child apply and retains the prior committed outcome', async () => {
     const a=entry('a'),b=entry('b');const {updates,idle}=fixture([a,b]);a.apply=vi.fn(async()=>{idle.mockImplementation(()=>{throw Error('closing');});return {committed:true};});const plan=await updates.plan(),r=await updates.apply(plan.id);expect(r.items[0].committed).toBe(true);expect(r.items[1].outcome).toBe('failed-before-commit');expect(b.apply).not.toHaveBeenCalled();
   });

@@ -1,3 +1,5 @@
+import {createHash} from 'node:crypto';
+import os from 'node:os';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { promises as fs } from 'node:fs';
 import path from 'node:path';
@@ -9,7 +11,7 @@ vi.mock('./process.js', () => ({ run: vi.fn(async () => ({ code: 0, output: '' }
 const deferred = <T,>() => { let resolve!: (value: T) => void; const promise = new Promise<T>(r => { resolve = r; }); return { promise, resolve }; };
 const artifact = (version = '99.0.0'): BackendArtifact => ({ repository: 'domsvoboda/nexus-backend', tag: `backend-v${version}`, archiveUrl: 'https://example.invalid/unused', manifest: { version, commit: backendLock.commit, compatibility: backendLock.compatibility, recipeSha256: backendRecipeSha256 } } as BackendArtifact);
 let root: string;
-beforeEach(async () => { vi.resetAllMocks(); root = await fs.mkdtemp('/mnt/data/XodusNexus-work/builds/backend-update-outcomes-'); await fs.mkdir(path.join(root, 'xodus-backends')); vi.mocked(discoverBackend).mockResolvedValue(artifact()); vi.mocked(installBackend).mockResolvedValue(path.join(root, 'selected/xodus-cli')); });
+beforeEach(async () => { vi.resetAllMocks(); root = await fs.mkdtemp(path.join(os.tmpdir(),'backend-update-outcomes-')); await fs.mkdir(path.join(root, 'xodus-backends')); vi.mocked(discoverBackend).mockResolvedValue(artifact()); vi.mocked(installBackend).mockResolvedValue(path.join(root, 'selected/xodus-cli')); });
 afterEach(async () => { await fs.rm(root, { recursive: true, force: true }); });
 function manager() { const result = new BackendManager(root, '', () => {}, () => false); vi.spyOn(result, 'externalDownloadRunning').mockResolvedValue(false); return result; }
 function refreshSelected(m: BackendManager) { return vi.spyOn(m, 'refresh').mockImplementation(async () => { expect(m.current.available).toBe(false); expect(m.current.capabilities.login).toBe(false); Object.assign((m as unknown as { status: object }).status, { available: true }); return m.current; }); }
@@ -71,6 +73,21 @@ describe('backend mutation boundaries', () => {
     const prepared=await m.prepareComponentUpdate(()=>{});expect(prepared.item.state).toBe('ready');
     await fs.writeFile(pointer,'changed');expect(await prepared.isCurrent()).toBe(false);
     await expect(prepared.apply({identity:Symbol()})).rejects.toMatchObject({committed:false});expect(installBackend).not.toHaveBeenCalled();
+  });
+  it('preserves newer discovery completed before a frozen plan begins applying',async()=>{
+    const m=manager();await fs.writeFile(path.join(root,'xodus-backends/current.json'),JSON.stringify({binaryPath:'/old',delivery:'release',version:'1.0.0'}));Object.assign((m as unknown as {status:object}).status,{available:true,source:'managed',binaryPath:'/old'});
+    vi.mocked(discoverBackend).mockResolvedValueOnce(artifact('99.0.0')).mockResolvedValueOnce(artifact('100.0.0'));
+    const prepared=await m.prepareComponentUpdate(()=>{});await m.checkUpdate();refreshSelected(m);await prepared.apply({identity:Symbol()});expect(m.current.version).toBe('99.0.0');expect(m.current.releaseVersion).toBe('100.0.0');expect(m.current.updateAvailable).toBe(true);
+  });
+  it.each(['binary','service','recipe','delivery'])('rejects changed %s during committed backend reconciliation',async change=>{
+    const m=manager(),pointer=path.join(root,'xodus-backends/current.json'),directory=path.join(root,'xodus-backends/releases/verified');await fs.mkdir(directory,{recursive:true});
+    const files:Record<string,string>={};for(const name of ['xodus-cli','xodus-service','LICENSE']){const bytes=Buffer.from('verified-'+name);await fs.writeFile(path.join(directory,name),bytes);files[name]=createHash('sha256').update(bytes).digest('hex');}
+    const selected=artifact();selected.manifest.files=files as typeof selected.manifest.files;vi.mocked(discoverBackend).mockResolvedValue(selected);vi.mocked(installBackend).mockResolvedValue(path.join(directory,'xodus-cli'));
+    await fs.writeFile(pointer,JSON.stringify({binaryPath:'/old',delivery:'release',version:'1.0.0'}));Object.assign((m as unknown as {status:object}).status,{available:true,source:'managed',binaryPath:'/old'});
+    vi.spyOn(m,'refresh').mockImplementation(async()=>{Object.assign((m as unknown as {status:object}).status,{available:true});return m.current;});
+    let calls=0;const prepared=await m.prepareComponentUpdate(()=>{if(++calls===2)throw Error('notify after commit');});await expect(prepared.apply({identity:Symbol()})).rejects.toMatchObject({committed:true});await expect(prepared.reconcile!({identity:Symbol()})).resolves.toEqual({});
+    if(change==='binary'||change==='service')await fs.writeFile(path.join(directory,change==='binary'?'xodus-cli':'xodus-service'),'corrupted');else{const actual=JSON.parse(await fs.readFile(pointer,'utf8'));if(change==='recipe')actual.recipeSha256='changed';else actual.delivery='local';await fs.writeFile(pointer,JSON.stringify(actual));}
+    await expect(prepared.reconcile!({identity:Symbol()})).rejects.toMatchObject({retryable:false});expect(installBackend).toHaveBeenCalledOnce();
   });
   it('keeps operation target A while concurrent discovery records newer B', async () => {
     const m = manager(), entered = deferred<void>(), release = deferred<void>(); refreshSelected(m);
