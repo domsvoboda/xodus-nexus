@@ -22,6 +22,21 @@ export interface RunResult {
   output: string;
 }
 
+/** Short backend reads that renew account tickets while they run. */
+const ACCOUNT_READS = new Set(['profile', 'library', 'achievements', 'account', 'activity', 'subscription', 'social', 'friends']);
+const accountReads = new Set<Promise<unknown>>();
+
+/** Waits for running account reads, so an account switch cannot overlap their ticket renewals. */
+export async function waitForAccountReads(timeoutMs = 25_000): Promise<void> {
+  if (!accountReads.size) return;
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  await Promise.race([
+    Promise.allSettled([...accountReads]),
+    new Promise<void>(resolve => { timer = setTimeout(resolve, timeoutMs); timer.unref?.(); }),
+  ]);
+  if (timer) clearTimeout(timer);
+}
+
 export function spawnTracked(command: string, args: string[], options: RunOptions = {}): {
   child: ChildProcessWithoutNullStreams;
   result: Promise<RunResult>;
@@ -99,6 +114,11 @@ export function spawnTracked(command: string, args: string[], options: RunOption
       finish(code);
     });
   });
+  if (ACCOUNT_READS.has(args[0] ?? '')) {
+    const settled = result.then(() => undefined, () => undefined);
+    accountReads.add(settled);
+    void settled.then(() => accountReads.delete(settled));
+  }
   return { child, result };
 }
 

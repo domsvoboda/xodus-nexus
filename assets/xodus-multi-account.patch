@@ -497,7 +497,7 @@ index 16aa046..2a09942 100644
          }
      }
 diff --git a/crates/xodus/src/tokens/manager.rs b/crates/xodus/src/tokens/manager.rs
-index 6f14da1..2902005 100644
+index 6f14da1..91c2c73 100644
 --- a/crates/xodus/src/tokens/manager.rs
 +++ b/crates/xodus/src/tokens/manager.rs
 @@ -13,6 +13,18 @@ mod keys {
@@ -519,7 +519,27 @@ index 6f14da1..2902005 100644
  }
  
  #[derive(serde::Serialize, serde::Deserialize)]
-@@ -144,21 +156,37 @@ impl TokenManager {
+@@ -65,6 +77,11 @@ mod credential_account_metadata_tests {
+ pub struct TokenManager {
+     persistent: Arc<dyn TokenBackend>,
+     ephemeral: Arc<dyn ExpiringTokenBackend>,
++    /// The account each stored session held when this process first read it.
++    /// Renewed tickets are written back only to that same account, so a
++    /// process that started before an account switch cannot put its tickets
++    /// into the account that was activated meanwhile.
++    pinned: std::sync::Mutex<HashMap<&'static str, String>>,
+ }
+ 
+ impl TokenManager {
+@@ -75,6 +92,7 @@ impl TokenManager {
+         Self {
+             persistent,
+             ephemeral,
++            pinned: std::sync::Mutex::new(HashMap::new()),
+         }
+     }
+ 
+@@ -144,21 +162,47 @@ impl TokenManager {
  
      // ---- User STS tokens (keyed by SOAP "applies_to" address) --------------
  
@@ -545,6 +565,11 @@ index 6f14da1..2902005 100644
      pub fn save_user_token(&self, address: String, token: Token) -> Result<(), TokenStoreError> {
 -        if let Some(mut session) = self.user_session()? {
 +        if let Some((key, mut session)) = self.session_for(Identity::Xbox)? {
++            if !self.pin_allows(key, &session.user.username) {
++                // The stored account changed while this process was running.
++                eprintln!("NEXUS_SESSION_DIAGNOSTIC_V1 renewed-ticket-discarded-account-changed");
++                return Ok(());
++            }
 +            session.tokens.insert(address, token);
 +            return self.write_session(key, &session);
 +        }
@@ -554,6 +579,11 @@ index 6f14da1..2902005 100644
 +    /// Renewed license-account tickets go back into the license session.
 +    pub fn save_license_token(&self, address: String, token: Token) -> Result<(), TokenStoreError> {
 +        if let Some((key, mut session)) = self.session_for(Identity::License)? {
++            if !self.pin_allows(key, &session.user.username) {
++                // The stored account changed while this process was running.
++                eprintln!("NEXUS_SESSION_DIAGNOSTIC_V1 renewed-ticket-discarded-account-changed");
++                return Ok(());
++            }
              session.tokens.insert(address, token);
 -            return Self::write_verified(
 -                &*self.persistent,
@@ -564,7 +594,7 @@ index 6f14da1..2902005 100644
          }
          Self::write_token_store(&*self.persistent, keys::USER_TOKENS, address, token)
      }
-@@ -168,18 +196,41 @@ impl TokenManager {
+@@ -168,18 +212,41 @@ impl TokenManager {
              .ok_or(TokenStoreError::NotFound)
      }
  
@@ -608,7 +638,7 @@ index 6f14da1..2902005 100644
              return Ok(session.user);
          }
          let bytes = self
-@@ -189,6 +240,11 @@ impl TokenManager {
+@@ -189,6 +256,11 @@ impl TokenManager {
          Ok(serde_json::from_slice(&bytes)?)
      }
  
@@ -620,7 +650,7 @@ index 6f14da1..2902005 100644
      pub fn save_user(&self, user: &User) -> Result<(), TokenStoreError> {
          Self::write_verified(
              &*self.persistent,
-@@ -198,12 +254,32 @@ impl TokenManager {
+@@ -198,12 +270,48 @@ impl TokenManager {
      }
  
      fn user_session(&self) -> Result<Option<UserSession>, TokenStoreError> {
@@ -643,18 +673,34 @@ index 6f14da1..2902005 100644
 +    ) -> Result<Option<(&'static str, UserSession)>, TokenStoreError> {
 +        if who == Identity::Xbox {
 +            if let Some(session) = self.read_session(keys::PLAYER_SESSION)? {
++                self.pin(keys::PLAYER_SESSION, &session.user.username);
 +                return Ok(Some((keys::PLAYER_SESSION, session)));
 +            }
 +        }
-+        Ok(self
-+            .user_session()?
-+            .map(|session| (keys::USER_SESSION, session)))
++        Ok(self.user_session()?.map(|session| {
++            self.pin(keys::USER_SESSION, &session.user.username);
++            (keys::USER_SESSION, session)
++        }))
++    }
++
++    fn pin(&self, key: &'static str, username: &str) {
++        if let Ok(mut pinned) = self.pinned.lock() {
++            pinned.entry(key).or_insert_with(|| username.to_string());
++        }
++    }
++
++    /// True when `username` is the account this process first saw under `key`.
++    fn pin_allows(&self, key: &str, username: &str) -> bool {
++        match self.pinned.lock() {
++            Ok(pinned) => pinned.get(key).map_or(true, |pinned| pinned == username),
++            Err(_) => true,
++        }
 +    }
 +
      /// Publish a newly authenticated account and its complete token set using
      /// one keyring value. Never merge tokens belonging to the previous account.
      /// Legacy entries remain readable until the first successful session save.
-@@ -211,16 +287,90 @@ impl TokenManager {
+@@ -211,16 +319,95 @@ impl TokenManager {
          &self,
          user: User,
          tokens: HashMap<String, Token>,
@@ -678,7 +724,7 @@ index 6f14da1..2902005 100644
 +
 +    fn save_session(
 +        &self,
-+        key: &str,
++        key: &'static str,
 +        user: User,
 +        tokens: HashMap<String, Token>,
      ) -> Result<(), TokenStoreError> {
@@ -691,7 +737,12 @@ index 6f14da1..2902005 100644
 -            keys::USER_SESSION,
 -            &serde_json::to_vec(&session)?,
 -        )
-+        self.write_session(key, &session)
++        self.write_session(key, &session)?;
++        // A new sign-in is the account this process now answers for.
++        if let Ok(mut pinned) = self.pinned.lock() {
++            pinned.insert(key, session.user.username.clone());
++        }
++        Ok(())
 +    }
 +
 +    /// Write a session. A license session is also kept in the saved-accounts
@@ -750,7 +801,7 @@ index 6f14da1..2902005 100644
      }
  
      // ---- Ephemeral XSTS-by-relying-party cache --------------------------------
-@@ -296,3 +446,139 @@ impl TokenManager {
+@@ -296,3 +483,155 @@ impl TokenManager {
          Self::write_verified(backend, key, &serde_json::to_vec(&TokenStore { tokens })?)
      }
  }
@@ -876,6 +927,22 @@ index 6f14da1..2902005 100644
 +        assert_eq!(m.get_license_user().unwrap().username, "gamepass");
 +        assert_eq!(m.saved_accounts().unwrap().len(), 2);
 +        assert!(m.activate_saved_account("missing").is_err());
++    }
++    #[test]
++    fn credential_renewed_tickets_never_land_in_an_account_activated_meanwhile() {
++        let m = TokenManager::with_memory();
++        save(&m, "castlevania"); save(&m, "gamepass");
++        // This process starts as gamepass and reads its session.
++        assert_eq!(m.get_license_user().unwrap().username, "gamepass");
++        // Another process activates castlevania while this one is still running.
++        m.activate_saved_account("castlevania").unwrap();
++        // The renewed gamepass ticket must be discarded, not stored under castlevania.
++        m.save_license_token("renewed-address".into(), Token::Compact("gamepass-renewed".into())).unwrap();
++        assert!(m.get_license_token_for("renewed-address").unwrap().is_none());
++        // Same account: the renewal is kept.
++        m.activate_saved_account("gamepass").unwrap();
++        m.save_license_token("renewed-address".into(), Token::Compact("gamepass-renewed".into())).unwrap();
++        assert!(m.get_license_token_for("renewed-address").unwrap().is_some());
 +    }
 +    #[test]
 +    fn credential_saved_accounts_survive_sign_out_and_can_be_forgotten() {

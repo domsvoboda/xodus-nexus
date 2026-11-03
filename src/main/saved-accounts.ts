@@ -1,4 +1,4 @@
-import { spawnTracked } from './process.js';
+import { spawnTracked, waitForAccountReads } from './process.js';
 
 /** Saved Store / Game Pass accounts kept by the backend (`saved-accounts`). */
 export interface SavedAccounts { accounts: string[]; active?: string }
@@ -28,6 +28,7 @@ export async function listSavedAccounts(binary: string): Promise<SavedAccounts |
 /** Makes a saved account the active Store account, no sign-in and no device reset. */
 export async function useSavedAccount(binary: string, name: string): Promise<void> {
   if (!valid(name)) throw new Error('Invalid account.');
+  await waitForAccountReads();
   const result = await run(binary, ['--use', name, '--json']);
   if (result.code !== 0) throw new Error('That saved account could not be activated. Sign in to it again.');
 }
