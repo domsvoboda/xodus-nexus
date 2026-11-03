@@ -4,7 +4,7 @@ import type {AppSnapshot,Game} from '../shared/types';
  * and errors never borrow another build's availability. */
 export function useGameRuntimeReady(game:Game|undefined,data:AppSnapshot):boolean {
   const managed=Boolean(game?.runtime&&game.runtime!=='default');
-  const scope=JSON.stringify([game?.id,game?.runtime,game?.runtimeSeparatePrefix,game?.runtimeBuild?.buildId,game?.runtimeBuild?.manifestSha256,game?.runtimeBuild?.sourceCommit,game?.runtimePrefixes,data.settings.runtimeRoot,data.settings.winePath,data.runtime.winePath,(data.runtime.variants??[]).map(item=>[item.id,item.buildId,item.manifestSha256,item.sourceCommit])]);
+  const scope=JSON.stringify([game?.id,game?.runtime,game?.runtimeSeparatePrefix,game?.runtimeBuild?.buildId,game?.runtimeBuild?.manifestSha256,game?.runtimeBuild?.sourceCommit,game?.runtimePrefixes,data.settings.runtimeRoot,data.settings.winePath,data.runtime.winePath,data.runtime.managedRevision,(data.runtime.variants??[]).map(item=>[item.id,item.buildId,item.manifestSha256,item.sourceCommit])]);
   const current=useRef({scope,version:0});
   if(current.current.scope!==scope)current.current={scope,version:current.current.version+1};
   const version=current.current.version;

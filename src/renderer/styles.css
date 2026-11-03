@@ -666,3 +666,8 @@ button.primary, button.secondary { border-radius: 5px; min-height: 40px; font-si
 .cloud-save-warning p { margin: 5px 0 0; font-size: 12px; line-height: 1.5; overflow-wrap: anywhere; }
 .cloud-save-warning > button { flex-shrink: 0; }
 @media (max-width: 800px) { .cloud-save-warning { margin: 8px 12px 0; flex-wrap: wrap; } .cloud-save-warning > div { flex-basis: 100%; } }
+
+.managed-runtime-family { margin-top: 20px; min-width: 0; }
+.managed-runtime-family + .managed-runtime-family { padding-top: 20px; border-top: 1px solid var(--line); }
+.managed-runtime-family p { overflow-wrap: anywhere; }
+.managed-runtime-settings > button { margin-top: 16px; }

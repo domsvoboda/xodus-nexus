@@ -17,12 +17,12 @@ beforeEach(()=>{
  document.body.innerHTML='<div id="root"></div>';root=createRoot(document.getElementById('root')!);
 });
 afterEach(async()=>{await act(async()=>root.unmount());vi.restoreAllMocks();vi.unstubAllGlobals();});
-it('uses exact approved readiness even with no current family, and avoids rerender request loops',async()=>{
+it('uses verified main-process readiness without requiring a snapshot descriptor, and avoids rerender request loops',async()=>{
  const request=pending();vi.mocked(window.launcher.getGameRuntimeReadiness).mockReturnValue(request.promise);
  await render();expect(enabled()).toBe(false);await act(async()=>request.resolve(true));expect(enabled()).toBe(true);
  await render();await render();expect(window.launcher.getGameRuntimeReadiness).toHaveBeenCalledTimes(1);
 });
-it('never borrows current B availability when approved A is missing or verification fails',async()=>{
+it('never borrows snapshot availability when current verification fails',async()=>{
  data.runtime.variants=[{id:'nexus-cachyos',label:'B',buildId:'d'.repeat(64),manifestSha256:'e'.repeat(64),sourceCommit:'f'.repeat(40)}];
  vi.mocked(window.launcher.getGameRuntimeReadiness).mockResolvedValue(false);await render();expect(enabled()).toBe(false);
  vi.mocked(window.launcher.getGameRuntimeReadiness).mockRejectedValue(Error('verification failed'));data.settings.runtimeRoot+='-changed';await render();expect(enabled()).toBe(false);
@@ -51,11 +51,15 @@ it('ignores held A readiness after switching to B',async()=>{
  await act(async()=>a.resolve(true));expect(enabled()).toBe(false);await act(async()=>b.resolve(true));expect(enabled()).toBe(true);
 });
 
-it('enables the actual Home Play action for verified retained A with no current descriptor',async()=>{
+it('enables actual Home Play only after fresh main-process verification, even without a snapshot descriptor',async()=>{
  const request=pending();vi.mocked(window.launcher.getGameRuntimeReadiness).mockReturnValue(request.promise);
  window.launcher.getGameLaunchOptions=vi.fn(async()=>({cloudSaves:false,vcInstall:false}));
  data.games[0].installState='ready';data.backend.capabilities.run=true;
  await act(async()=>root.render(<HomePage data={data} go={()=>{}} action={()=>{}}/>));
  const play=()=>document.querySelector<HTMLButtonElement>('[data-gamepad-key="home-play"]');
  expect(play()).toBeNull();await act(async()=>request.resolve(true));expect(play()?.disabled).toBe(false);
+});
+
+it('rechecks readiness after a managed installation revision even when descriptor identity stays unchanged',async()=>{
+ await render();expect(enabled()).toBe(true);const next=pending();vi.mocked(window.launcher.getGameRuntimeReadiness).mockReturnValueOnce(next.promise);data.runtime.managedRevision=1;await render();expect(enabled()).toBe(false);expect(window.launcher.getGameRuntimeReadiness).toHaveBeenCalledTimes(2);await act(async()=>next.resolve(true));expect(enabled()).toBe(true);
 });
