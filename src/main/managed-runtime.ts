@@ -54,6 +54,7 @@ export class ManagedRuntimeManager {
     private states = new Map<RuntimeFamily, ManagedFamilyStatus>(runtimeFamilies.map(id => [id, {
             id, checking: false, installing: false
         }]));
+    private issuedTargets=new WeakMap<VerifiedManagedFamilyRelease,Target>();
     private selectionEpoch = 0;
     private targets = new Map<RuntimeFamily, Target>();
     private epochs = new Map<RuntimeFamily, number>();
@@ -138,7 +139,7 @@ export class ManagedRuntimeManager {
             });
             if (![301, 302, 303, 307, 308].includes(response.status)) {
                 if (!response.ok)
-                    throw Error('Runtime release download failed: HTTP ' + response.status);
+                    throw Object.assign(Error('Runtime release download failed: HTTP ' + response.status),{status:response.status});
                 return response;
             }
             const location = response.headers.get('location');
@@ -167,7 +168,7 @@ export class ManagedRuntimeManager {
             throw Error('Runtime metadata size mismatch');
         return Buffer.concat(chunks);
     }
-    async check(selection: unknown, value: unknown): Promise<ManagedFamilyStatus> {
+    async check(selection: unknown, value: unknown, channel?: 'stable'|'prerelease'): Promise<ManagedFamilyStatus> {
         const id = familyId(selection), state = this.states.get(id)!, root = this.context.root(), epoch = (this.epochs.get(id) ?? 0) + 1;
         this.epochs.set(id, epoch);
         state.checking = true;
@@ -181,7 +182,7 @@ export class ManagedRuntimeManager {
             // Legacy releases without candidate metadata are not managed-family targets.
             // Select newest in the chosen channel first, then validate it exactly. Never
             // fall back past a malformed newest trusted-format candidate.
-            const candidates = json.filter(item => object(item) && item.draft !== true && (item.prerelease !== true || policy.allowPrerelease) && typeof item.tag_name === 'string' && item.tag_name.startsWith(id === 'nexus' ? 'runtime-' : 'runtime-cachyos-') && Array.isArray(item.assets) && item.assets.some(asset => object(asset) && asset.name === 'candidate.json'));
+            const candidates = json.filter(item => object(item) && item.draft !== true && (item.prerelease !== true || policy.allowPrerelease) && (channel===undefined||item.prerelease===(channel==='prerelease')) && typeof item.tag_name === 'string' && item.tag_name.startsWith(id === 'nexus' ? 'runtime-' : 'runtime-cachyos-') && Array.isArray(item.assets) && item.assets.some(asset => object(asset) && asset.name === 'candidate.json'));
             for (const item of candidates)
                 if (typeof item.published_at !== 'string' || !Number.isFinite(Date.parse(item.published_at)))
                     throw Error('Invalid managed runtime publication date');
@@ -196,9 +197,8 @@ export class ManagedRuntimeManager {
             const bytes = await this.bytes(selected.release.assets.candidate.url, 2 * 1024 * 1024, selected.release.assets.candidate.size), release = verifyManagedFamilyCandidate(bytes, selected.release);
             if (root !== this.context.root() || this.epochs.get(id) !== epoch)
                 throw Error('Runtime release selection changed while checking');
-            this.targets.set(id, {
-                root, release, input: selected.input, bytes, policy
-            });
+            const target={root,release,input:selected.input,bytes,policy};
+            this.targets.set(id,target);this.issuedTargets.set(release,target);
             state.available = {
                 version: release.tag, candidateSha256: release.candidateSha256, sourceCommit: release.commit, archiveName: release.assets.binary.name, requiresBackendVersion: release.requiresBackendVersion, requiresLauncherVersion: release.requiresLauncherVersion
             };
@@ -224,6 +224,12 @@ export class ManagedRuntimeManager {
             }
         }
         return structuredClone(state);
+    }
+    async checkInstalledUpdate(selection:unknown,channel:unknown):Promise<ManagedFamilyStatus>{
+        const id=familyId(selection);if(channel!=='stable'&&channel!=='prerelease')throw Error('Unknown installed runtime channel');
+        const installed=await this.installed(id,this.context.root());
+        if(!installed.provenance||installed.provenance.prerelease!==(channel==='prerelease'))throw Error('Installed runtime channel changed or is not recorded');
+        return this.check(id,{allowCachyos:id==='nexus-cachyos',allowPrerelease:channel==='prerelease'},channel);
     }
     /** A frozen internal target is provided for later component coordinators. */
     target(selection: unknown): Readonly<VerifiedManagedFamilyRelease> | undefined {
@@ -304,6 +310,33 @@ export class ManagedRuntimeManager {
                 return undefined;
             throw error;
         }
+    }
+    async legacyInstalledChannel(tag:string,name:string,sourceCommit:string):Promise<'stable'|'prerelease'|undefined>{
+        if(!/^runtime-[A-Za-z0-9._-]+-g[a-f0-9]{8,40}$/.test(tag)||tag.includes('..')||!/^nexus-runtime-[0-9][A-Za-z0-9._-]*-g[a-f0-9]{8,40}$/.test(name))return;
+        for(const repository of ['domsvoboda/nexus-runtime','domsvoboda/xodus-nexus','domsvoboda/nexus-launcher']){
+            let metadata:unknown;try{metadata=JSON.parse((await this.bytes(`https://api.github.com/repos/${repository}/releases/tags/${tag}`,2*1024*1024)).toString('utf8'));}catch(error){if((error as {status?:number}).status===404)continue;throw error;}
+            if(!object(metadata)||metadata.tag_name!==tag||metadata.draft!==false||typeof metadata.prerelease!=='boolean'||!Array.isArray(metadata.assets)||metadata.assets.length>100||typeof metadata.published_at!=='string'||!Number.isFinite(Date.parse(metadata.published_at)))continue;
+            const assets=metadata.assets;
+            const binary=name+'-x86_64.tar.xz',checksum=name+'-x86_64.sha512sum';
+            if(![binary,checksum].every(name=>{const found=assets.filter(item=>object(item)&&item.name===name);return found.length===1&&object(found[0])&&found[0].browser_download_url===`https://github.com/${repository}/releases/download/${tag}/${name}`&&typeof found[0].size==='number'&&Number.isSafeInteger(found[0].size)&&found[0].size>0&&found[0].size<=(name===binary?8*1024**3:65536);} ))continue;
+            let commit=metadata.target_commitish;
+            if(typeof commit!=='string'||!/^[a-f0-9]{40}$/.test(commit)){
+                const ref=JSON.parse((await this.bytes(`https://api.github.com/repos/${repository}/git/ref/tags/${tag}`,65536)).toString('utf8'));
+                let objectRef:unknown=object(ref)?ref.object:undefined;
+                for(let depth=0;depth<4&&object(objectRef)&&objectRef.type==='tag'&&typeof objectRef.sha==='string'&&/^[a-f0-9]{40}$/.test(objectRef.sha);depth++){
+                    const annotation=JSON.parse((await this.bytes(`https://api.github.com/repos/${repository}/git/tags/${objectRef.sha}`,65536)).toString('utf8'));objectRef=object(annotation)?annotation.object:undefined;
+                }
+                commit=object(objectRef)&&objectRef.type==='commit'?objectRef.sha:undefined;
+            }
+            if(commit===sourceCommit)return metadata.prerelease?'prerelease':'stable';
+        }
+        return;
+    }
+    async downloadPreparedRelease(value:unknown,root:string,file:string,policy:ManagedRuntimeOptions):Promise<VerifiedManagedFamilyRelease>{
+        if(!object(value))throw Error('Unknown prepared runtime release');const target=this.issuedTargets.get(value as unknown as VerifiedManagedFamilyRelease);
+        if(!target||target.root!==root||this.context.root()!==root)throw Error('Runtime release preparation changed');
+        const versions=this.context.versions();const release=verifyManagedFamilyCandidate(target.bytes,parseManagedFamilyRelease(target.release.family,target.input,{...options(policy),arch:this.context.arch??process.arch,launcherVersion:versions.launcher,backendVersion:versions.backend}));
+        await this.archive({...target,release},file);return release;
     }
     private async archive(target: Target, file: string): Promise<void> {
         const asset = target.release.assets.binary, record = target.release.files.find(item => item.name === asset.name)!;

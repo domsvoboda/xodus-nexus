@@ -338,3 +338,9 @@ it('does not reconcile stale A status after B has committed', async () => {
     await old;
     expect(raw.current.find(s => s.id === 'nexus-cachyos')?.installed?.buildId).toBe(f.remote.buildId);
 });
+
+it('checks updates within the recorded prerelease channel even when a stable release is newer',async()=>{
+ const f=await fixture();await f.install();f.setRemote(await payload(f.root,'b'));const stable=await payload(f.root,'c');stable.release.prerelease=false;stable.release.published_at='2026-11-05T00:00:00Z';const original=vi.mocked(f.fetcher).getMockImplementation()!;
+ vi.mocked(f.fetcher).mockImplementation(async(input,init)=>String(input).includes('/releases?')?new Response(JSON.stringify([stable.release,f.remote.release])):original(input,init));
+ const checked=await f.manager.checkManagedRuntimeUpdate('nexus-cachyos','prerelease');expect(checked.available?.sourceCommit).toBe(f.remote.commit);await expect(f.manager.checkManagedRuntimeUpdate('nexus-cachyos','stable')).rejects.toThrow('channel changed');await f.preserved();
+});
