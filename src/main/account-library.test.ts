@@ -427,3 +427,31 @@ it('loads owned access for a launch while it prepares, waits only briefly and ne
   failing.select('one@example.test', '/backend', 'US');
   expect(await failing.startLaunchAccess()(1_000)).toEqual({});
 });
+
+it('Store access is artwork-free, bounded by parent expiry and scoped to configured neutral market',async()=>{
+ const end=new Date(Date.now()+45_000).toISOString();
+ const catalog=vi.fn(async(ids:string[])=>ids.map(product));
+ // Reader response must match the actual resolved market, not the setting sentinel.
+ const scoped=new AccountLibrary(catalog,async()=>output([row(A,{satisfiedByProductId:'CFQ7TTC0KGQ8'}),row('CFQ7TTC0KGQ8',{endDate:end})],'one@example.test','CZ'));
+ scoped.select('one@example.test','/backend','CZ');
+ const result=await scoped.storeAccess('neutral');
+ expect(result).toMatchObject({account:'one@example.test',backend:'/backend',market:'CZ',configuredMarket:'neutral',expiresAt:end,accessByProductId:{[A]:'gamepass'}});
+ expect(catalog).not.toHaveBeenCalled();
+});
+it('Store access rejects account/backend/market changes and same-account reset during an in-flight read',async()=>{
+ for(const change of ['account','backend','market','reset']){
+  let release!:(value:string)=>void;
+  const catalog=vi.fn(async(ids:string[])=>ids.map(product));
+  const library=new AccountLibrary(catalog,()=>new Promise(resolve=>{release=resolve;}));
+  library.select('one@example.test','/backend','US');const pending=library.storeAccess();
+  if(change==='reset')library.reset();else library.select(change==='account'?'two@example.test':'one@example.test',change==='backend'?'/other':'/backend',change==='market'?'CZ':'US');
+  release(output());await expect(pending).rejects.toThrow('changed');expect(catalog).not.toHaveBeenCalled();
+ }
+});
+it('does not extend an entitlement that expires between access evaluation and response',async()=>{
+ const now=Date.now(),end=now+1000;
+ const library=new AccountLibrary(async ids=>ids.map(product),async()=>output([row(A,{endDate:new Date(end).toISOString()})]));
+ library.select('one@example.test','/backend','US');await library.access();
+ let calls=0;const clock=vi.spyOn(Date,'now').mockImplementation(()=>++calls<3?now:end+1);
+ try{await expect(library.storeAccess()).rejects.toThrow('expired');}finally{clock.mockRestore();}
+});

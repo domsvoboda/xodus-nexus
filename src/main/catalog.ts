@@ -159,6 +159,7 @@ function directPackageSupport(product: Record<string, unknown> | undefined): Pac
   for (const availability of skus) {
     const sku = object(object(availability)?.Sku);
     const properties = object(sku?.Properties);
+    if(properties?.IsTrial===true||properties?.IsDemo===true||properties?.IsPreOrder===true||['trial','demo'].includes(string(sku?.SkuType)?.toLowerCase()??''))continue;
     const packages = Array.isArray(properties?.Packages) ? properties.Packages : [];
     for (const entry of packages) {
       const pkg = object(entry);
@@ -184,7 +185,9 @@ function bundleReferences(product: Record<string, unknown> | undefined): BundleR
   const references = new Map<string, boolean>();
   const skus = Array.isArray(product?.DisplaySkuAvailabilities) ? product.DisplaySkuAvailabilities : [];
   for (const availability of skus) {
-    const properties = object(object(object(availability)?.Sku)?.Properties);
+    const sku=object(object(availability)?.Sku);
+    const properties = object(sku?.Properties);
+    if(properties?.IsTrial===true||properties?.IsDemo===true||properties?.IsPreOrder===true||['trial','demo'].includes(string(sku?.SkuType)?.toLowerCase()??''))continue;
     const bundled = Array.isArray(properties?.BundledSkus) ? properties.BundledSkus : [];
     for (const entry of bundled) {
       const record = object(entry);
@@ -244,7 +247,43 @@ function packageSupport(productId: string, details: Map<string, Record<string, u
   };
 }
 
-export function parseCatalogProducts(search: StoreSearchResponse, catalog: DisplayCatalogResponse): CatalogProduct[] {
+/** Public browsing excludes positively identified free/demo/trial offers.
+ * Missing prices remain unknown, and subscription branding is never a price. */
+export function excludedStoreOffer(search: Record<string, unknown>, detail?: Record<string, unknown>): boolean {
+  const props=object(detail?.Properties);
+  if (search.isDemo===true || search.isTrial===true || props?.IsDemo===true || props?.IsTrial===true) return true;
+  const rows=Array.isArray(detail?.DisplaySkuAvailabilities)?detail.DisplaySkuAvailabilities:[];
+  let retail=false, paid=false, free=false, unknownRetail=false, trial=false;
+  for(const entry of rows){
+    const availability=object(entry),sku=object(availability?.Sku),properties=object(sku?.Properties);
+    if(!sku)continue;
+    const kind=string(sku.SkuType)?.toLowerCase();
+    if(properties?.IsTrial===true||properties?.IsDemo===true||kind==='trial'||kind==='demo'){trial=true;continue;}
+    if(properties?.IsPreOrder===true) continue;
+    retail=true;
+    const offers=Array.isArray(availability?.Availabilities)?availability.Availabilities:[];
+    let skuFree=offers.length>0;
+    for(const offer of offers){
+      const price=object(object(object(offer)?.OrderManagementData)?.Price);
+      // MSRP distinguishes a paid title temporarily discounted to zero.
+      const values=[price?.MSRP,price?.ListPrice,price?.BasePrice].filter((v):v is number=>typeof v==='number'&&Number.isFinite(v)&&v>=0);
+      if(values.some(v=>v>0))paid=true;
+      const malformed=[price?.MSRP,price?.ListPrice,price?.BasePrice].some(v=>v!==undefined&&(typeof v!=='number'||!Number.isFinite(v)||v<0));
+      if(!values.length||malformed||values.some(v=>v>0))skuFree=false;
+    }
+    if(skuFree)free=true;else unknownRetail=true;
+  }
+  if(paid||unknownRetail)return false;
+  if(trial&&!retail)return true;
+  const price=object(search.priceInfo);
+  // Only structured booleans/numbers, never localized display strings/title.
+  const values=[price?.msrp,price?.listPrice,price?.price].filter((v):v is number=>typeof v==='number'&&Number.isFinite(v)&&v>=0);
+  if(values.some(v=>v>0))return false;
+  const malformed=[price?.msrp,price?.listPrice,price?.price].some(v=>v!==undefined&&(typeof v!=='number'||!Number.isFinite(v)||v<0));
+  return free || price?.isFree===true || (!malformed&&values.length>0&&values.every(v=>v===0));
+}
+
+export function parseCatalogProducts(search: StoreSearchResponse, catalog: DisplayCatalogResponse, policy: 'library' | 'store' = 'library'): CatalogProduct[] {
   const detailMap = new Map<string, Record<string, unknown>>();
   const details = Array.isArray(catalog.Products) ? catalog.Products : [];
   for (const detail of details) {
@@ -254,9 +293,11 @@ export function parseCatalogProducts(search: StoreSearchResponse, catalog: Displ
   }
   const products = Array.isArray(search.productsList) ? search.productsList as StoreSearchProduct[] : [];
   return products.flatMap((product) => {
+    if(!object(product))return [];
     const productId = string(product.productId)?.toUpperCase();
     const title = string(product.title);
     if (!productId || !title || product.isGame === false) return [];
+    if(policy==='store' && excludedStoreOffer(product as Record<string,unknown>,detailMap.get(productId)))return [];
     const support = packageSupport(productId, detailMap);
     return [{
       productId,
@@ -451,13 +492,13 @@ export class CatalogService {
 
   private async result(search: StoreSearchResponse, query: string, market: string, includePaging: boolean): Promise<CatalogSearchResult> {
     const ids = (Array.isArray(search.productsList) ? search.productsList as StoreSearchProduct[] : [])
-      .flatMap((product) => string(product.productId)?.toUpperCase() ?? [])
+      .flatMap((product) => string(object(product)?.productId)?.toUpperCase() ?? [])
       .filter((value, index, values) => values.indexOf(value) === index);
     const catalog = await this.details(ids, market);
     return {
       query,
       market,
-      products: parseCatalogProducts(search, catalog),
+      products: parseCatalogProducts(search, catalog, 'store'),
       cursor: includePaging ? string(search.cursor) : undefined,
       hasMore: includePaging && search.hasMorePages === true && Boolean(string(search.cursor)),
       fetchedAt: new Date().toISOString(),

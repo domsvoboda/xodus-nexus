@@ -2,7 +2,7 @@ import { randomUUID } from 'node:crypto';
 import { spawnTracked } from './process.js';
 import { backendDiagnostic } from './backend-diagnostics.js';
 import { sessionFailureMessage } from './session-errors.js';
-import type { AccountLibraryPage, CatalogProduct } from '../shared/types.js';
+import type { AccountLibraryPage, CatalogProduct, StoreAccess } from '../shared/types.js';
 
 interface Entitlement {
   productId: string; status: string; isTrial: boolean; sharingSource: string;
@@ -188,6 +188,24 @@ export class AccountLibrary {
       if (access) accessByProductId[product] = access;
     }
     return { checkedAt: cached.checkedAt, accessByProductId };
+  }
+  async storeAccess(configuredMarket=this.identity?.market??'US'): Promise<StoreAccess> {
+    const identity=this.identity,generation=this.generation;
+    if(!identity)throw Error('Sign in before checking Store access.');
+    const cached=await this.load();
+    const now=Date.now();
+    const accessByProductId:StoreAccess['accessByProductId']={};
+    for(const product of cached.entries.keys()){const kind=entitlementKind(product,cached.entries,now);if(kind)accessByProductId[product]=kind;}
+    if(generation!==this.generation||identity!==this.identity||cached!==this.cached)throw Error('Account library changed. Refresh this page.');
+    // Conservative across all known graph rows, including subscription parents.
+    // This may refresh early, never beyond a known entitlement expiration.
+    let until=cached.until;
+    for(const row of cached.entries.values()){
+      const end=Date.parse(row.endDate);
+      if(row.status==='Active'&&!row.isTrial&&end>now)until=Math.min(until,end);
+    }
+    if(until<=Date.now())throw Error('Store access expired. Refresh this page.');
+    return {configuredMarket,account:identity.account,market:identity.market,checkedAt:cached.checkedAt,accessByProductId,backend:identity.binary,expiresAt:new Date(until).toISOString()};
   }
   async get(kind: Kind, cursor?: string, refresh = false, sort?: AccountLibraryPage['sort']): Promise<AccountLibraryPage> {
     if (kind !== 'all' && kind !== 'owned' && kind !== 'gamepass' && kind !== 'other') throw Error('Invalid library filter.');

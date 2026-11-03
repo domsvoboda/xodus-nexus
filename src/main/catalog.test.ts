@@ -209,3 +209,44 @@ describe('CatalogService', () => {
     expect((await new CatalogService(logo).artwork(['9GAME123'], 'US')).size).toBe(0);
   });
 });
+
+describe('Store-only offer policy',()=>{
+ const sku=(price:number,props:Record<string,unknown>={},type='full')=>({Sku:{SkuType:type,Properties:props},Availabilities:[{OrderManagementData:{Price:{MSRP:price,ListPrice:price}}}]});
+ const parse=(skus:unknown[],extra={},policy:'store'|'library'='store')=>parseCatalogProducts({productsList:[{productId:'9AAAAAAAAAAA',title:'Free Spirit',isGame:true,...extra}]},{Products:[{ProductId:'9AAAAAAAAAAA',DisplaySkuAvailabilities:skus}]},policy);
+ it('excludes structured free, trial and demo but retains paid and missing/malformed prices',()=>{
+  expect(parse([sku(0)])).toEqual([]);
+  expect(parse([sku(0,{IsTrial:true})])).toEqual([]);
+  expect(parse([sku(0,{},'demo')])).toEqual([]);
+  expect(parse([sku(10,{IsDemo:true})])).toEqual([]);
+  expect(parse([null,{},sku(0,{IsTrial:true})])).toEqual([]);
+  expect(parse([sku(25,{IsTrial:false})],{plaintextPassName:'PC Game Pass'})).toHaveLength(1);
+  expect(parse([])).toHaveLength(1);
+  expect(parse([],{priceInfo:{displayPrice:'Free',price:null}})).toHaveLength(1);
+  expect(parse([],{priceInfo:{price:'0',isFree:'true'}})).toHaveLength(1);
+  expect(parse([],{priceInfo:{price:0}})).toEqual([]);
+ });
+ it('uses retail SKU metadata without mistaking an optional trial for the full edition',()=>{
+  expect(parse([sku(0,{IsTrial:true}),sku(40,{IsTrial:false})])).toHaveLength(1);
+  expect(parse([sku(40,{IsTrial:false}),sku(0,{IsTrial:true})])).toHaveLength(1);
+  expect(parse([sku(0,{IsTrial:true})],{},'library')).toHaveLength(1);
+  expect(parse([sku(0)],{},'library')).toHaveLength(1);
+  expect(parse([sku(0),{Sku:{Properties:{IsTrial:false}}}])).toHaveLength(1);
+  expect(parse([{Sku:{Properties:{IsTrial:false}},Availabilities:[{OrderManagementData:{Price:{MSRP:'malformed',ListPrice:0}}}]}])).toHaveLength(1);
+ });
+ it('never resolves package support or bundle children from explicit trial/preorder SKUs',()=>{
+  const pkg={Packages:[{PackageFormat:'MSIXVC',PlatformDependencies:[{PlatformName:'Windows.Desktop'}]}]};
+  expect(parse([sku(0,{...pkg,IsTrial:true}),sku(30,{IsTrial:false})])[0].installability).not.toBe('supported');
+  expect(parse([sku(30,{...pkg,IsPreOrder:true}),sku(30,{IsTrial:false})])[0].installability).not.toBe('supported');
+ });
+ it('handles malformed rows without treating absent prices as free',()=>{
+  expect(parseCatalogProducts({productsList:[null,{},false,{productId:'9AAAAAAAAAAA',title:'Valid'}]}, {Products:[null]},'store')).toHaveLength(1);
+ });
+ it('applies the same policy to actual search and featured service paths while preserving licensed games',async()=>{
+  const id='9AAAAAAAAAAA';
+  const fetcher=async(input:unknown)=>new Response(JSON.stringify(String(input).includes('displaycatalog')?{Products:[{ProductId:id,ProductType:'Game',LocalizedProperties:[{ProductTitle:'Owned free game'}],DisplaySkuAvailabilities:[sku(0)]}]}:{productsList:[{productId:id,title:'Free game',isGame:true}]}),{status:200});
+  const service=new CatalogService(fetcher as typeof fetch);
+  expect((await service.search('Free game','US')).products).toEqual([]);
+  expect((await service.featured('US')).products).toEqual([]);
+  expect(await service.licensedProducts([id],'US')).toHaveLength(1);
+ });
+});

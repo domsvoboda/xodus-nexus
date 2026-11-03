@@ -155,6 +155,7 @@ export interface GameLaunchOptions {
 }
 
 export interface DownloadTask {
+  source?: 'store';
   id: string;
   kind?: 'install' | 'update' | 'content';
   gameId?: string;
@@ -298,6 +299,7 @@ export interface AppSnapshot {
 }
 
 export interface InstallRequest {
+  source?: 'store';
   productId: string;
   title: string;
   destination: string;
@@ -416,6 +418,15 @@ export interface CatalogSearchResult {
 }
 
 export type LibraryAccess = 'owned' | 'gamepass' | 'other';
+export interface StoreAccess {
+  configuredMarket: string;
+  account: string;
+  backend: string;
+  market: string;
+  checkedAt: string;
+  expiresAt: string;
+  accessByProductId: Record<string, LibraryAccess>;
+}
 export interface AccountLibraryPage {
   kind: 'all' | LibraryAccess;
   sort?: 'recent-gamepass';
@@ -605,6 +616,7 @@ export interface LauncherApi {
   setOfflinePermissions(enabled: boolean): Promise<OfflinePermissions>;
   searchCatalog(query: string, cursor?: string): Promise<CatalogSearchResult>;
   getFeaturedCatalog(): Promise<CatalogSearchResult>;
+  getStoreAccess(): Promise<StoreAccess>;
   getAccountLibrary(kind: AccountLibraryPage['kind'], cursor?: string, refresh?: boolean, sort?: AccountLibraryPage['sort']): Promise<AccountLibraryPage>;
   startInstall(request: InstallRequest): Promise<string>;
   getInstallPlan(productId: string, destination?: string): Promise<InstallPlan>;

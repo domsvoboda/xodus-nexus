@@ -39,6 +39,7 @@ import { layoutOfWine } from './proton-layout.js';
 import { accountCacheKey } from './offline-identity.js';
 import { applyOfflinePermissions, assertOfflineAccessReady, bindOfflineAccess, licenseCacheDirectory, offlineAccessRevoked, revokeOfflineAccess, type OfflineRevocation } from './offline-access.js';
 import { CatalogService } from './catalog.js';
+import {assertStoreOfferAccess} from './catalog-access.js';
 import { cloudSaveRuntime, gameInviteRuntime, offlineIdentityRuntime, selectedWinePath, startXodusService, storeContentRuntime, storeDiscoveryRuntime, unbridgedCloudSaveRuntime, type XodusServiceSession } from './xodus-service.js';
 import { GameLogReducer, gameLoggingEnvironment, gameWindowEnvironment } from './game-log.js';
 import { downloadVerifiedVcRedist, installedVcRuntimeVersion, VC_REDIST_VERSION, versionAtLeast } from './vc-runtime.js';
@@ -760,6 +761,19 @@ function requestSavedAccount(action: 'use' | 'forget' | 'enable', name: unknown)
   return job;
 }
 
+async function storeAccess() {
+  if(authState.running||authState.stored!==true||!authState.username)throw Error('Sign in before checking Store access.');
+  const account=authState.username,binary=backend.current.binaryPath,market=currentMarket(),configuredMarket=store.settings.market;
+  accountLibrary.select(account,backend.current.capabilities.library?binary:undefined,market);
+  const result=await accountLibrary.storeAccess(configuredMarket);
+  if(authState.running||authState.stored!==true||account!==authState.username||binary!==backend.current.binaryPath||market!==currentMarket()||configuredMarket!==store.settings.market)throw Error('Store account changed. Refresh account access.');
+  return result;
+}
+async function verifyStoreInstall(productId:string) {
+  const access=await storeAccess();
+  assertStoreOfferAccess(access,productId,{account:authState.username,backend:backend.current.binaryPath,market:currentMarket()});
+}
+
 async function startInstall(request: InstallRequest, updateGame?: Game, resumed?: DownloadTask): Promise<string> {
   await stopGameUpdateCheck();
   ensureIdle('install');
@@ -817,6 +831,8 @@ async function prepareInstall(request: InstallRequest, updateGame?: Game, conten
   const binary = requireBackend('streaming');
   if (updateGame && !backend.current.capabilities.streamingUpdateRecovery) throw Error('Update the Nexus backend in Settings before updating installed games safely.');
   const productId = safeProductId(request.productId);
+  if(request.source!==undefined&&request.source!=='store')throw Error('Invalid installation source.');
+  if(request.source==='store')await verifyStoreInstall(productId);
   const market = currentMarket();
   let selectedContentId: string | undefined;
   if (!content) {
@@ -829,6 +845,7 @@ async function prepareInstall(request: InstallRequest, updateGame?: Game, conten
     const choice = plan.choices.find(choice => choice.supported && choice.contentId === selectedContentId)!;
     if (updateGame && choice.kind === 'Durable') throw Error('An add-on cannot replace the base game. Use Manage content.');
     const parent = contentParentForChoice(choice, store.games);
+    if(parent&&request.source==='store')throw Error('Use Manage content in the installed Library game to install add-ons.');
     if (parent) return prepareContentInstall(parent, choice.productId, selectedContentId);
   }
   const activeTasks = store.downloads.filter(task => ['running', 'queued', 'paused'].includes(task.status));
@@ -851,9 +868,11 @@ async function prepareInstall(request: InstallRequest, updateGame?: Game, conten
         (command.includes(actual.toLowerCase()) || executable.length > 0 && command.includes(executable)));
     })) throw new Error('A game process is active. Close the game before updating files in place.');
   }
+  if(request.source==='store')await verifyStoreInstall(productId);
   const id = randomUUID();
   const task: DownloadTask = {
     id,
+    source: request.source,
     kind: content ? 'content' : updateGame ? 'update' : 'install',
     gameId: content?.game.id ?? updateGame?.id,
     title: request.title.trim() || productId,
@@ -875,6 +894,7 @@ async function prepareInstall(request: InstallRequest, updateGame?: Game, conten
   installQueue.enqueue({ id, run: async () => {
     if (shutdownStarted) throw Error('The launcher is closing.');
     if (identity !== `${authState.username}:${backend.current.binaryPath}:${currentMarket()}`) throw Error('Account, backend or Store market changed. Retry the installation.');
+    if(request.source==='store')await verifyStoreInstall(productId);
     if (await backend.externalDownloadRunning()) throw Error('Another Xodus download is running outside this queue.');
     await assertInstallDestination(destination, store.games.filter(game => game.id !== updateGame?.id && game.id !== content?.game.id).map(game => game.path));
     if (gameOperation && ['preparing', 'running', 'stopping'].includes(gameOperation.status)) {
@@ -1667,6 +1687,7 @@ function registerDemoIpc(catalogMarket: () => string): void {
   ipcMain.handle('set-offline-permissions', (_event, enabled: boolean) => ({ enabled: Boolean(enabled), requestSuccess: true, remainingToggles: 1, maxToggles: 3, periodDays: 365, checkedAt: new Date().toISOString() }));
   ipcMain.handle('catalog-search', (_event, query: string, cursor?: string) => catalog.search(query, catalogMarket(), cursor));
   ipcMain.handle('catalog-featured', () => catalog.featured(catalogMarket()));
+  ipcMain.handle('store-access', () => ({configuredMarket:snapshot().settings.market,account:snapshot().auth.username??'demo',backend:snapshot().backend.binaryPath??'',market:catalogMarket(),checkedAt:new Date().toISOString(),expiresAt:new Date(Date.now()+60_000).toISOString(),accessByProductId:{}}));
   ipcMain.handle('account-library', (_event, kind: 'all' | 'owned' | 'gamepass') => demoAccountLibrary(kind, demoArtwork));
   ipcMain.handle('stop-game-update-check', () => {});
   ipcMain.handle('start-install', () => 'demo-download');
@@ -1928,6 +1949,7 @@ function registerIpc(): void {
   ipcMain.handle('catalog-search', (_event, query: string, cursor?: string) => {
     return catalog.search(query, catalogMarket(), cursor);
   });
+  ipcMain.handle('store-access', () => storeAccess());
   ipcMain.handle('account-library', (_event, kind: 'all' | 'owned' | 'gamepass' | 'other', cursor?: string, refresh = false, sort?: 'recent-gamepass') => {
     if (authState.running || authState.stored !== true) throw Error('Finish signing in before loading account games.');
     accountLibrary.select(authState.username, backend.current.capabilities.library ? backend.current.binaryPath : undefined, currentMarket());
@@ -1991,7 +2013,7 @@ function registerIpc(): void {
           if (task.kind === 'content') {
             if (!task.gameId) throw Error('Content download has no parent game.');
             await installGameContent(task.gameId, task.productId);
-          } else await startInstall({ productId: task.productId, title: task.title, destination: task.destination, selectedContentId: task.selectedContentId, selectionMarket: task.selectionMarket }, game, resumed);
+          } else await startInstall({ source:task.source, productId: task.productId, title: task.title, destination: task.destination, selectedContentId: task.selectedContentId, selectionMarket: task.selectionMarket }, game, resumed);
           await store.removeDownload(id);
         } catch (error) { task.status = 'paused'; throw error; }
         finally { emitSnapshot(); }
