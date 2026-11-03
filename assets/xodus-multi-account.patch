@@ -497,7 +497,7 @@ index 16aa046..2a09942 100644
          }
      }
 diff --git a/crates/xodus/src/tokens/manager.rs b/crates/xodus/src/tokens/manager.rs
-index 6f14da1..91c2c73 100644
+index 6f14da1..720b630 100644
 --- a/crates/xodus/src/tokens/manager.rs
 +++ b/crates/xodus/src/tokens/manager.rs
 @@ -13,6 +13,18 @@ mod keys {
@@ -527,7 +527,7 @@ index 6f14da1..91c2c73 100644
 +    /// Renewed tickets are written back only to that same account, so a
 +    /// process that started before an account switch cannot put its tickets
 +    /// into the account that was activated meanwhile.
-+    pinned: std::sync::Mutex<HashMap<&'static str, String>>,
++    pinned: Arc<std::sync::Mutex<HashMap<&'static str, String>>>,
  }
  
  impl TokenManager {
@@ -535,7 +535,7 @@ index 6f14da1..91c2c73 100644
          Self {
              persistent,
              ephemeral,
-+            pinned: std::sync::Mutex::new(HashMap::new()),
++            pinned: Arc::new(std::sync::Mutex::new(HashMap::new())),
          }
      }
  
