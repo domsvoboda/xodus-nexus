@@ -84,7 +84,7 @@ export interface ManagedRuntimeOptions {allowCachyos:boolean;allowPrerelease:boo
 export interface ManagedFamilyStatus {
   id:RuntimeFamily;installed?:InstalledRuntimeFamily;version?:string;
   available?:{version:string;candidateSha256:string;sourceCommit:string;archiveName:string;requiresBackendVersion:string;requiresLauncherVersion:string};
-  checking:boolean;installing:boolean;phase?:string;error?:string;
+  checking:boolean;installing:boolean;updateAvailable?:boolean;phase?:string;error?:string;
 }
 export interface ManagedFamilyInstallResult {
   family:RuntimeFamily;success:boolean;committed:boolean;buildId?:string;
