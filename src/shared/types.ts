@@ -82,7 +82,7 @@ export interface BackendStatus {
 
 export interface ManagedRuntimeOptions {allowCachyos:boolean;allowPrerelease:boolean;}
 export interface ManagedFamilyStatus {
-  id:RuntimeFamily;installed?:InstalledRuntimeFamily;version?:string;
+  id:RuntimeFamily;installed?:InstalledRuntimeFamily;version?:string;channel?:'stable'|'prerelease';
   available?:{version:string;candidateSha256:string;sourceCommit:string;archiveName:string;requiresBackendVersion:string;requiresLauncherVersion:string};
   checking:boolean;installing:boolean;updateAvailable?:boolean;phase?:string;error?:string;
 }
