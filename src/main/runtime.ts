@@ -8,6 +8,7 @@ import { pipeline } from 'node:stream/promises';
 import type { RuntimeStatus } from '../shared/types.js';
 import { run } from './process.js';
 import { runtimeArchiveArch, runtimeLoader } from './proton-layout.js';
+import { runtimePayloadMatches } from './runtime-payload-identity.js';
 
 const REPOSITORY = 'xodus-gaming/Proton';
 const BRANCH = 'xodus/bleeding-edge';
@@ -318,9 +319,17 @@ export class RuntimeManager {
       const releases = path.join(root, 'releases');
       const releaseRoot = path.join(releases, releaseName);
       await fs.mkdir(releases, { recursive: true });
-      try {
-        await fs.access(releaseRoot);
-      } catch {
+      let existing = true;
+      try { await fs.lstat(releaseRoot); }
+      catch (error) {
+        if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error;
+        existing = false;
+      }
+      if (existing) {
+        if (!await runtimePayloadMatches(candidateRoot, releaseRoot)) {
+          throw new Error('The existing runtime folder does not match the verified download. It was left unchanged.');
+        }
+      } else {
         await fs.rename(candidateRoot, releaseRoot);
       }
       const winePath = path.join(releaseRoot, path.relative(candidateRoot, candidateWine));
