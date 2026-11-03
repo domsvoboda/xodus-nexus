@@ -27,12 +27,14 @@ const search = {
 const catalog = {
   Products: [{
     ProductId: '9GAME123',
+    ProductType: 'Game',
     DisplaySkuAvailabilities: [{ Sku: { Properties: { Packages: [{
       PackageFormat: 'MSIXVC',
       PlatformDependencies: [{ PlatformName: 'Windows.Desktop' }],
     }] } } }],
   }, {
     ProductId: '9BUNDLE1',
+    ProductType: 'Game',
     DisplaySkuAvailabilities: [{ Sku: { Properties: { Packages: [] } } }],
   }],
 };
@@ -212,7 +214,7 @@ describe('CatalogService', () => {
 
 describe('Store-only offer policy',()=>{
  const sku=(price:number,props:Record<string,unknown>={},type='full')=>({Sku:{SkuType:type,Properties:props},Availabilities:[{OrderManagementData:{Price:{MSRP:price,ListPrice:price}}}]});
- const parse=(skus:unknown[],extra={},policy:'store'|'library'='store')=>parseCatalogProducts({productsList:[{productId:'9AAAAAAAAAAA',title:'Free Spirit',isGame:true,...extra}]},{Products:[{ProductId:'9AAAAAAAAAAA',DisplaySkuAvailabilities:skus}]},policy);
+ const parse=(skus:unknown[],extra={},policy:'store'|'library'='store')=>parseCatalogProducts({productsList:[{productId:'9AAAAAAAAAAA',title:'Free Spirit',isGame:true,...extra}]},{Products:[{ProductId:'9AAAAAAAAAAA',ProductType:'Game',DisplaySkuAvailabilities:skus}]},policy);
  it('excludes structured free, trial and demo but retains paid and missing/malformed prices',()=>{
   expect(parse([sku(0)])).toEqual([]);
   expect(parse([sku(0,{IsTrial:true})])).toEqual([]);
@@ -239,7 +241,7 @@ describe('Store-only offer policy',()=>{
   expect(parse([sku(30,{...pkg,IsPreOrder:true}),sku(30,{IsTrial:false})])[0].installability).not.toBe('supported');
  });
  it('handles malformed rows without treating absent prices as free',()=>{
-  expect(parseCatalogProducts({productsList:[null,{},false,{productId:'9AAAAAAAAAAA',title:'Valid'}]}, {Products:[null]},'store')).toHaveLength(1);
+  expect(parseCatalogProducts({productsList:[null,{},false,{productId:'9AAAAAAAAAAA',title:'Valid'}]}, {Products:[null,{ProductId:'9AAAAAAAAAAA',ProductType:'Game'}]},'store')).toHaveLength(1);
  });
  it('applies the same policy to actual search and featured service paths while preserving licensed games',async()=>{
   const id='9AAAAAAAAAAA';

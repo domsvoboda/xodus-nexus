@@ -297,7 +297,10 @@ export function parseCatalogProducts(search: StoreSearchResponse, catalog: Displ
     const productId = string(product.productId)?.toUpperCase();
     const title = string(product.title);
     if (!productId || !title || product.isGame === false) return [];
-    if(policy==='store' && excludedStoreOffer(product as Record<string,unknown>,detailMap.get(productId)))return [];
+    const detail=detailMap.get(productId);
+    // Game includes base games and game bundles. Endpoint mediaType/isGame
+    // alone also admits extras; children cannot change the offer's own type.
+    if(policy==='store' && (detail?.ProductType!=='Game' || excludedStoreOffer(product as Record<string,unknown>,detail)))return [];
     const support = packageSupport(productId, detailMap);
     return [{
       productId,
