@@ -73,7 +73,16 @@ vi.mock('electron', () => ({
 vi.mock('./backend.js', () => ({ LINUX_RUN_PATCH: 'test-patch', BackendManager: class {
   get current() { return h.backend; } async refresh() {h.backendRefreshes++;} async checkUpdate() {} async externalDownloadRunning() { return false; }
   setExternalRoot() {} } }));
-vi.mock('./runtime.js', () => ({ RuntimeManager: class { get current() { return h.runtime; } async refresh() {h.runtimeRefreshes++;} async checkNexus() {} setRoot() {} } }));
+vi.mock('./runtime.js', async original => {
+  const actual = await original<typeof import('./runtime.js')>();
+  // Keep actual mutation ownership and root binding; only component probes are
+  // replaced, so Settings exercises the same reservation as production IPC.
+  return { RuntimeManager: class extends actual.RuntimeManager {
+    get current() { return { ...h.runtime, runtimeRoot: super.current.runtimeRoot, updating: super.current.updating }; }
+    async refresh() { h.runtimeRefreshes++; return this.current; }
+    async checkNexus() { return this.current; }
+  } };
+});
 vi.mock('./catalog.js', () => ({ CatalogService: class { async artwork() { return new Map(); } posters = h.posters; } }));
 vi.mock('./account-profile.js', () => ({ AccountProfile: class { async select() {} cancel() {} } }));
 vi.mock('./launcher-update.js', () => ({ LauncherUpdater: class { state = {}; async initialize() {} async check() {} cancel() {} } }));
@@ -231,6 +240,8 @@ it.each(['market','winePath','externalXodusRoot','runtimeRoot'] as const)
     await ipc('update-settings',{[key]:selected});
     expect([h.backendRefreshes,h.runtimeRefreshes]).toEqual(counts.map(n=>n+1));
     expect(h.accountRequests).toBe(accounts+1);expect(snapshot().settings[key]).toBe(selected);
+    expect(snapshot().runtime.updating).toBe(false);
+    expect(snapshot().runtime.runtimeRoot).toBe(snapshot().settings.runtimeRoot);
   }finally{await ipc('update-settings',{[key]:previous});}
 });
 
