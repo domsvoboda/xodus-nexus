@@ -1,3 +1,4 @@
+import {ManagedRuntimeManager} from './managed-runtime.js';
 import {commitRuntimePointer,type PointerCommitResult} from './runtime-pointer-commit.js';
 import {installedRuntimeFamilies} from './runtime-families.js';
 import {runtimeWineFailure} from './runtime-prerequisites.js';
@@ -65,6 +66,7 @@ type AfterInstall = ((winePath: string) => Promise<void>) | {
 interface Activation {winePath:string;pointer:PointerCommitResult;}
 
 export class RuntimeManager {
+  private managed:ManagedRuntimeManager;
   private mutation?: symbol;
   private settingsReservation?: RuntimeSettingsReservation;
   private status: RuntimeStatus;
@@ -75,7 +77,7 @@ export class RuntimeManager {
   private readonly fetcher: typeof fetch;
   private readonly hostArch: string;
 
-  constructor(runtimeRoot: string, emitLog: (scope: string, line: string) => void, isOperationActive: () => boolean, fetcher: typeof fetch = fetch, hostArch: string = process.arch) {
+  constructor(runtimeRoot: string, emitLog: (scope: string, line: string) => void, isOperationActive: () => boolean, fetcher: typeof fetch = fetch, hostArch: string = process.arch, versions:()=>{launcher:string;backend:string}=()=>({launcher:'0.0.0',backend:'0.0.0'}), managedNotify:()=>void=()=>{}) {
     this.emitLog = emitLog;
     this.isOperationActive = isOperationActive;
     this.fetcher = fetcher;
@@ -88,9 +90,14 @@ export class RuntimeManager {
       artifactAvailable: false,
       prerequisites: { gh: false, authenticated: false, tar: false, sha512sum: false },
     };
+    this.managed=new ManagedRuntimeManager({root:()=>this.status.runtimeRoot,reserve:()=>this.reserveMutation(),versions,fetcher,arch:hostArch,notify:managedNotify,completed:()=>{this.status.managedRevision=(this.status.managedRevision??0)+1;}});
   }
 
-  get current(): RuntimeStatus { return structuredClone(this.status); }
+  get current(): RuntimeStatus { return structuredClone({...this.status,managedFamilies:this.managed.current}); }
+  checkManagedRuntime(family:unknown,options:unknown,onStatus:()=>void=()=>{}) {return this.managedCheck(family,options,onStatus);}
+  private async managedCheck(family:unknown,options:unknown,onStatus:()=>void) {try{onStatus();return await this.managed.check(family,options);}finally{onStatus();}}
+  async installManagedRuntime(family:unknown,expected:unknown,options:unknown,onStatus:()=>void=()=>{}) {const result=await this.managed.install(family,expected,options);try{await this.refreshFamilies();onStatus();}catch(error){return {...result,success:false,error:[result.error,'Updating runtime status failed: '+(error as Error).message].filter(Boolean).join(' ')};}return result;}
+  managedTarget(family:unknown){return this.managed.target(family);}
   get busy(): boolean { return this.mutation !== undefined; }
   setRoot(root: string): void {
     if (this.busy) throw new Error('The runtime cannot be changed while a Xodus operation is active.');
@@ -144,10 +151,12 @@ export class RuntimeManager {
   }
 
   async refreshFamilies() {
-    const root=this.status.runtimeRoot;
+    const root=this.status.runtimeRoot,revision=this.managed.revision;
     const variants=await installedRuntimeFamilies(root,this.hostArch);
     if(root!==this.status.runtimeRoot)throw Error('Runtime location changed. Check installed families again.');
+    if(revision!==this.managed.revision)return structuredClone(this.status.variants??[]);
     this.status.variants=variants;
+    await this.managed.refresh();
     return structuredClone(variants);
   }
 

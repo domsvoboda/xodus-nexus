@@ -1665,6 +1665,8 @@ function registerDemoIpc(catalogMarket: () => string): void {
   ipcMain.handle('runtime-families', () => []);
   ipcMain.handle('runtime-check-update', () => snapshot().runtime);
   ipcMain.handle('runtime-check-nexus', () => snapshot().runtime);
+  ipcMain.handle('runtime-family-check', () => {throw Error('Managed runtime installation is unavailable in the synthetic demo.');});
+  ipcMain.handle('runtime-family-install', () => {throw Error('Managed runtime installation is unavailable in the synthetic demo.');});
   ipcMain.handle('runtime-install', () => {});
   ipcMain.handle('runtime-install-nexus', () => {});
   ipcMain.handle('runtime-rollback-preview', () => {});
@@ -1830,6 +1832,8 @@ function registerIpc(): void {
       await refreshAccount(false);
     });
   });
+  ipcMain.handle('runtime-family-check', (_event,family:unknown,options:unknown) => runtime.checkManagedRuntime(family,options,emitSnapshot));
+  ipcMain.handle('runtime-family-install', (_event,family:unknown,expected:unknown,options:unknown) => {ensureIdle();return runtime.installManagedRuntime(family,expected,options,emitSnapshot);});
   ipcMain.handle('runtime-check-update', async () => { const value = await runtime.check(); emitSnapshot(); return value; });
   ipcMain.handle('runtime-check-nexus', async () => { const value = await runtime.checkNexus(); emitSnapshot(); return value; });
   ipcMain.handle('runtime-install', async () => {
@@ -2587,7 +2591,7 @@ app.whenReady().then(async () => {
     }
   }
   await store.patchGames(inspectedGames);
-  runtime = new RuntimeManager(store.settings.runtimeRoot, emitLog, () => preparingLaunch || finalizingGame || downloadCancellations.size > 0 || operations.size > 0 || installQueue.size > 0 || preparingInstall || backend?.current.updating === true);
+  runtime = new RuntimeManager(store.settings.runtimeRoot, emitLog, () => preparingLaunch || finalizingGame || downloadCancellations.size > 0 || operations.size > 0 || installQueue.size > 0 || preparingInstall || backend?.current.updating === true, fetch, process.arch, () => ({launcher:app.getVersion(),backend:backend?.current.version??'0.0.0'}), emitSnapshot);
   backend = new BackendManager(app.getPath('userData'), store.settings.externalXodusRoot, emitLog, () => keyringSupport.busy || downloadCancellations.size > 0 || operations.size > 0 || installQueue.size > 0 || preparingInstall || runtime?.busy === true);
   await backend.refresh();
   await runtime.refresh();
