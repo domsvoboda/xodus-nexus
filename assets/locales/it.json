@@ -120,6 +120,5 @@
   "message.microsoft_package_metadata_was_unavailable_you_c_1e1a1b9": "I metadata del pacchetto Microsoft non sono disponibili. Puoi comunque utilizzare l'installazione manuale tramite Product ID.",
   "message.microsoft_refused_the_offline_permission_request_eddf61e": "Microsoft ha negato la richiesta per il permesso offline.",
   "message.microsoft_rejected_content_licensing_sign_in_htt_79214ca": "Microsoft ha rifiutato il login per le licenze dei contenuti (HTTP 401). Effettua nuovamente il login nelle Impostazioni.",
-  "message.microsoft_rejected_the_request_sign_in_again_4e90559": "Microsoft ha rifiutato la richiesta. Effettua nuovamente il login nelle Impostazioni.",
-  "library.all_locations": "Tutte le posizioni"
+  "message.microsoft_rejected_the_request_sign_in_again_4e90559": "Microsoft ha rifiutato la richiesta. Effettua nuovamente il login nelle Impostazioni."
 }

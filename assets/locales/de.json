@@ -111,6 +111,5 @@
   "message.microsoft_content_licensing_returned_a_server_er_44d6063": "Die Microsoft Inhaltslizensierung meldet einen Server-Fehler (HTTP {{code}}). Versuche es später erneut.",
   "message.microsoft_content_licensing_timed_out_check_your_af25eae": "Die Microsoft Inhaltslizensierung hat die Zeitbegrenzung ausgelöst. Prüfe deine Verbindung und versuche es erneut.",
   "message.microsoft_could_not_be_reached_check_your_31b6c73": "Microsoft konnte nicht erreicht werden. Prüfe deine Verbindung und versuche es erneut.",
-  "native.download_complete_2063789": "Download abgeschlossen",
-  "library.all_locations": "Alle Speicherorte"
+  "native.download_complete_2063789": "Download abgeschlossen"
 }

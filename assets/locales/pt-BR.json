@@ -1074,6 +1074,5 @@
   "ui.your_pc_games_brought_together_354f2fc": "Seus jogos de PC, todos em um só lugar.",
   "ui.your_settings_and_games_will_not_change_3e99619": "Suas configurações e jogos não serão alterados.",
   "ui.your_wallet_provider_handles_its_password_window_eb886e1": "O provedor da sua carteira cuida da própria janela de senha. O Nexus não recebe a senha, não habilita uma carteira desabilitada nem redefine credenciais armazenadas.",
-  "settings.cache_limit_error": "Insira um limite de cache entre 0,25 e 1024 GiB.",
-  "library.all_locations": "Todos os locais"
+  "settings.cache_limit_error": "Insira um limite de cache entre 0,25 e 1024 GiB."
 }

@@ -756,6 +756,5 @@
   "downloads.update_backend_required": "Zaktualizuj backend Nexus w Ustawieniach, zanim bezpiecznie zaktualizujesz zainstalowane gry.",
   "downloads.update_validation_failed": "Weryfikacja aktualizacji nie powiodła się. Wznów aktualizację przed rozpoczęciem gry.",
   "friends.send_shortcut": "Enter, aby wysłać; Shift+Enter, aby dodać nową linię.",
-  "game.back_to_store": "Powrót do Sklepu",
-  "library.all_locations": "Wszystkie lokalizacje"
+  "game.back_to_store": "Powrót do Sklepu"
 }

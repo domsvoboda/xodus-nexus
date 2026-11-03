@@ -751,6 +751,5 @@
   "ui.your_pc_games_brought_together_354f2fc": "你的 PC 游戏，尽归一处。",
   "ui.your_settings_and_games_will_not_change_3e99619": "你的设置和游戏不会改变。",
   "ui.your_wallet_provider_handles_its_password_window_eb886e1": "钱包提供商自行处理其密码窗口。Nexus 不接收密码，也不启用已禁用的钱包或重置存储的凭据。",
-  "settings.cache_limit_error": "请输入 0.25 至 1024 GiB 之间的缓存上限。",
-  "library.all_locations": "所有位置"
+  "settings.cache_limit_error": "请输入 0.25 至 1024 GiB 之间的缓存上限。"
 }
