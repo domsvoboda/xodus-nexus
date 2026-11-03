@@ -16,6 +16,17 @@ const EMPTY_CAPABILITIES: BackendCapabilities = {
 };
 
 interface ManagedPointer { commit: string; binaryPath: string; builtAt: string; linuxRunPatch?: string; recipeSha256?: string; version?: string; delivery?: 'release' | 'local' }
+type BackendMutation = 'update' | 'rebuild';
+export type BackendMutationTarget = Readonly<Pick<ManagedPointer, 'commit' | 'binaryPath' | 'version' | 'delivery'>>;
+/** Publication of current.json is a commit boundary, not a durability claim. */
+export class BackendMutationError extends Error {
+  readonly target?: BackendMutationTarget;
+  constructor(cause: unknown, readonly operation: BackendMutation, readonly committed: boolean, target?: BackendMutationTarget) {
+    super(cause instanceof Error ? cause.message : String(cause), { cause });
+    this.name = 'BackendMutationError';
+    this.target = target ? Object.freeze({ ...target }) : undefined;
+  }
+}
 
 export class BackendManager {
   private status: BackendStatus;
@@ -25,6 +36,8 @@ export class BackendManager {
   private isOperationActive: () => boolean;
   private artifact?: BackendArtifact;
   private probeFailure?: string;
+  private reconciliationEpoch = 0;
+  private refreshSequence = 0;
 
   constructor(
     userData: string,
@@ -51,7 +64,7 @@ export class BackendManager {
 
   get current(): BackendStatus { return structuredClone(this.status); }
 
-  setExternalRoot(root: string): void { this.status.externalRoot = root; }
+  setExternalRoot(root: string): void { this.status.externalRoot = root; this.reconciliationEpoch++; }
 
   private async commandExists(command: string): Promise<boolean> {
     try { return (await run(command, ['--version'], { maxOutput: 20_000 })).code === 0; } catch { return false; }
@@ -112,9 +125,13 @@ export class BackendManager {
   }
 
   async refresh(): Promise<BackendStatus> {
+    const epoch = this.reconciliationEpoch, sequence = ++this.refreshSequence;
+    const externalRoot = this.status.externalRoot;
+    const current = () => epoch === this.reconciliationEpoch && sequence === this.refreshSequence;
     const [git, cargo, rustc, protoc] = await Promise.all([
       this.commandExists('git'), this.commandExists('cargo'), this.commandExists('rustc'), this.commandExists('protoc'),
     ]);
+    if (!current()) return this.current;
     this.status.prerequisites = { git, cargo, rustc, protoc };
 
     let validationFailure: string | undefined;
@@ -125,33 +142,36 @@ export class BackendManager {
     const pointer = await this.readPointer();
     if (pointer) {
       const capabilities = await validate(pointer.binaryPath);
+      if (!current()) return this.current;
       if (capabilities) {
         this.probeFailure = undefined;
         Object.assign(this.status, {
           available: true, source: 'managed', binaryPath: pointer.binaryPath,
           commit: pointer.commit, capabilities, blockReason: undefined,
-          linuxRunPatch: pointer.linuxRunPatch,
+          linuxRunPatch: pointer.linuxRunPatch, recipeSha256: pointer.recipeSha256,
           version: pointer.version, delivery: pointer.delivery,
         });
         return this.current;
       }
     }
 
-    const externalBinary = path.join(this.status.externalRoot, 'target', 'release', 'xodus-cli');
+    const externalBinary = path.join(externalRoot, 'target', 'release', 'xodus-cli');
     const capabilities = await validate(externalBinary);
+    const commit = capabilities ? await this.gitCommit(externalRoot) : undefined;
+    if (!current()) return this.current;
     if (capabilities) {
       this.probeFailure = undefined;
       Object.assign(this.status, {
         available: true, source: 'external', binaryPath: externalBinary,
-        commit: await this.gitCommit(this.status.externalRoot), capabilities, blockReason: undefined,
-        linuxRunPatch: undefined,
+        commit, capabilities, blockReason: undefined,
+        linuxRunPatch: undefined, recipeSha256: undefined,
         version: undefined, delivery: undefined,
       });
     } else {
       this.probeFailure = validationFailure;
       Object.assign(this.status, {
         available: false, source: 'none', binaryPath: undefined, commit: undefined,
-        version: undefined, delivery: undefined, linuxRunPatch: undefined,
+        version: undefined, delivery: undefined, linuxRunPatch: undefined, recipeSha256: undefined,
         capabilities: EMPTY_CAPABILITIES,
         blockReason: validationFailure ?? 'No validated xodus-cli with login and streaming commands was found.',
       });
@@ -196,15 +216,24 @@ export class BackendManager {
   }
 
   async update(onStatus: () => void): Promise<void> {
-    await this.assertUpdateAllowed();
     if (this.status.updating) throw new Error('A backend installation is already running.');
+    // Reserve before the first awaited external activity check. Notification
+    // failures must also release this reservation.
     this.status.updating = true;
+    this.reconciliationEpoch++;
     this.status.blockReason = undefined;
-    onStatus();
+    let committed = false;
+    let failure: BackendMutationError | undefined;
+    let target: BackendMutationTarget | undefined;
+    let reconciled = false;
     try {
-      // Refresh discovery at install time; do not use a stale candidate.
-      this.artifact = await discoverBackend(this.fetcher);
-      const binaryPath = await installBackend(this.managedRoot, this.artifact, this.fetcher, async cli => {
+      onStatus();
+      await this.assertUpdateAllowed();
+      // Keep this operation's verified target independent of later read-only
+      // release checks, which may replace the manager's discovery cache.
+      const artifact = await discoverBackend(this.fetcher);
+      this.artifact = artifact;
+      const binaryPath = await installBackend(this.managedRoot, artifact, this.fetcher, async cli => {
         const caps = await this.validate(cli);
         if (!caps?.account || !caps.run || !caps.streaming || !caps.login || !caps.logout || !caps.download || !caps.externalAuth || !caps.packageSelection) {
           throw new Error('Backend validation failed. The prebuilt build requires glibc 2.35 or newer, OpenSSL 3 and D-Bus runtime libraries.');
@@ -215,34 +244,75 @@ export class BackendManager {
         this.status.phase = message; this.emitLog('backend', message); onStatus();
       });
       await this.assertUpdateAllowed();
-      const manifest = this.artifact.manifest;
+      const manifest = artifact.manifest;
       const pointer: ManagedPointer = { commit: manifest.commit, binaryPath, builtAt: new Date().toISOString(),
         linuxRunPatch: manifest.compatibility, recipeSha256: manifest.recipeSha256, version: manifest.version, delivery: 'release' };
+      target = { commit: pointer.commit, binaryPath, version: pointer.version, delivery: pointer.delivery };
       const temporary = `${this.pointerFile}.${randomUUID()}.tmp`;
-      try { await fs.writeFile(temporary, JSON.stringify(pointer, null, 2)); await fs.rename(temporary, this.pointerFile); }
-      finally { await fs.rm(temporary, { force: true }); }
-      await this.refresh();
-      Object.assign(this.status, { releaseAvailable: true, releaseVersion: manifest.version, updateAvailable: false, phase: 'Backend is ready.' });
+      try {
+        await fs.writeFile(temporary, JSON.stringify(pointer, null, 2));
+        await fs.rename(temporary, this.pointerFile);
+        committed = true;
+        this.reconciliationEpoch++;
+      } finally {
+        // Rename consumed our temporary path. Never remove a replacement file
+        // created at that name after publication.
+        if (!committed) await fs.rm(temporary, { force: true });
+      }
+      Object.assign(this.status, { available: false, capabilities: EMPTY_CAPABILITIES, source: 'managed', binaryPath, commit: manifest.commit,
+        linuxRunPatch: manifest.compatibility, recipeSha256: manifest.recipeSha256,
+        version: manifest.version, delivery: 'release', phase: 'Backend activated; checking availability.' });
+      const refreshed = await this.refresh();
+      if (!refreshed.available || refreshed.source !== 'managed' || refreshed.binaryPath !== binaryPath) {
+        throw new Error('The selected backend could not be confirmed after activation.');
+      }
+      reconciled = true;
+      // A concurrent read-only check may have discovered a newer release.
+      const latest = this.artifact?.manifest;
+      Object.assign(this.status, { releaseAvailable: Boolean(latest), releaseVersion: latest?.version,
+        updateAvailable: Boolean(latest && compareVersions(manifest.version, latest.version) < 0), phase: 'Backend is ready.' });
     } catch (error) {
-      this.status.blockReason = (error as Error).message;
-      this.status.phase = 'Backend update failed; the previous backend was kept.';
-      throw error;
-    } finally { this.status.updating = false; onStatus(); }
+      if (committed && !reconciled) Object.assign(this.status, { available: false, capabilities: EMPTY_CAPABILITIES,
+        source: 'managed', ...target });
+      failure = this.mutationFailure('update', error, committed, target);
+      throw failure;
+    } finally {
+      this.status.updating = false;
+      this.notifyMutation('update', onStatus, committed, target, failure);
+    }
+  }
+
+  private mutationFailure(operation: BackendMutation, error: unknown, committed: boolean, target?: BackendMutationTarget): BackendMutationError {
+    const failure = new BackendMutationError(error, operation, committed, target);
+    this.status.blockReason = failure.message;
+    this.status.phase = committed ? 'Backend activated; finishing setup needs attention.' : 'Backend update failed; no new backend was activated.';
+    return failure;
+  }
+
+  private notifyMutation(operation: BackendMutation, onStatus: () => void, committed: boolean, target?: BackendMutationTarget, failure?: BackendMutationError): void {
+    try { onStatus(); } catch (error) {
+      const reason = failure ? new AggregateError([failure, error], failure.message + ' Status notification failed.') : error;
+      throw this.mutationFailure(operation, reason, committed, target);
+    }
   }
 
   async rebuild(onStatus: () => void): Promise<void> {
-    await this.assertUpdateAllowed();
     if (this.status.updating) throw new Error('A backend installation is already running.');
-    if (!this.status.prerequisites.git || !this.status.prerequisites.cargo || !this.status.prerequisites.rustc || !this.status.prerequisites.protoc) {
-      throw new Error('Git, Cargo, Rust, or protoc is missing. Check the build dependencies in Settings.');
-    }
     this.status.updating = true;
+    this.reconciliationEpoch++;
     this.status.blockReason = undefined;
-    onStatus();
-    await fs.mkdir(path.join(this.managedRoot, 'releases'), { recursive: true });
     const staging = path.join(this.managedRoot, `.staging-${randomUUID()}`);
     const log = (line: string) => this.emitLog('backend', line);
+    let committed = false, reconciled = false;
+    let failure: BackendMutationError | undefined;
+    let targetIdentity: BackendMutationTarget | undefined;
     try {
+      onStatus();
+      await this.assertUpdateAllowed();
+      if (!this.status.prerequisites.git || !this.status.prerequisites.cargo || !this.status.prerequisites.rustc || !this.status.prerequisites.protoc) {
+        throw new Error('Git, Cargo, Rust, or protoc is missing. Check the build dependencies in Settings.');
+      }
+      await fs.mkdir(path.join(this.managedRoot, 'releases'), { recursive: true });
       log(`Cloning the pinned Xodus source ${backendLock.commit}…`);
       let result = await run('git', ['clone', '--no-checkout', REPOSITORY, staging], { onLine: log });
       if (result.code !== 0) throw new Error(`git clone exited with code ${result.code}`);
@@ -282,21 +352,31 @@ export class BackendManager {
       await fs.writeFile(path.join(releaseDir, 'metadata.json'), JSON.stringify({ commit, builtAt: new Date().toISOString(), capabilities, linuxRunPatch: LINUX_RUN_PATCH }, null, 2));
       const pointer: ManagedPointer = { commit, binaryPath: managedCli, builtAt: new Date().toISOString(), linuxRunPatch: LINUX_RUN_PATCH,
         recipeSha256: backendRecipeSha256, version: backendLock.version, delivery: 'local' };
-      const pointerTmp = `${this.pointerFile}.tmp`;
-      await fs.writeFile(pointerTmp, JSON.stringify(pointer, null, 2));
-      await fs.rename(pointerTmp, this.pointerFile);
+      targetIdentity = { commit, binaryPath: managedCli, version: pointer.version, delivery: pointer.delivery };
+      const pointerTmp = `${this.pointerFile}.${randomUUID()}.tmp`;
+      try {
+        await fs.writeFile(pointerTmp, JSON.stringify(pointer, null, 2));
+        await fs.rename(pointerTmp, this.pointerFile);
+        committed = true;
+        this.reconciliationEpoch++;
+      } finally { if (!committed) await fs.rm(pointerTmp, { force: true }); }
       Object.assign(this.status, {
-        available: true, source: 'managed', binaryPath: managedCli, commit,
-        upstreamCommit: commit, updateAvailable: false, capabilities, linuxRunPatch: LINUX_RUN_PATCH,
+        available: false, source: 'managed', binaryPath: managedCli, commit,
+        upstreamCommit: commit, updateAvailable: false, capabilities: EMPTY_CAPABILITIES, linuxRunPatch: LINUX_RUN_PATCH,
       });
+      const refreshed = await this.refresh();
+      if (!refreshed.available || refreshed.source !== 'managed' || refreshed.binaryPath !== managedCli) throw new Error('The selected backend could not be confirmed after activation.');
+      reconciled = true;
       log('The new backend passed validation and was activated atomically. Older builds were preserved.');
     } catch (error) {
-      this.status.blockReason = (error as Error).message;
-      throw error;
+      if (committed && !reconciled) Object.assign(this.status, { available: false, capabilities: EMPTY_CAPABILITIES,
+        source: 'managed', ...targetIdentity });
+      failure = this.mutationFailure('rebuild', error, committed, targetIdentity);
+      throw failure;
     } finally {
-      this.status.updating = false;
       await fs.rm(staging, { recursive: true, force: true }).catch(() => undefined);
-      onStatus();
+      this.status.updating = false;
+      this.notifyMutation('rebuild', onStatus, committed, targetIdentity, failure);
     }
   }
 }
