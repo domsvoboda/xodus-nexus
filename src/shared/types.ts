@@ -1,4 +1,4 @@
-import type {GameRuntimeSelection,InstalledRuntimeFamily,RuntimeBuildApproval,RuntimePrefixAnchors} from './runtime-selection.js';
+import type {RuntimeFamily,GameRuntimeSelection,InstalledRuntimeFamily,RuntimeBuildApproval,RuntimePrefixAnchors} from './runtime-selection.js';
 export type Page = 'home' | 'store' | 'library' | 'downloads' | 'settings' | 'social';
 
 export interface BackendCapabilities {
@@ -80,7 +80,19 @@ export interface BackendStatus {
   phase?: string;
 }
 
+export interface ManagedRuntimeOptions {allowCachyos:boolean;allowPrerelease:boolean;}
+export interface ManagedFamilyStatus {
+  id:RuntimeFamily;installed?:InstalledRuntimeFamily;version?:string;
+  available?:{version:string;candidateSha256:string;sourceCommit:string;archiveName:string;requiresBackendVersion:string;requiresLauncherVersion:string};
+  checking:boolean;installing:boolean;phase?:string;error?:string;
+}
+export interface ManagedFamilyInstallResult {
+  family:RuntimeFamily;success:boolean;committed:boolean;buildId?:string;
+  durability:'confirmed'|'unknown'|'not-committed';error?:string;
+}
 export interface RuntimeStatus {
+  managedFamilies?:ManagedFamilyStatus[];
+  managedRevision?:number;
   variants?: InstalledRuntimeFamily[];
   installed: boolean;
   checking: boolean;
@@ -588,6 +600,8 @@ export interface LauncherApi {
   refreshRuntime(): Promise<RuntimeStatus>;
   getRuntimeFamilies(): Promise<InstalledRuntimeFamily[]>;
   checkRuntimeUpdate(): Promise<RuntimeStatus>;
+  checkManagedRuntime(family:RuntimeFamily,options:ManagedRuntimeOptions):Promise<ManagedFamilyStatus>;
+  installManagedRuntime(family:RuntimeFamily,expectedCandidateSha256:string,options:ManagedRuntimeOptions):Promise<ManagedFamilyInstallResult>;
   checkNexusRuntime(): Promise<RuntimeStatus>;
   installRuntime(): Promise<void>;
   installNexusRuntime(): Promise<void>;
