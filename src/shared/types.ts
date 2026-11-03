@@ -232,6 +232,27 @@ export interface Settings {
   firstRunCompleted?: boolean;
 }
 
+export type ComponentUpdateOutcome = 'updated' | 'unchanged' | 'skipped' | 'stale' | 'committed-needs-attention' | 'failed-before-commit' | 'not-run' | 'deferred';
+export interface ComponentUpdatePlanItem {
+  id: string;
+  component: 'backend' | 'runtime' | 'launcher';
+  label: string;
+  currentVersion?: string;
+  targetVersion?: string;
+  state: 'ready' | 'unchanged' | 'skipped' | 'deferred';
+  reason?: string;
+}
+export interface ComponentUpdatePlan { id: string; createdAt: string; items: ComponentUpdatePlanItem[] }
+export interface ComponentUpdateItemResult {
+  id: string;
+  outcome: ComponentUpdateOutcome;
+  message?: string;
+  committed: boolean;
+  retryable: boolean;
+}
+export interface ComponentUpdateBatchResult { planId: string; items: ComponentUpdateItemResult[]; restartRequired: boolean }
+export interface ComponentUpdatesStatus { running: boolean; phase?: string; plan?: ComponentUpdatePlan; result?: ComponentUpdateBatchResult }
+
 export interface LauncherUpdate {
   currentVersion: string;
   latestVersion?: string;
@@ -306,6 +327,7 @@ export interface AppSnapshot {
   settings: Settings;
   auth: AuthStatus;
   launcherUpdate?: LauncherUpdate;
+  componentUpdates?: ComponentUpdatesStatus;
   gameOperation?: GameOperation;
   gameUpdates?: Record<string, GameUpdate>;
   downloadProgressSupported?: boolean;
@@ -611,6 +633,10 @@ export interface LauncherApi {
   startKeyring(): Promise<KeyringStatus>;
   createKeyringCollection(): Promise<KeyringStatus>;
   onKeyringStatus(callback: (status: KeyringStatus) => void): () => void;
+  planComponentUpdates(): Promise<ComponentUpdatePlan>;
+  applyComponentUpdates(planId: string): Promise<ComponentUpdateBatchResult>;
+  getComponentUpdatesStatus(): Promise<ComponentUpdatesStatus>;
+  retryComponentUpdate(planId: string, itemId: string): Promise<ComponentUpdateBatchResult>;
   checkLauncherUpdate(): Promise<LauncherUpdate | undefined>;
   installLauncherUpdate(): Promise<void>;
   restartLauncher(): Promise<void>;

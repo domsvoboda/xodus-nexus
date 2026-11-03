@@ -100,6 +100,10 @@ const api: LauncherApi = {
     ipcRenderer.on('keyring-state', listener);
     return () => ipcRenderer.removeListener('keyring-state', listener);
   },
+  planComponentUpdates: () => ipcRenderer.invoke('component-updates-plan'),
+  applyComponentUpdates: (planId: string) => ipcRenderer.invoke('component-updates-apply', planId),
+  getComponentUpdatesStatus: () => ipcRenderer.invoke('component-updates-status'),
+  retryComponentUpdate: (planId: string, itemId: string) => ipcRenderer.invoke('component-updates-retry', planId, itemId),
   checkLauncherUpdate: () => ipcRenderer.invoke('check-launcher-update'),
   installLauncherUpdate: () => ipcRenderer.invoke('install-launcher-update'),
   restartLauncher: () => ipcRenderer.invoke('restart-launcher'),
