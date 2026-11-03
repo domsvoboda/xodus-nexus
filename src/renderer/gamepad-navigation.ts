@@ -516,6 +516,18 @@ export function installGamepadNavigation(win: Window, options: Options): () => v
     // leaving a game detail must not reselect/reset its Library page.
     focus(target);
   };
+  /** Up crosses a nested region to higher page controls before global search.
+   * Only the true page edge reaches search, without leaving a modal scope.
+   * The existing topbar Down exit restores this page's remembered field. */
+  const toTopbar = (element: HTMLElement, direction: Direction) => {
+    if (scope !== doc || direction !== 'up' || !element.closest('.page-scroll')) return;
+    const content = element.closest<HTMLElement>('.page-scroll')!;
+    const above = gridNavigationTarget(focusBox(element).getBoundingClientRect(), candidates(content).filter(target => target !== element)
+      .map(target => ({ value: target, rect: focusBox(target).getBoundingClientRect() })), direction);
+    if (above) return above;
+    const search = doc.querySelector<HTMLElement>('.topbar .search-box input');
+    return search && focusable(search) ? search : undefined;
+  };
   /** Explicit exits first, then the beam, then region fallbacks in priority order. */
   const move = (element: HTMLElement, direction: Direction) => {
     const exit = fromTopbar(element, direction) ?? fromSidebar(element, direction);
@@ -524,6 +536,7 @@ export function installGamepadNavigation(win: Window, options: Options): () => v
     const target = beam.choose(beam.region)
       ?? crossStoreRegions(element, direction, beam)
       ?? crossLibraryRows(element, direction, beam)
+      ?? toTopbar(element, direction)
       ?? toSocialToggle(element, direction);
     if (target) focus(target, true);
     else toSidebar(element, direction);
