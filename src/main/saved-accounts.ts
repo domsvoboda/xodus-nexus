@@ -4,7 +4,7 @@ import { spawnTracked } from './process.js';
 export interface SavedAccounts { accounts: string[]; active?: string }
 
 export const validAccountName = (name: unknown): name is string =>
-  typeof name === 'string' && Boolean(name.trim()) && name.length <= 128 && !/[\x00-\x1f\x7f]/.test(name);
+  typeof name === 'string' && Boolean(name.trim()) && name.length <= 512 && !/[\x00-\x1f\x7f]/.test(name);
 
 async function run(binary: string, args: string[]): Promise<{ code: number | null; output: string }> {
   const tracked = spawnTracked(binary, ['saved-accounts', ...args], { maxOutput: 100_000, stdoutOnly: true, outputDrainMs: 250 });
@@ -19,7 +19,7 @@ export function parseSavedAccounts(output: string): SavedAccounts | null {
     const line = output.split('\n').map(entry => entry.trim()).reverse().find(entry => entry.startsWith('{'));
     const value = JSON.parse(line ?? '') as { accounts?: unknown; active?: unknown };
     if (!Array.isArray(value.accounts)) return null;
-    return { accounts: [...new Set(value.accounts.filter(validAccountName))].slice(0, 50), active: validAccountName(value.active) ? value.active : undefined };
+    return { accounts: [...new Set(value.accounts.filter(validAccountName))].slice(0, 64), active: validAccountName(value.active) ? value.active : undefined };
   } catch { return null; }
 }
 

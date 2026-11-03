@@ -188,3 +188,7 @@ html[data-gamepad-navigation] .toast { bottom: 144px; }
 .game-dialog:has(.game-launch-tools) { width: min(640px, 100%); }
 label.check-field:not(.check-switch):has(.check-copy small) { align-items: flex-start; }
 label.check-field:not(.check-switch):has(.check-copy small) input { margin-top: 2px; }
+
+/* Keep complete saved identities in DOM/tooltips while fitting narrow account cards. */
+.saved-accounts .button-row > strong { flex: 1 1 160px; min-width: 0; max-width: 100%; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
+.account-card .settings-heading h2 { overflow-wrap: anywhere; }

@@ -1,4 +1,7 @@
 {
+  "auth.store_signed_out": "Store signed out",
+  "auth.store_account": "Store account",
+  "auth.change_player_account": "Change player account",
   "auth.sign_out_active_help": "Signs out active Store and player accounts and removes device registration. Saved Store accounts remain available until forgotten.",
   "auth.active_signed_out": "Active accounts signed out. Saved Store accounts are retained.",
   "auth.sign_out_all": "Sign out all accounts",
@@ -640,7 +643,7 @@
   "ui.saved_store_accounts_help_94be2d0": "Store and Game Pass accounts you signed in with stay saved. Each game starts with the account it was installed with.",
   "ui.account_switched_6a2e91c": "Store account switched",
   "ui.account_forgotten_c05d7e3": "Saved account forgotten",
-  "ui.player_account_help_1d6f365": "The account above owns the games and the subscription. Add a second account here to play, earn achievements and sync cloud saves under it.",
+  "ui.player_account_help_1d6f365": "The Store account provides game licenses and subscriptions. The Xbox player account is used for playing, achievements and cloud saves.",
   "ui.player_account_signed_in_ac36aa2": "Player account signed in",
   "ui.player_account_signed_out_6752e8f": "Player account signed out",
   "ui.sign_in_player_account_c15aa58": "Sign in player account",

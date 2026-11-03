@@ -105,3 +105,11 @@ it('requires readable active Store status before Forget can mutate credentials',
  await expect(f.request('forget')).rejects.toThrow('Refresh account status');
  expect(f.context.forgetSavedAccount).not.toHaveBeenCalled();expect(f.context.authJob).toBeUndefined();
 });
+
+it('accepts the full backend vault bounds without hiding valid saved accounts', () => {
+ const long='a'.repeat(499)+'@example.test';
+ expect(long).toHaveLength(512);
+ const accounts=[long,...Array.from({length:63},(_,i)=>`store-${i}@example.test`)];
+ expect(parseSavedAccounts(JSON.stringify({accounts,active:long}))).toEqual({accounts,active:long});
+ expect(parseSavedAccounts(JSON.stringify({accounts:['x'.repeat(513)]}))).toEqual({accounts:[],active:undefined});
+});

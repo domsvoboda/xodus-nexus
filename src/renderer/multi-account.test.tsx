@@ -3,7 +3,7 @@ import { act } from 'react';
 import { createRoot } from 'react-dom/client';
 import { renderToStaticMarkup } from 'react-dom/server';
 import { expect, it, vi } from 'vitest';
-import { SettingsPage } from './App';
+import { SettingsPage, Sidebar } from './App';
 import { useNotifications } from './Notifications';
 import { demoSnapshot } from '../shared/demo-data';
 import { messageNoticeKey } from './notification-state';
@@ -18,6 +18,7 @@ it('shows player credentials independently after Store sign-out and explains ful
   expect(html).toContain('Sign out all accounts');
   expect(html).toContain('Saved Store accounts remain available until forgotten.');
   expect(html).toContain('store@example.test');
+  expect(renderToStaticMarkup(<Sidebar data={data} page="settings" go={()=>{}} />)).toContain('Store signed out');
 });
 
 it('keeps notification reads and broker acknowledgements scoped to the effective Xbox player', async () => {
