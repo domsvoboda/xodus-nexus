@@ -43,8 +43,8 @@ it('applies strict public Store eligibility without changing the existing Librar
  const data=demoSnapshot();data.games=[];data.downloads=[];
  const store=renderToStaticMarkup(<CatalogGameDetails storeMode product={product} data={data} back={()=>{}} toast={()=>{}}/>);
  const library=renderToStaticMarkup(<CatalogGameDetails product={product} data={data} back={()=>{}} toast={()=>{}}/>);
- expect(store).not.toContain('>Install</button>');expect(store).not.toContain('Install location');
- expect(library).toContain('>Install</button>');expect(library).toContain('Install location');
+ expect(store).not.toContain('>Install</button>');expect(store).not.toContain('Install location');expect(store).not.toContain(product.supportNote);
+ expect(library).toContain('>Install</button>');expect(library).toContain('Install location');expect(library).toContain(product.supportNote);
  const page=renderToStaticMarkup(<StorePage data={data} toast={()=>{}} go={()=>{}} initialQuery=""/>);
  expect(page).not.toContain('manual-install');expect(page).not.toContain('Install unlisted ID');
 });

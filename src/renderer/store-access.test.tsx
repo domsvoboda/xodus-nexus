@@ -28,8 +28,8 @@ it('hides Install and location while access is pending/error, shows verified acc
  const node=document.createElement('div'),root=createRoot(node);
  const render=()=>act(async()=>root.render(<CatalogGameDetails storeMode product={product} data={data} back={()=>{}} toast={()=>{}}/>));
  try{
-  await render();expect(node.textContent).toContain('Store page');expect(node.querySelector('input')).toBeNull();expect(node.querySelector('[data-gamepad-play]')).toBeNull();
-  await act(async()=>resolve(evidence(data)));expect(node.querySelector('[data-gamepad-play]')?.textContent).toBe('Install');expect(node.querySelector('input')).not.toBeNull();
+  await render();expect(node.textContent).toContain('Store page');expect(node.querySelector('input')).toBeNull();expect(node.querySelector('[data-gamepad-play]')).toBeNull();expect(node.textContent).not.toContain(product.supportNote);
+  await act(async()=>resolve(evidence(data)));expect(node.querySelector('[data-gamepad-play]')?.textContent).toBe('Install');expect(node.querySelector('input')).not.toBeNull();expect(node.textContent).toContain(product.supportNote);
   data.auth={...data.auth,username:'different-store'};read.mockRejectedValueOnce(Error('unavailable'));await render();expect(node.querySelector('[data-gamepad-play]')).toBeNull();expect(node.querySelector('input')).toBeNull();
  }finally{await act(async()=>root.unmount());}
 });
