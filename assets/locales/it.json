@@ -9,7 +9,7 @@
   "auth.browser_error": "Impossibile aprire il browser per accedere. Google Chrome deve essere installato. Prova di nuovo o scegli un altro metodo.",
   "auth.cancel_passkey": "Annulla la richiesta di passkey",
   "auth.passkey_help": "Se il tuo account usa una passkey o chiave di sicurezza, continua su Google Chrome. O cancella questa richiesta per scegliere un altro metodo.",
-  "auth.passkey_label": "Aiuto passkey Xodus Nexus",
+  "auth.passkey_label": "Aiuto passkey Nexus Launcher",
   "auth.passkey_title": "La passkey ci sta mettendo troppo?",
   "auth.window_title": "Login Xodus",
   "common.cancel_game": "Annullare {{game}}?",

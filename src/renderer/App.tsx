@@ -236,7 +236,7 @@ export function HomePage({ data, go, action, openGame, returnFocusKey }: {
     <div className={`home-highlights${data.games.length>1?' has-secondary':''}`}>
     <section className={`spotlight ${spotlightArt ? 'has-art' : ''}`} style={spotlightArt ? { '--spotlight-art': `url(${spotlightArt})` } as React.CSSProperties : undefined}>
       <div className="spotlight-copy">
-        <span className="overline">{featured ? ui("ui.continue_playing_86c00e5") : 'XODUS NEXUS'}</span>
+        <span className="overline">{featured ? ui("ui.continue_playing_86c00e5") : 'NEXUS LAUNCHER'}</span>
         <h1>{featured?.title ?? ui("ui.your_pc_games_brought_together_354f2fc")}</h1>
         <p>{uiText(featured
           ? featured.installMessage ?? ui("ui.ready_in_your_library_ac8a64f", { publisher: featured.publisher ?? ui('home.local_installation') })
@@ -1010,7 +1010,7 @@ export function SettingsPage({ data, toast }: { data: AppSnapshot; toast: (value
       {data.launcherUpdate?.phase ? <p>{uiText(data.launcherUpdate.phase)}</p> : null}
       {data.launcherUpdate?.updating ? <div className="progress-track"><i style={{ width: `${data.launcherUpdate.progress ?? 0}%` }} /></div> : null}
       {data.launcherUpdate?.error ? <div className="alert amber"><CircleAlert /><span>{uiText(data.launcherUpdate.error)}</span></div> : null}
-      <div className="settings-heading"><div className="settings-icon"><Rocket /></div><div><span className="overline">XODUS NEXUS</span><h2>{data.launcherUpdate?.currentVersion ?? ui("ui.development_build_63d499e")}</h2>{data.launcherUpdate?.latestVersion ? <p>{ui("ui.version_is_available_cc7c84d", { version: data.launcherUpdate.latestVersion })}</p> : null}</div></div>
+      <div className="settings-heading"><div className="settings-icon"><Rocket /></div><div><span className="overline">NEXUS LAUNCHER</span><h2>{data.launcherUpdate?.currentVersion ?? ui("ui.development_build_63d499e")}</h2>{data.launcherUpdate?.latestVersion ? <p>{ui("ui.version_is_available_cc7c84d", { version: data.launcherUpdate.latestVersion })}</p> : null}</div></div>
       <div className="button-row">
         {data.launcherUpdate?.latestVersion && data.launcherUpdate.canInstall && !data.launcherUpdate.restartRequired ? <button className="primary" disabled={data.launcherUpdate.updating || Boolean(busy)} onClick={async () => { if (await confirm({ title: ui("ui.install_launcher_update_15498d2"), message: ui("ui.the_current_appimage_will_be_backed_up_games_and_8e8c5e5"), confirmLabel: ui("ui.install_update_cada421") })) void invoke('launcher-install', () => window.launcher.installLauncherUpdate()); }}><ArrowDownToLine />{data.launcherUpdate.updating ? ui("ui.updating_dfe40ef") : ui("ui.install_launcher_update_d1988d9")}</button> : null}
         {data.launcherUpdate?.releaseUrl && !data.launcherUpdate.canInstall ? <a className="primary" href={data.launcherUpdate.releaseUrl} target="_blank" rel="noreferrer"><ArrowDownToLine />{ui("ui.download_update_4f494b2")}</a> : null}

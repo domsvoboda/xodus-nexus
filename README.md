@@ -1,24 +1,24 @@
 <div align="center">
 
-<img src="assets/icon.png" width="96" alt="Xodus Nexus" />
+<img src="assets/icon.png" width="96" alt="Nexus Launcher" />
 
-# Xodus Nexus
+# Nexus Launcher
 
 Your Microsoft Store PC games, on Linux.
 
 [![CI](https://github.com/domsvoboda/xodus-nexus/actions/workflows/ci.yml/badge.svg)](https://github.com/domsvoboda/xodus-nexus/actions/workflows/ci.yml)
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 
-**[🌐 Help translate Xodus Nexus on Tolgee](https://app.tolgee.io/projects/36162)**
+**[🌐 Help translate Nexus Launcher on Tolgee](https://app.tolgee.io/projects/36162)**
 
 </div>
 
 > [!CAUTION]
-> **Xodus Nexus is an independent, unofficial project built on Xodus. It is not an official project or release from the upstream Xodus developers.**
+> **Nexus Launcher is an independent, unofficial project built on Xodus. It is not an official project or release from the upstream Xodus developers.**
 >
-> Please report all issues encountered with **Xodus Nexus** only in the [Xodus Nexus repository](https://github.com/domsvoboda/xodus-nexus/issues), not in the upstream Xodus issue tracker or support channels.
+> Please report all issues encountered with **Nexus Launcher** only in the [Nexus Launcher repository](https://github.com/domsvoboda/xodus-nexus/issues), not in the upstream Xodus issue tracker or support channels.
 >
-> Nexus includes its own changes, so a problem in Nexus does not necessarily indicate a problem in upstream Xodus.
+> Nexus Launcher includes its own changes, so a problem in Nexus Launcher does not necessarily indicate a problem in upstream Xodus.
 
 An Xbox-inspired launcher built on [Xodus](https://github.com/xodus-gaming/xodus),
 using our patched Nexus backend and Nexus runtime.
@@ -26,13 +26,13 @@ Browse the Store, install games you own or can access through a subscription,
 and play with one shared runtime. Xbox sign-in and cloud saves are available
 for supported games.
 
-![Xodus Nexus demo](docs/screenshots/demo.gif?v=dc773ded)
+![Nexus Launcher demo](docs/screenshots/demo.gif?v=dc773ded)
 
 *Preview with sample account data.*
 
 ## Community translations
 
-Help make Nexus available in your language. Open our
+Help make Nexus Launcher available in your language. Open our
 [public Tolgee project](https://app.tolgee.io/projects/36162), sign in and suggest
 translations for the launcher interface. No coding or GitHub access is needed.
 Maintainers review suggestions before including them in a release. Missing a
@@ -65,7 +65,7 @@ Flatpak version available through Discover. Other browsers are not supported.
 
 ## Uninstall
 
-Close Nexus and its games, then remove the application-menu installation without sudo:
+Close Nexus Launcher and its games, then remove the application-menu installation without sudo:
 
 ```sh
 curl -fsSL https://raw.githubusercontent.com/domsvoboda/xodus-nexus/main/scripts/uninstall.sh | bash
@@ -89,9 +89,9 @@ If you only downloaded an AppImage manually, delete that AppImage instead.
 - Right-click an installed game for settings, VC++ prerequisites, shortcuts or removal.
 - Removing a game can keep its files or permanently delete its installation folder without using Trash. Saves inside that folder are deleted too; saves elsewhere are not affected.
 - Game settings offer separate **DualSense** and **DualShock 4 compatibility modes** for controller detection. They apply only to the selected game. The DualSense fallback may disable advanced haptics and adaptive triggers.
-- Choose **Add to Steam** in the game menu, or **Add Nexus to Steam** in Settings, to create a Non-Steam shortcut with available artwork. Steam can stay running, including in Game Mode. Requires native Linux Steam; Flatpak Steam is not yet supported.
+- Choose **Add to Steam** in the game menu, or **Add Nexus Launcher to Steam** in Settings, to create a Non-Steam shortcut with available artwork. Steam can stay running, including in Game Mode. Requires native Linux Steam; Flatpak Steam is not yet supported.
 - Update the launcher, backend and runtime in **Settings**.
-- **Settings → Close Nexus to the system tray** keeps the launcher and downloads running after closing its window. Use the tray menu to reopen Nexus or quit. Requires a desktop system tray.
+- **Settings → Close to system tray** keeps the launcher and downloads running after closing its window. Use the tray menu to reopen Nexus Launcher or quit. Requires a desktop system tray.
 - **Settings → Interface language** selects a bundled translation independently of game language and Store region. Missing translations fall back to English.
 - **Settings → Downloads** sets a combined game download speed limit in MiB/s (0 means unlimited). A supporting Nexus backend is required; saving the limit also applies it to active downloads.
 - **Settings → Shader cache** sets the per-game Mesa/NVIDIA driver cache limit, 4 GiB by default. Changes apply on the next game launch; explicit environment overrides take precedence.
@@ -117,8 +117,8 @@ still need their servers. See [Xbox offline-play guidance](https://support.xbox.
 
 ## Wallet setup and unlocking
 
-- If the service is stopped, use **Start service**. Supported KDE wallets should also start automatically when Nexus opens in Game Mode.
-- If your wallet has a password, its native unlock window may appear. Enter your **wallet password**, which is not necessarily your Microsoft account password. Nexus does not receive this password.
+- If the service is stopped, use **Start service**. Supported KDE wallets should also start automatically when Nexus Launcher opens in Game Mode.
+- If your wallet has a password, its native unlock window may appear. Enter your **wallet password**, which is not necessarily your Microsoft account password. Nexus Launcher does not receive this password.
 - A wallet without a password should unlock without requiring password entry.
 - If no wallet exists, use **Create wallet** and complete the system dialog. On KDE, choose **Classic, blowfish encrypted file** for a normal password-based wallet if you do not have a GPG encryption key. An empty password does not protect stored credentials.
 - If setup or the password dialog does not work in Game Mode, try it in Desktop Mode first. If the problem persists, include the backend diagnostic log in your issue report.
@@ -129,7 +129,7 @@ Microsoft Store supports up to 10 linked devices. If downloading or launching a
 game fails with **Microsoft Store device limit reached** (licensing code 501),
 open [Microsoft Store device management](https://account.microsoft.com/devices/content)
 and sign in with the same Microsoft account. Unlink only an old device you no
-longer use, then retry in Nexus. You do not need to sign out or reset the wallet.
+longer use, then retry in Nexus Launcher. You do not need to sign out or reset the wallet.
 Other license errors can have different causes.
 
 [Documentation](https://github.com/domsvoboda/xodus-nexus/wiki) ·
@@ -139,7 +139,7 @@ Other license errors can have different causes.
 
 | Component | Role |
 | --- | --- |
-| Xodus Nexus launcher | The desktop interface for the Store, library, downloads, settings and launching games. |
+| Nexus Launcher | The desktop interface for the Store, library, downloads, settings and launching games. |
 | Nexus backend | Our patched build of [Xodus](https://github.com/xodus-gaming/xodus), handling Microsoft account sign-in, genuine license checks, package downloads and launch preparation. |
 | [Nexus Runtime](https://github.com/domsvoboda/nexus-runtime) | Our fork of Valve's Proton Experimental, assembling Wine, XGameRuntime, graphics translation and supporting libraries into one complete runtime. |
 | [Nexus Wine](https://github.com/domsvoboda/nexus-wine) | The matching Wine fork, providing Windows API compatibility and Nexus game fixes. |

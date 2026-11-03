@@ -9,7 +9,7 @@
   "auth.browser_error": "Die Anmeldung konnte nicht im Browser geöffnet werden. Google Chrome muss installiert sein. Versuche es erneut oder wähle eine andere Methode.",
   "auth.cancel_passkey": "Passkey Abfrage abbrechen",
   "auth.passkey_help": "Wenn dein Konto einen Passkey oder Sicherheitsschlüssel nutzt, fahre in Google Chrome fort, oder brich diese Anfrage ab, um eine andere Methode auszuwählen.",
-  "auth.passkey_label": "Xodus Nexus Passkey Hilfe",
+  "auth.passkey_label": "Nexus Launcher Passkey Hilfe",
   "auth.passkey_title": "Braucht der Passkey zu lange?",
   "auth.window_title": "Xodus anmelden",
   "common.cancel_game": "{{game}} abbrechen?",
