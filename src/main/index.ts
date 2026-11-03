@@ -18,6 +18,7 @@ import type { AppSnapshot, AuthStatus, ConnectivityStatus, DownloadTask, Game, O
 import { downloadFailure, safeProductId } from '../shared/utils.js';
 import { contentLicenseFailure } from '../shared/content-license.js';
 import { interfaceLanguagePreference } from '../shared/interface-language.js';
+import {preserveLauncherIdentity,launcherDisplayName} from './launcher-identity.js';
 import { nativeTranslator } from './interface-language.js';
 import { downloadLimitArgs, downloadLimitKiB } from '../shared/download-bandwidth.js';
 import { DownloadBandwidthControls, isBandwidthOnlyPatch } from './download-bandwidth.js';
@@ -216,7 +217,7 @@ const launcherTray=new LauncherTray(()=>{
   const open=async(page?:'home'|'library'|'store'|'settings')=>{await showLauncher();if(page)mainWindow?.webContents.send('launcher-page',page);};
   const navigate=(page:'home'|'library'|'store'|'settings')=>()=>{void open(page).catch(()=>console.error('Could not restore Nexus.'));};
   try{
-    tray.setToolTip('Xodus Nexus');tray.on('click',navigate('home'));
+    tray.setToolTip(launcherDisplayName);tray.on('click',navigate('home'));
     tray.setContextMenu(Menu.buildFromTemplate([
       {label:nativeText('Home'),click:navigate('home')},{label:nativeText('My Library'),click:navigate('library')},
       {label:nativeText('Store'),click:navigate('store')},{label:nativeText('Settings'),click:navigate('settings')},
@@ -276,8 +277,8 @@ let startupRequest: ReturnType<typeof shortcutArguments> = {};
 let startupError: Error | undefined;
 try {
   startupRequest = shortcutArguments(process.argv.slice(1));
-  if (startupRequest.profile) app.setPath('userData', startupRequest.profile);
-} catch (error) { startupError = error as Error; }
+  preserveLauncherIdentity(app,startupRequest.profile);
+} catch (error) { startupError = error as Error; preserveLauncherIdentity(app); }
 if (process.platform === 'linux') {
   try {
     const fonts = adoptLauncherFonts();
@@ -1677,7 +1678,7 @@ function registerDemoIpc(catalogMarket: () => string): void {
   ipcMain.handle('copy-diagnostic-log', () => clipboard.writeText('Demo diagnostic log. No account data.'));
   ipcMain.handle('reveal-diagnostic-log', () => undefined);
   ipcMain.handle('read-backend-diagnostic-log', () => ({ name: 'backend.log', content: 'Sample backend diagnostics. No account data.', truncated: false }));
-  ipcMain.handle('create-diagnostic-report', () => ({ name: 'nexus-diagnostics-demo.txt', content: 'Xodus Nexus diagnostic report\nDemo data only.\nLauncher: ' + app.getVersion() }));
+  ipcMain.handle('create-diagnostic-report', () => ({ name: 'nexus-diagnostics-demo.txt', content: 'Nexus Launcher diagnostic report\nDemo data only.\nLauncher: ' + app.getVersion() }));
   ipcMain.handle('save-diagnostic-report', (_event, content: unknown) => saveReviewedReport(content));
   ipcMain.handle('login', () => {});
   ipcMain.handle('logout', () => {});
@@ -2371,7 +2372,7 @@ async function createWindow(): Promise<void> {
     minWidth: Math.min(800, area.width),
     minHeight: Math.min(600, area.height),
     backgroundColor: '#080a0c',
-    title: 'Xodus Nexus',
+    title: launcherDisplayName,
     icon: fileURLToPath(new URL('../../assets/icon.png', import.meta.url)),
     autoHideMenuBar: true,
     show: !hiddenCapture,

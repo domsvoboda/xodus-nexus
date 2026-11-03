@@ -11,22 +11,25 @@ interface Asset { name: string; browser_download_url: string; size: number }
 interface Release { tag_name: string; draft?: boolean; prerelease?: boolean; assets: Asset[] }
 export interface LauncherCandidate { version: string; image: Asset; checksum: Asset; releaseUrl: string }
 
-function assetUrl(url: string, tag: string, name: string): boolean {
-  return url === `https://github.com/${REPO}/releases/download/${tag}/${name}`;
-}
+const REPOSITORIES=['domsvoboda/xodus-nexus','domsvoboda/nexus-launcher'] as const;
+const ARTIFACT_FAMILIES=['Xodus-Nexus','Nexus-Launcher'] as const;
 export function launcherCandidate(releases: Release[], current: string, arch: NexusArch = currentArch()): LauncherCandidate | undefined {
-  const stable = releases.filter(r => !r.draft && !r.prerelease && /^v\d+\.\d+\.\d+$/.test(r.tag_name));
+  const stable = releases.filter(r => !r.draft && !r.prerelease && typeof r.tag_name === 'string' && /^v\d+\.\d+\.\d+$/.test(r.tag_name));
   stable.sort((a, b) => isNewerVersion(a.tag_name, b.tag_name) ? -1 : isNewerVersion(b.tag_name, a.tag_name) ? 1 : 0);
   for (const r of stable) {
     if (!isNewerVersion(r.tag_name, current)) continue;
-    const name = `Xodus-Nexus-${r.tag_name.slice(1)}-${APPIMAGE_ARCH_SUFFIX[arch]}.AppImage`;
-    const image = r.assets?.find(a => a.name === name);
-    const checksum = r.assets?.find(a => a.name === `${name}.sha512sum`);
-    if (!image || !checksum || !assetUrl(image.browser_download_url, r.tag_name, image.name) ||
-        !assetUrl(checksum.browser_download_url, r.tag_name, checksum.name) ||
-        !Number.isSafeInteger(image.size) || image.size < 64 || image.size > 1024 ** 3 ||
-        !Number.isSafeInteger(checksum.size) || checksum.size < 1 || checksum.size > 4096) continue;
-    return { version: r.tag_name.slice(1), image, checksum, releaseUrl: `https://github.com/${REPO}/releases/tag/${r.tag_name}` };
+    for (const family of ARTIFACT_FAMILIES) {
+      const name = `${family}-${r.tag_name.slice(1)}-${APPIMAGE_ARCH_SUFFIX[arch]}.AppImage`;
+      const images = Array.isArray(r.assets) ? r.assets.filter(a => a.name === name) : [];
+      const sums = Array.isArray(r.assets) ? r.assets.filter(a => a.name === `${name}.sha512sum`) : [];
+      if (images.length !== 1 || sums.length !== 1) continue;
+      const image = images[0], checksum = sums[0];
+      const repository = REPOSITORIES.find(repo => image.browser_download_url === `https://github.com/${repo}/releases/download/${r.tag_name}/${name}`
+        && checksum.browser_download_url === `https://github.com/${repo}/releases/download/${r.tag_name}/${name}.sha512sum`);
+      if (!repository || !Number.isSafeInteger(image.size) || image.size < 64 || image.size > 1024 ** 3
+        || !Number.isSafeInteger(checksum.size) || checksum.size < 1 || checksum.size > 4096) continue;
+      return { version: r.tag_name.slice(1), image, checksum, releaseUrl: `https://github.com/${repository}/releases/tag/${r.tag_name}` };
+    }
   }
   return undefined;
 }

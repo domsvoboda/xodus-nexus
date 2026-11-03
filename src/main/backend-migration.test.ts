@@ -2,7 +2,7 @@ import {describe,it,expect,vi} from 'vitest';
 import {promises as fs} from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import {BACKEND_REPOSITORY as fork,LEGACY_BACKEND_REPOSITORY as legacy,backendPackageName,minimumBackendVersion} from './backend-package.js';
+import {BACKEND_REPOSITORY as fork,LEGACY_BACKEND_REPOSITORY as legacy,RENAMED_LEGACY_BACKEND_REPOSITORY as renamed,backendPackageName,minimumBackendVersion} from './backend-package.js';
 import {discoverBackend,installBackend} from './backend-releases.js';
 import {currentArch} from './arch.js';
 const sha='a'.repeat(128);
@@ -12,12 +12,12 @@ const release=(repo:string,version:string)=>({tag_name:`backend-v${version}`,ass
 const manifest=(repo:string,version:string)=>({schema:repo===fork?2:1,...(repo===fork?{sourceRepository:fork}:{}),authUi:'electron',version,
   commit:'b'.repeat(40),recipeSha256:'c'.repeat(64),compatibility:'linux-run-v25',platform:'linux',arch:currentArch(),
   archive:backendPackageName(version)+'.tar.xz',archiveSha512:sha,files:Object.fromEntries(['LICENSE','xodus-cli','xodus-service'].map(name=>[name,'d'.repeat(64)]))});
-function fixture(forkVersion:string|number|null,legacyVersion:string|null,override:Record<string,unknown>={}) {
+function fixture(forkVersion:string|number|null,legacyVersion:string|null,override:Record<string,unknown>={},legacyHost:string=legacy) {
   return vi.fn(async(input:URL|RequestInfo)=>{
     const url=String(input);
     const repo=url.includes(fork)?fork:legacy;
     const version=repo===fork?forkVersion:legacyVersion;
-    if(url.includes('/releases?')) return typeof version==='number'?new Response('',{status:version}):new Response(JSON.stringify(version?[release(repo,version)]:[]));
+    if(url.includes('/releases?')) return typeof version==='number'?new Response('',{status:version}):new Response(JSON.stringify(version?[release(repo===legacy?legacyHost:repo,version)]:[]));
     if(typeof version!=='string')throw Error('unexpected fixture download');
     if(url.endsWith('.manifest.json'))return new Response(JSON.stringify({...manifest(repo,version),...override}));
     if(url.endsWith('.sha512sum'))return new Response(`${sha}  ${backendPackageName(version)}.tar.xz\n`);
@@ -58,4 +58,14 @@ describe('backend repository migration',()=>{
       expect(await fs.readdir(root)).toEqual(['current.json']);
     } finally {await fs.rm(root,{recursive:true,force:true});}
   });
+});
+
+it('accepts coherent legacy backend assets redirected to the fixed renamed launcher repository',async()=>{
+ const artifact=await discoverBackend(fixture(null,'0.2.14',{},renamed));expect(artifact.repository).toBe(renamed);expect(artifact.manifest.schema).toBe(1);expect(artifact.archiveUrl).toContain('/domsvoboda/nexus-launcher/releases/download/backend-v0.2.14/');
+});
+it('rejects mixed old/new legacy backend release assets before reading metadata',async()=>{
+ const base=fixture(null,'0.2.14',{},renamed);const fetcher=(async(input:URL|RequestInfo)=>{
+  const response=await base(input);if(String(input).includes('/xodus-nexus/releases?')){const rows=await response.json();rows[0].assets[1].browser_download_url=rows[0].assets[1].browser_download_url.replace(renamed,legacy);return new Response(JSON.stringify(rows));}return response;
+ }) as typeof fetch;
+ await expect(discoverBackend(fetcher)).rejects.toThrow('Unexpected backend release asset URL');
 });

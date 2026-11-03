@@ -89,7 +89,7 @@ export async function startSessionKeyring(provider: KdeProvider, source: NodeJS.
     stopProperties.push(`--property=ExecStop=${command} \${MAINPID}`, '--property=TimeoutStopSec=12s');
   }
   const args = ['--user', '--collect', '--service-type=exec', '--expand-environment=no', '--quiet',
-    '--description=Xodus Nexus session wallet',
+    '--description=Nexus Launcher session wallet',
     `--unit=xodus-nexus-keyring-${randomUUID()}`, '--property=PartOf=graphical-session.target',
     '--property=StandardOutput=null', '--property=StandardError=null', ...stopProperties, '--',
     '/usr/bin/env', '-i', 'PATH=/usr/bin:/bin', ...assignments, binary];

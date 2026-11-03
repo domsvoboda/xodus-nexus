@@ -3,7 +3,7 @@ import { createHash, randomUUID } from 'node:crypto';
 import path from 'node:path';
 import { run } from './process.js';
 import {
-  BACKEND_REPOSITORIES, type BackendRepository, backendPackageName, backendAssetUrl, compareVersions, minimumBackendVersion,
+  BACKEND_REPOSITORIES, BACKEND_REPOSITORY, LEGACY_BACKEND_REPOSITORIES, type BackendRepository, backendPackageName, backendAssetUrl, compareVersions, minimumBackendVersion,
   validateBackendManifest, validateBackendArchive, type BackendPackageManifest,
 } from './backend-package.js';
 import { BACKEND_ARCH_SUFFIX, currentArch, isLinuxElf64, nexusArch, type NexusArch } from './arch.js';
@@ -54,8 +54,15 @@ export async function discoverBackend(fetcher: typeof fetch, arch: NexusArch = c
       const name = backendPackageName(match[1], arch);
       const required = ['.tar.xz', '.manifest.json', '.sha512sum', '-source.tar.xz', '-source.sha512sum'];
       if (!required.every(suffix => item.assets?.some(asset => asset.name === name + suffix))) continue;
-      if (!selected || compareVersions(match[1], selected.version) > 0)
-        selected = { tag: item.tag_name!, version: match[1], repository, release: item };
+      if (!selected || compareVersions(match[1], selected.version) > 0) {
+        const aliases: readonly BackendRepository[] = repository === BACKEND_REPOSITORY ? [BACKEND_REPOSITORY] : LEGACY_BACKEND_REPOSITORIES;
+        const actualRepository = aliases.find(repo => required.every(suffix => {
+          const assets = item.assets!.filter(asset => asset.name === name + suffix);
+          return assets.length === 1 && assets[0].browser_download_url === `https://github.com/${repo}/releases/download/${item.tag_name}/${name}${suffix}`;
+        }));
+        if (!actualRepository) throw Error('Unexpected backend release asset URL.');
+        selected = { tag: item.tag_name!, version: match[1], repository: actualRepository, release: item };
+      }
     }
   }
   if (!selected) throw new Error('No compatible Nexus backend release has been published yet.');

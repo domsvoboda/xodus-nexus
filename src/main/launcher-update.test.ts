@@ -11,18 +11,18 @@ function image(marker: number, arch: NexusArch = currentArch()): Buffer {
   const bytes = Buffer.alloc(100, marker); Buffer.from('7f454c46', 'hex').copy(bytes);
   bytes[4] = 2; bytes[5] = 1; Buffer.from('414902', 'hex').copy(bytes, 8); bytes.writeUInt16LE(ELF_MACHINE[arch], 18); return bytes;
 }
-function release(version = '0.2.3', arch: NexusArch = currentArch()) {
-  const name = `Xodus-Nexus-${version}-${APPIMAGE_ARCH_SUFFIX[arch]}.AppImage`;
+function release(version = '0.2.3', arch: NexusArch = currentArch(), repo='domsvoboda/xodus-nexus',family='Xodus-Nexus') {
+  const name = `${family}-${version}-${APPIMAGE_ARCH_SUFFIX[arch]}.AppImage`;
   return { tag_name: `v${version}`, assets: [
-    { name, size: 100, browser_download_url: `https://github.com/domsvoboda/xodus-nexus/releases/download/v${version}/${name}` },
-    { name: `${name}.sha512sum`, size: 200, browser_download_url: `https://github.com/domsvoboda/xodus-nexus/releases/download/v${version}/${name}.sha512sum` },
+    { name, size: 100, browser_download_url: `https://github.com/${repo}/releases/download/v${version}/${name}` },
+    { name: `${name}.sha512sum`, size: 200, browser_download_url: `https://github.com/${repo}/releases/download/v${version}/${name}.sha512sum` },
   ] };
 }
-async function fixture(bad = '', arch: NexusArch = currentArch()) {
+async function fixture(bad = '', arch: NexusArch = currentArch(),repo='domsvoboda/xodus-nexus',family='Xodus-Nexus') {
   const root = await fs.mkdtemp(path.join(os.tmpdir(), 'nexus-update-test-')); roots.push(root);
   const target = path.join(root, 'Launcher.AppImage'); await fs.writeFile(target, image(1,arch), { mode: 0o700 });
   const next = bad === 'format' ? Buffer.alloc(100) : image(2,bad==='architecture'?(arch==='x64'?'arm64':'x64'):arch);
-  const r = release('0.2.3',arch);
+  const r = release('0.2.3',arch,repo,family);
   const fetcher = (async (url: string | URL | Request) => {
     const text = String(url);
     if (text.includes('api.github')) return new Response(JSON.stringify([r]));
@@ -68,4 +68,28 @@ describe('AppImage updater', () => {
     await expect(updater.install()).rejects.toThrow('owned');
     const dev = new LauncherUpdater('0.2.2', undefined, root, () => {}, fetcher); await dev.initialize(); expect(dev.state.canInstall).toBe(false);
   });
+});
+
+it.each(['domsvoboda/xodus-nexus','domsvoboda/nexus-launcher'])('accepts coherent old/new artifact families only under the exact %s release',repo=>{
+ for(const family of ['Xodus-Nexus','Nexus-Launcher'])for(const arch of ['x64','arm64'] as const){
+  const r=release('0.5.0',arch,repo,family),candidate=launcherCandidate([r],'0.4.2',arch);
+  expect(candidate?.image.name).toBe(`${family}-0.5.0-${APPIMAGE_ARCH_SUFFIX[arch]}.AppImage`);expect(candidate?.releaseUrl).toBe(`https://github.com/${repo}/releases/tag/v0.5.0`);
+ }
+});
+it('rejects cross-repository/tag/family/checksum links, traversal and downgraded releases',()=>{
+ for(const url of ['https://evil.example/update','https://github.com/attacker/nexus-launcher/releases/download/v0.5.0/Xodus-Nexus-0.5.0-x86_64.AppImage','https://github.com/domsvoboda/nexus-launcher/releases/download/v0.5.0/Xodus-Nexus-0.5.0-x86_64.AppImage','https://github.com/domsvoboda/xodus-nexus/releases/download/v0.5.0/../Xodus-Nexus-0.5.0-x86_64.AppImage']){
+  const r=release('0.5.0','x64');r.assets[0].browser_download_url=url;expect(launcherCandidate([r],'0.4.2','x64')).toBeUndefined();
+ }
+ for(const change of ['tag','family','duplicate']){
+  const r=release('0.5.0','x64');
+  if(change==='tag')r.assets[1].browser_download_url=r.assets[1].browser_download_url.replace('v0.5.0','v0.5.1');
+  if(change==='family')r.assets[1].name=r.assets[1].name.replace('Xodus-Nexus','Nexus-Launcher');
+  if(change==='duplicate')r.assets.push({...r.assets[1]});
+  expect(launcherCandidate([r],'0.4.2','x64')).toBeUndefined();
+ }
+ expect(launcherCandidate([release('0.4.1')],'0.4.2')).toBeUndefined();
+});
+it('installs verified renamed-repository bytes in the existing AppImage path without moving state',async()=>{
+ const {root,target,updater}=await fixture('',currentArch(),'domsvoboda/nexus-launcher','Nexus-Launcher');
+ await fs.writeFile(root+'/launcher-state.json','old state');await updater.install();expect(await fs.readFile(target)).toEqual(image(2));expect(await fs.readFile(root+'/launcher-state.json','utf8')).toBe('old state');
 });
