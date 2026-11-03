@@ -6,7 +6,7 @@ const source=readFileSync('src/main/index.ts','utf8');
 const start=source.indexOf('async function prepareFirstRunBackend()');
 const code=transpileModule(source.slice(start,source.indexOf('\nasync function createWindow()',start)),{compilerOptions:{target:ScriptTarget.ES2022}}).outputText;
 function fixture(){
- const context=createContext({shutdownStarted:false,store:{settings:{firstRunCompleted:false}},backend:{current:{available:false,updating:false,releaseAvailable:true,updateAvailable:true},checkUpdate:vi.fn(async()=>{}),update:vi.fn(async()=>{})},mainWindow:{isVisible:()=>true},refreshInitialAccount:vi.fn(async()=>{}),emitSnapshot:vi.fn()});
+ const context=createContext({ensureIdle:vi.fn(),shutdownStarted:false,store:{settings:{firstRunCompleted:false}},backend:{current:{available:false,updating:false,releaseAvailable:true,updateAvailable:true},checkUpdate:vi.fn(async()=>{}),update:vi.fn(async()=>{})},mainWindow:{isVisible:()=>true},refreshInitialAccount:vi.fn(async()=>{}),emitSnapshot:vi.fn()});
  return{context,run:()=>runInContext(code+'\nprepareFirstRunBackend()',context) as Promise<void>};
 }
 it('automatically uses the verified installer on first run and only then checks the account',async()=>{
@@ -34,6 +34,10 @@ it('rechecks first-run state after slow discovery rather than installing after t
 it('keeps installation errors visible without starting sign-in or retry loops',async()=>{
  const {context,run}=fixture();context.backend.update.mockRejectedValue(Error('synthetic checksum failure'));
  await run();expect(context.backend.update).toHaveBeenCalledOnce();expect(context.refreshInitialAccount).not.toHaveBeenCalled();expect(context.emitSnapshot).toHaveBeenCalledTimes(2);
+});
+it('does not install when activity admission rejects the first-run operation',async()=>{
+ const {context,run}=fixture();context.ensureIdle.mockImplementation(()=>{throw Error('Component updates are in progress.');});
+ await run();expect(context.ensureIdle).toHaveBeenCalledOnce();expect(context.backend.update).not.toHaveBeenCalled();expect(context.refreshInitialAccount).not.toHaveBeenCalled();
 });
 it('does not open an account flow in a hidden launcher after installation',async()=>{
  const {context,run}=fixture();context.mainWindow.isVisible=()=>false;await run();expect(context.backend.update).toHaveBeenCalledOnce();expect(context.refreshInitialAccount).not.toHaveBeenCalled();
