@@ -26,7 +26,7 @@ function activityNote(activity?: GameActivity): string {
 function Artwork({ src, alt, ...props }: { src?: string; alt: string; className?: string; loading?: 'lazy' }) {
   const [failed, setFailed] = useState(false);
   useEffect(() => setFailed(false), [src]);
-  return src && !failed ? <img src={src} alt={alt} {...props} referrerPolicy="no-referrer" onError={() => setFailed(true)} /> : <span className="gd-artwork-unavailable"><Gamepad2 /><span>{alt || ui("ui.artwork_unavailable_f4d58d3")}</span></span>;
+  return src && !failed ? <img src={src} alt={alt} {...props} referrerPolicy="no-referrer" onError={() => setFailed(true)} /> : alt ? <span className="gd-artwork-unavailable"><Gamepad2 /><span>{alt}</span></span> : null;
 }
 
 export function Gallery({ title, images, initial, close }: { title: string; images: string[]; initial: number; close: () => void }) {
