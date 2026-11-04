@@ -1747,7 +1747,6 @@ function registerDemoIpc(catalogMarket: () => string): void {
   ipcMain.handle('backend-refresh', () => snapshot().backend);
   ipcMain.handle('backend-check-update', () => snapshot().backend);
   ipcMain.handle('backend-update', () => {});
-  ipcMain.handle('backend-rebuild', () => {});
   ipcMain.handle('runtime-refresh', () => snapshot().runtime);
   ipcMain.handle('runtime-families', () => []);
   ipcMain.handle('runtime-check-update', () => snapshot().runtime);
@@ -1921,7 +1920,6 @@ function registerIpc(): void {
     catch (error) { backendDiagnostic({ operation: 'update', event: 'failure', stage: 'update-blocked', committed: false }); throw error; }
     await backend.update(emitSnapshot); await refreshAccount();
   });
-  ipcMain.handle('backend-rebuild', async () => { ensureIdle(); await backend.rebuild(emitSnapshot); await refreshAccount(); });
   ipcMain.handle('runtime-refresh', async () => {
     ensureIdle();
     return runtime.refreshSelection(emitSnapshot, async () => {

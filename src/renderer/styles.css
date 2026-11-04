@@ -672,6 +672,9 @@ button.primary, button.secondary { border-radius: 5px; min-height: 40px; font-si
 @media (max-width: 800px) { .cloud-save-warning { margin: 8px 12px 0; flex-wrap: wrap; } .cloud-save-warning > div { flex-basis: 100%; } }
 
 .managed-runtime-settings p { overflow-wrap: anywhere; }
+.managed-runtime-binary { display: grid; gap: 5px; margin: 10px 0 0; }
+.managed-runtime-binary .diagnostic-path { margin: 0; }
+.managed-runtime-binary small { color: var(--muted); font-size: 10px; line-height: 1.45; }
 
 .component-update-results { list-style: none; padding: 0; margin: 8px 0 0; }
 .component-update-results li { display: flex; align-items: center; justify-content: space-between; gap: 16px; padding: 14px 0; border-top: 1px solid var(--line); }

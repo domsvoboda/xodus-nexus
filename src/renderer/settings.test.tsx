@@ -29,11 +29,11 @@ describe('Settings diagnostics', () => {
     const details = html.match(/<details\b[^>]*class="settings-card settings-diagnostics"[^>]*>[\s\S]*?<\/details>/)?.[0];
     expect(details).toBeDefined();
     expect(details?.split('>')[0]).not.toMatch(/\bopen\b/);
-    expect(details).toContain('Build dependencies');
     expect(details).toContain('COMMIT');
     expect(details).toContain('Detailed game logs');
     expect(details).toContain('Save diagnostics');
-    expect(details).toContain('Build backend from source');
+    expect(details).not.toContain('Build dependencies');
+    expect(details).not.toContain('Build backend from source');
     expect(details).not.toContain('Install upstream snapshot');
     expect(details).not.toContain('Check upstream snapshot');
     const main = html.replace(details!, '');
@@ -45,6 +45,8 @@ describe('Settings diagnostics', () => {
     expect(main).not.toContain('Build backend from source');
     expect(main).not.toContain('Rebuild backend');
     expect(main).not.toContain('Install / update backend');
+    expect(html).not.toContain('External Xodus source');
+    expect(html).toContain('CachyOS binary');
     expect(main).toContain('Nexus runtime');
     expect(main).toContain('Open backend diagnostic log');
     expect(main).toContain('No passwords, tokens or account contents');
@@ -69,7 +71,7 @@ describe('Settings diagnostics', () => {
   it('keeps actionable errors visible and unsupported sign-in disabled', () => {
     const data = demoSnapshot();
     data.backend.capabilities.login = false;
-    data.backend.blockReason = 'Cargo is missing. Install it before building.';
+    data.backend.blockReason = 'The prebuilt backend could not start on this system.';
     data.runtime.error = 'SHA-512 verification failed.';
     const html = renderToStaticMarkup(<SettingsPage data={data} toast={() => {}} />);
     const main = html.replace(/<details\b[^>]*>[\s\S]*?<\/details>/, '');

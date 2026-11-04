@@ -63,11 +63,20 @@ export function ManagedRuntimeSettings({data,disabled,onBusyChange}:{data:AppSna
   }
   const version=item?.version??item?.installed?.sourceCommit.slice(0,12)??'';
   const summary=installed?ui('runtime.families_version',{version}):activeLocal?ui('runtime.cachyos_active',{version:activeVersion}):undefined;
+  const managedBinary=item?.installed?.displayWinePath;
+  const defaultBinary=activeLocal?data.runtime.winePath:undefined;
+  const binary=managedBinary??defaultBinary;
+  const binaryNote=managedBinary?ui('runtime.cachyos_binary_managed'):defaultBinary?ui('runtime.cachyos_binary_default'):ui('runtime.cachyos_binary_missing');
   return <section className="settings-card managed-runtime-settings" aria-label={ui('runtime.cachyos_title')}>
     <div className="settings-heading">
       <div className="settings-icon"><Gamepad2 /></div>
       <div><h2>{ui('runtime.cachyos_title')}</h2>{summary?<p>{summary}</p>:null}</div>
       <span className={`status-label ${installed||activeLocal?'ready':'unknown'}`}><StatusDot tone={installed||activeLocal?'green':'amber'} />{installed?ui('ui.ready_c2e3ac4'):activeLocal?ui('runtime.cachyos_active_label'):ui('ui.not_installed_d177cdc')}</span>
+    </div>
+    <div className="managed-runtime-binary">
+      <span className="overline">{ui('runtime.cachyos_binary')}</span>
+      <p className="diagnostic-path mono" data-cachyos-binary={managedBinary?'managed':defaultBinary?'default':'missing'}>{binary??ui('ui.not_installed_d177cdc')}</p>
+      <small>{binaryNote}</small>
     </div>
     {notice?.scope===scope?<p role={notice.error?'alert':'status'} className={notice.error?'alert amber':'runtime-phase'}>{notice.text}</p>:null}
     {item?.error?<div className="alert amber" role="alert"><CircleAlert /><span>{item.error}</span></div>:null}

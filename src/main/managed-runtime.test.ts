@@ -357,5 +357,5 @@ it('installs an exact issued target after a later check selects another release,
  const latest=f.remote,original=vi.mocked(f.fetcher).getMockImplementation()!;
  vi.mocked(f.fetcher).mockImplementation(async(input,init)=>{const name=String(input).split('/').pop()!;const bytes=old.assets.get(name);return bytes?new Response(bytes):original(input,init);});
  const forged=await f.manager.installPreparedManagedRuntime('nexus-cachyos',{...prepared},policy);expect(forged.committed).toBe(false);expect(forged.success).toBe(false);
- const result=await f.manager.installPreparedManagedRuntime('nexus-cachyos',prepared,policy);expect(result.success).toBe(true);expect(f.manager.current.managedFamilies!.find(row=>row.id==='nexus-cachyos')!.installed!.sourceCommit).toBe(selectedCommit);expect(latest.commit).not.toBe(selectedCommit);await f.preserved();
+ const result=await f.manager.installPreparedManagedRuntime('nexus-cachyos',prepared,policy);expect(result.success).toBe(true);const installed=f.manager.current.managedFamilies!.find(row=>row.id==='nexus-cachyos')!.installed!;expect(installed.sourceCommit).toBe(selectedCommit);expect(installed.displayWinePath).toBe((await resolveRuntimeFamily(f.runtimeRoot,'nexus-cachyos','x64')).winePath);expect(latest.commit).not.toBe(selectedCommit);await f.preserved();
 });

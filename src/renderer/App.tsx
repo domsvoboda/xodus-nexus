@@ -11,13 +11,13 @@ import { useDialogFocus } from './use-dialog-focus';
 import { lazy, Suspense, useEffect, useLayoutEffect, useMemo, useRef, useState, type FormEvent } from 'react';
 import {
   ArrowDownToLine, Check, ChevronRight, CircleAlert, CircleUserRound,
-  Clock3, Cog, Download, FolderOpen, Gamepad2, Github, HardDrive, Home, Library,
+  Clock3, Cog, Download, FolderOpen, Gamepad2, HardDrive, Home, Library,
   LoaderCircle, LogIn, MoreHorizontal, PackageCheck, Pause, Play, Plus, RefreshCw, Rocket, Search, Settings2,
   Store, Terminal, Trash2, Copy, PanelLeft, X,
 } from 'lucide-react';
 import type { AccountLibraryPage, AppSnapshot, CatalogProduct, CatalogSearchResult, DiagnosticLog, Game, GameContentPlan, GameLaunchOptions, Page, Settings, XboxProfileRequest } from '../shared/types';
 import {OverlayShortcutRecorder} from './OverlayShortcutRecorder';
-import {reconcileSettingsDraft} from './settings-draft';
+import {reconcileSettingsDraft, storageSettingsPatch} from './settings-draft';
 import {xboxOverlaySettings} from '../shared/xbox-overlay-settings';
 import './xbox-desktop-social.css';
 import { estimateTimeRemaining } from '../shared/utils';
@@ -61,7 +61,6 @@ const emptySnapshot: AppSnapshot = {
     available: false, source: 'none', updateAvailable: false, checking: false, updating: false,
     externalRoot: '',
     capabilities: { commands: [], account: false, login: false, logout: false, download: false, streaming: false, run: false },
-    prerequisites: { git: false, cargo: false, rustc: false, protoc: false },
   },
   runtime: {
     installed: false, checking: false, updating: false,
@@ -932,10 +931,6 @@ export function DownloadsPage({ data, toast }: { data: AppSnapshot; toast: (valu
   </main>;
 }
 
-function ToggleStatus({ ok, label }: { ok: boolean; label: string }) {
-  return <span className={`dependency ${ok ? 'ok' : ''}`}>{ok ? <Check /> : <X />}{label}</span>;
-}
-
 export function SettingsPage({ data, toast }: { data: AppSnapshot; toast: (value: Toast) => void }) {
   const confirm = useConfirmation();
   const [form, setForm] = useState<Settings>(data.settings);
@@ -956,7 +951,6 @@ export function SettingsPage({ data, toast }: { data: AppSnapshot; toast: (value
     setAccountManagement(enabled);
     setForm(current => ({ ...current, multiAccountEnabled: enabled }));
   }
-  const [logs, setLogs] = useState<string[]>([]);
   const [runtimeLogs, setRuntimeLogs] = useState<string[]>([]);
   useEffect(() => {
     const previous = previousSettings.current;
@@ -964,7 +958,6 @@ export function SettingsPage({ data, toast }: { data: AppSnapshot; toast: (value
     setForm(current => reconcileSettingsDraft(current, previous, data.settings));
   }, [data.settings]);
   useEffect(() => window.launcher.onOperationLog(({ scope, line }) => {
-    if (scope === 'backend') setLogs((items) => [...items.slice(-199), line]);
     if (scope === 'runtime') setRuntimeLogs((items) => [...items.slice(-199), line]);
   }), []);
 
@@ -975,11 +968,11 @@ export function SettingsPage({ data, toast }: { data: AppSnapshot; toast: (value
     finally { setBusy(undefined); }
   }
 
-  async function pick(kind: 'install' | 'backend' | 'runtime' | 'wine') {
+  async function pick(kind: 'install' | 'runtime' | 'wine') {
     const selected = kind === 'wine'
       ? await window.launcher.chooseFile(form.winePath)
-      : await window.launcher.chooseDirectory(kind === 'install' ? form.installRoot : kind === 'backend' ? form.externalXodusRoot : form.runtimeRoot);
-    if (selected) setForm((current) => ({ ...current, [kind === 'install' ? "installRoot" : kind === 'backend' ? "externalXodusRoot" : kind === 'runtime' ? "runtimeRoot" : "winePath"]: selected }));
+      : await window.launcher.chooseDirectory(kind === 'install' ? form.installRoot : form.runtimeRoot);
+    if (selected) setForm((current) => ({ ...current, [kind === 'install' ? "installRoot" : kind === 'runtime' ? "runtimeRoot" : "winePath"]: selected }));
   }
 
   const caps = data.backend.capabilities;
@@ -1098,7 +1091,7 @@ export function SettingsPage({ data, toast }: { data: AppSnapshot; toast: (value
         <div className="form-grid"><label>{ui("ui.download_speed_limit_mib_s_1b1cf51")}<input type="number" min="0" max="1024" step="0.1" value={form.downloadLimitMiB ?? 0} onChange={event => setForm({...form, downloadLimitMiB:Number(event.target.value)})} /></label></div>
         <div className="save-row"><span>{ui("ui.0_unlimited_applies_to_active_and_future_game_do_2374ba9")}</span><button className="primary" disabled={Boolean(busy) || Boolean((form.downloadLimitMiB ?? 0) > 0 && !data.backend.capabilities.streamingBandwidthLimit)} onClick={() => invoke('save-bandwidth', () => window.launcher.updateSettings({downloadLimitMiB:form.downloadLimitMiB ?? 0}), ui("ui.download_speed_limit_saved_8fd9160"))}>{busy === 'save-bandwidth' ? <LoaderCircle className="spin" /> : <Check />}{ui("ui.save_download_limit_8abf702")}</button></div>
       </section>
-      <section className="settings-card compact"><div className="settings-heading"><div className="settings-icon"><HardDrive /></div><div><h2>{ui("ui.storage_and_launch_paths_d3c8c4d")}</h2></div></div><div className="form-grid"><label>{ui("ui.default_game_location_5e830cb")}<div className="input-action"><input value={form.installRoot} onChange={(event) => setForm({ ...form, installRoot: event.target.value })} /><button type="button" aria-label={ui('ui.browse_3227aa9')} onClick={() => pick('install')}><FolderOpen /></button></div></label><label>{ui("ui.market_5238d9b")}<input value={form.market} onChange={(event) => setForm({ ...form, market: event.target.value })} /></label><label>{ui("ui.parallel_streams_e81513c")}<input type="number" min="1" max="16" value={form.parallelDownloads} onChange={(event) => setForm({ ...form, parallelDownloads: Number(event.target.value) })} /></label><label>{ui("ui.external_xodus_source_ef00493")}<div className="input-action"><input value={form.externalXodusRoot} onChange={(event) => setForm({ ...form, externalXodusRoot: event.target.value })} /><button type="button" aria-label={ui('ui.browse_3227aa9')} onClick={() => pick('backend')}><FolderOpen /></button></div></label><label>{ui("ui.versioned_runtime_directory_3764480")}<div className="input-action"><input value={form.runtimeRoot} onChange={(event) => setForm({ ...form, runtimeRoot: event.target.value })} /><button type="button" aria-label={ui('ui.browse_3227aa9')} onClick={() => pick('runtime')}><FolderOpen /></button></div></label><label>{ui("ui.wine_proton_binary_2b08a4a")}<div className="input-action"><input value={form.winePath} onChange={(event) => setForm({ ...form, winePath: event.target.value })} placeholder={ui("ui.selected_automatically_by_the_runtime_manager_0722211")} /><button type="button" aria-label={ui('ui.browse_3227aa9')} onClick={() => pick('wine')}><FolderOpen /></button></div></label></div><div className="save-row"><button className="primary" disabled={busy === 'save'} onClick={() => invoke('save', () => window.launcher.updateSettings(form), ui("ui.settings_saved_ae493e2"))}>{busy === 'save' ? <LoaderCircle className="spin" /> : <Check />}{ui("ui.save_1509f56")}</button></div></section>
+      <section className="settings-card compact"><div className="settings-heading"><div className="settings-icon"><HardDrive /></div><div><h2>{ui("ui.storage_and_launch_paths_d3c8c4d")}</h2></div></div><div className="form-grid"><label>{ui("ui.default_game_location_5e830cb")}<div className="input-action"><input value={form.installRoot} onChange={(event) => setForm({ ...form, installRoot: event.target.value })} /><button type="button" aria-label={ui('ui.browse_3227aa9')} onClick={() => pick('install')}><FolderOpen /></button></div></label><label>{ui("ui.market_5238d9b")}<input value={form.market} onChange={(event) => setForm({ ...form, market: event.target.value })} /></label><label>{ui("ui.parallel_streams_e81513c")}<input type="number" min="1" max="16" value={form.parallelDownloads} onChange={(event) => setForm({ ...form, parallelDownloads: Number(event.target.value) })} /></label><label>{ui("ui.versioned_runtime_directory_3764480")}<div className="input-action"><input value={form.runtimeRoot} onChange={(event) => setForm({ ...form, runtimeRoot: event.target.value })} /><button type="button" aria-label={ui('ui.browse_3227aa9')} onClick={() => pick('runtime')}><FolderOpen /></button></div></label><label>{ui("ui.wine_proton_binary_2b08a4a")}<div className="input-action"><input value={form.winePath} onChange={(event) => setForm({ ...form, winePath: event.target.value })} placeholder={ui("ui.selected_automatically_by_the_runtime_manager_0722211")} /><button type="button" aria-label={ui('ui.browse_3227aa9')} onClick={() => pick('wine')}><FolderOpen /></button></div></label></div><div className="save-row"><button className="primary" disabled={busy === 'save'} onClick={() => invoke('save', () => window.launcher.updateSettings(storageSettingsPatch(form)), ui("ui.settings_saved_ae493e2"))}>{busy === 'save' ? <LoaderCircle className="spin" /> : <Check />}{ui("ui.save_1509f56")}</button></div></section>
     </div>
     <details className="settings-card settings-guide" aria-label={ui('settings.guide_title')}>
       <summary><PanelLeft aria-hidden="true"/><span className="guide-summary-text"><strong>{ui('settings.guide_title')}</strong><small>{ui('settings.guide_summary')}</small></span><span className={`guide-state${savedOverlay.overlayEnabled?' on':''}`}>{savedOverlay.overlayEnabled?ui('settings.guide_on'):ui('settings.guide_off')}</span><ChevronRight aria-hidden="true"/></summary>
@@ -1117,9 +1110,8 @@ export function SettingsPage({ data, toast }: { data: AppSnapshot; toast: (value
       <div className="diagnostics-content">
         <DiagnosticReportButton games={data.games} />
         <section><h3>{ui("ui.game_logging_6cb644e")}</h3><div className="toggle-row"><CheckField className="toggle" label={ui("ui.verbose_game_logs_58e750b")} description={ui("ui.writes_full_wine_vkd3d_proton_and_xodus_diagnost_dfa1fa3")} checked={form.verboseLogs} onChange={(event) => setForm({ ...form, verboseLogs: event.target.checked })} /></div><div className="button-row"><button className="secondary" disabled={Boolean(busy)} onClick={() => invoke('save-diagnostics', () => window.launcher.updateSettings({ verboseLogs: form.verboseLogs }), ui("ui.logging_settings_saved_5a9dd67"))}>{ui("ui.save_diagnostics_52fe7bd")}</button></div></section>
-        <section><h3>{ui("ui.backend_details_522061f")}</h3><p className="diagnostic-path mono">{data.backend.binaryPath ?? ui("ui.no_backend_selected_e322189")}</p><div className="meta-grid"><div><span>{ui("ui.source_56ccd01")}</span><strong>{data.backend.source === 'external' ? ui("ui.external_installation_read_only_9cedb28") : data.backend.delivery === 'release' ? ui("ui.nexus_github_release_44f7ae9") : data.backend.source === 'managed' ? ui("ui.local_versioned_build_284259d") : '—'}</strong></div><div><span>{ui("ui.commit_79663c1")}</span><strong className="mono">{data.backend.commit?.slice(0, 12) ?? '—'}</strong></div></div><div className="button-row"><button className="secondary" disabled={Boolean(busy) || data.backend.updating || data.backend.checking} onClick={() => invoke('backend-rebuild', () => window.launcher.rebuildBackend(), ui("ui.pinned_backend_source_was_built_and_activated_70c1519"))}><Github />{ui("ui.build_backend_from_source_e654dac")}</button></div>{data.backend.updating || logs.length > 0 ? <pre className="build-log">{logs.join('\n') || ui("ui.waiting_for_backend_output_1ad8939")}</pre> : null}</section>
+        <section><h3>{ui("ui.backend_details_522061f")}</h3><p className="diagnostic-path mono">{data.backend.binaryPath ?? ui("ui.no_backend_selected_e322189")}</p><div className="meta-grid"><div><span>{ui("ui.source_56ccd01")}</span><strong>{data.backend.source === 'external' ? ui("ui.external_installation_read_only_9cedb28") : data.backend.delivery === 'release' ? ui("ui.nexus_github_release_44f7ae9") : data.backend.source === 'managed' ? ui("ui.local_versioned_build_284259d") : '—'}</strong></div><div><span>{ui("ui.commit_79663c1")}</span><strong className="mono">{data.backend.commit?.slice(0, 12) ?? '—'}</strong></div></div></section>
         <section><h3>{ui("ui.runtime_details_77fa868")}</h3><p className="diagnostic-path mono">{data.runtime.winePath ?? ui("ui.no_runtime_selected_b8e7445")}</p><div className="meta-grid"><div><span>{ui("ui.source_56ccd01")}</span><strong>{runtimeInfo.source}</strong></div><div><span>{ui("ui.build_3053677")}</span><strong className="mono">{data.runtime.commit ?? '—'}</strong></div></div></section>
-        <section><h3>{ui("ui.build_dependencies_8926e84")}</h3><div className="dependency-grid"><ToggleStatus ok={data.backend.prerequisites.git} label="Git" /><ToggleStatus ok={data.backend.prerequisites.cargo} label="Cargo" /><ToggleStatus ok={data.backend.prerequisites.rustc} label="Rust 1.99" /><ToggleStatus ok={data.backend.prerequisites.protoc} label="protoc" /></div><p className="fine-print">{ui("ui.building_xodus_also_requires_a_c_c_toolchain_cma_a847b06")}</p></section>
       </div>
     </details>
   </main>;

@@ -70,7 +70,6 @@ export interface BackendStatus {
   updating: boolean;
   externalRoot: string;
   capabilities: BackendCapabilities;
-  prerequisites: { git: boolean; cargo: boolean; rustc: boolean; protoc: boolean };
   blockReason?: string;
   linuxRunPatch?: string;
   recipeSha256?: string;
@@ -626,7 +625,6 @@ export interface LauncherApi {
   refreshBackend(): Promise<BackendStatus>;
   checkBackendUpdate(): Promise<BackendStatus>;
   updateBackend(): Promise<void>;
-  rebuildBackend(): Promise<void>;
   refreshRuntime(): Promise<RuntimeStatus>;
   getRuntimeFamilies(): Promise<InstalledRuntimeFamily[]>;
   checkRuntimeUpdate(): Promise<RuntimeStatus>;

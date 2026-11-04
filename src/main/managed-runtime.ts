@@ -101,7 +101,8 @@ export class ManagedRuntimeManager {
                 if (root !== this.context.root() || epoch !== this.selectionEpoch)
                     return;
                 state.installed = {
-                    id: verified.id, label: verified.label, buildId: verified.buildId, sourceCommit: verified.sourceCommit, manifestSha256: verified.manifestSha256
+                    id: verified.id, label: verified.label, buildId: verified.buildId, sourceCommit: verified.sourceCommit, manifestSha256: verified.manifestSha256,
+                    displayWinePath: verified.winePath
                 };
                 state.version = provenance?.tag as string | undefined;
                 state.channel = provenance ? (provenance.prerelease ? 'prerelease' : 'stable') : undefined;

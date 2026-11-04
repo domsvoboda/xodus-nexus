@@ -37,7 +37,7 @@ it('accepts only known IDs, defaults only an absent preference, rejects hostile 
 });
 it('only lists a complete verified managed installation',async()=>{
  expect(await installedRuntimeFamilies(root,'x64')).toEqual([]);await fixture();
- expect(await installedRuntimeFamilies(root,'x64')).toEqual([expect.objectContaining({id:family,buildId})]);
+ expect(await installedRuntimeFamilies(root,'x64')).toEqual([expect.objectContaining({id:family,buildId,displayWinePath:path.join(release,'files/bin/wine')})]);
  await fs.writeFile(path.join(release,'files/bin/wine'),'changed');
  expect(await installedRuntimeFamilies(root,'x64')).toEqual([]);
  await expect(resolveRuntimeFamily(root,family,'x64')).rejects.toThrow('default was not used');

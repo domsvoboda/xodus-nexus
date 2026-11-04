@@ -23,6 +23,9 @@ export function sameRuntimeBuild(a:unknown,b:unknown):boolean {
 }
 export interface InstalledRuntimeFamily {
   id: RuntimeFamily; label: string; buildId: string; sourceCommit: string; manifestSha256:string;
+  /** Read-only display path from the verified managed payload. It is never a
+   * launch, approval or selection input. */
+  displayWinePath?: string;
 }
 /** A chosen managed family never borrows the global runtime's availability. */
 export function gameRuntimeAvailable(selection:unknown,separatePrefix:unknown,defaultAvailable:boolean,installed:readonly InstalledRuntimeFamily[]):boolean {

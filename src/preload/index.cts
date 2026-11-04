@@ -81,7 +81,6 @@ const api: LauncherApi = {
   refreshBackend: () => ipcRenderer.invoke('backend-refresh'),
   checkBackendUpdate: () => ipcRenderer.invoke('backend-check-update'),
   updateBackend: () => ipcRenderer.invoke('backend-update'),
-  rebuildBackend: () => ipcRenderer.invoke('backend-rebuild'),
   refreshRuntime: () => ipcRenderer.invoke('runtime-refresh'),
   getRuntimeFamilies: () => ipcRenderer.invoke('runtime-families'),
   checkRuntimeUpdate: () => ipcRenderer.invoke('runtime-check-update'),

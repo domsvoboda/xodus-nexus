@@ -4,21 +4,19 @@ import { randomUUID, createHash } from 'node:crypto';
 import type { BackendCapabilities, BackendStatus } from '../shared/types.js';
 import { parseBackendHelp } from '../shared/utils.js';
 import { run } from './process.js';
-import { backendLock, backendRecipeSha256, compareVersions } from './backend-package.js';
+import { backendLock, compareVersions } from './backend-package.js';
 import { discoverBackend, installBackend, backendHttpStatus, type BackendArtifact, BackendInstallError, type BackendUpdateStage } from './backend-releases.js';
 import { backendDiagnostic } from './backend-diagnostics.js';
 import type { PreparedComponentUpdate } from './component-updates.js';
 import { BackendPrerequisiteError, backendPrerequisiteFailure } from './backend-prerequisites.js';
 
-const REPOSITORY = backendLock.repository;
 export const LINUX_RUN_PATCH = backendLock.compatibility;
-const LINUX_RUN_RELEASE = backendLock.commit.slice(0, 12);
 const EMPTY_CAPABILITIES: BackendCapabilities = {
   commands: [], account: false, login: false, logout: false, download: false, streaming: false, run: false,
 };
 
 interface ManagedPointer { commit: string; binaryPath: string; builtAt: string; linuxRunPatch?: string; recipeSha256?: string; version?: string; delivery?: 'release' | 'local' }
-type BackendMutation = 'update' | 'rebuild';
+type BackendMutation = 'update';
 export type BackendMutationTarget = Readonly<Pick<ManagedPointer, 'commit' | 'binaryPath' | 'version' | 'delivery' | 'linuxRunPatch' | 'recipeSha256'>>;
 /** Publication of current.json is a commit boundary, not a durability claim. */
 export class BackendMutationError extends Error {
@@ -60,17 +58,12 @@ export class BackendManager {
       updating: false,
       externalRoot,
       capabilities: EMPTY_CAPABILITIES,
-      prerequisites: { git: false, cargo: false, rustc: false, protoc: false },
     };
   }
 
   get current(): BackendStatus { return structuredClone(this.status); }
 
   setExternalRoot(root: string): void { this.status.externalRoot = root; this.reconciliationEpoch++; }
-
-  private async commandExists(command: string): Promise<boolean> {
-    try { return (await run(command, ['--version'], { maxOutput: 20_000 })).code === 0; } catch { return false; }
-  }
 
   private async validate(binaryPath: string): Promise<BackendCapabilities | null> {
     try {
@@ -130,11 +123,6 @@ export class BackendManager {
     const epoch = this.reconciliationEpoch, sequence = ++this.refreshSequence;
     const externalRoot = this.status.externalRoot;
     const current = () => epoch === this.reconciliationEpoch && sequence === this.refreshSequence;
-    const [git, cargo, rustc, protoc] = await Promise.all([
-      this.commandExists('git'), this.commandExists('cargo'), this.commandExists('rustc'), this.commandExists('protoc'),
-    ]);
-    if (!current()) return this.current;
-    this.status.prerequisites = { git, cargo, rustc, protoc };
 
     let validationFailure: string | undefined;
     const validate = (binary: string) => this.validate(binary).catch(error => {
@@ -400,87 +388,4 @@ export class BackendManager {
     }
   }
 
-  async rebuild(onStatus: () => void): Promise<void> {
-    if (this.status.updating) throw new Error('A backend installation is already running.');
-    this.status.updating = true;
-    this.reconciliationEpoch++;
-    this.status.blockReason = undefined;
-    const staging = path.join(this.managedRoot, `.staging-${randomUUID()}`);
-    const log = (line: string) => this.emitLog('backend', line);
-    let committed = false, reconciled = false;
-    let failure: BackendMutationError | undefined;
-    let targetIdentity: BackendMutationTarget | undefined;
-    try {
-      onStatus();
-      await this.assertUpdateAllowed();
-      if (!this.status.prerequisites.git || !this.status.prerequisites.cargo || !this.status.prerequisites.rustc || !this.status.prerequisites.protoc) {
-        throw new Error('Git, Cargo, Rust, or protoc is missing. Check the build dependencies in Settings.');
-      }
-      await fs.mkdir(path.join(this.managedRoot, 'releases'), { recursive: true });
-      log(`Cloning the pinned Xodus source ${backendLock.commit}…`);
-      let result = await run('git', ['clone', '--no-checkout', REPOSITORY, staging], { onLine: log });
-      if (result.code !== 0) throw new Error(`git clone exited with code ${result.code}`);
-      result = await run('git', ['-C', staging, 'checkout', '--detach', backendLock.commit], { onLine: log });
-      if (result.code !== 0) throw new Error('Pinned backend checkout failed.');
-      const commit = (await run('git', ['-C', staging, 'rev-parse', 'HEAD'])).output.trim();
-      if (commit !== backendLock.commit || createHash('sha256').update(await fs.readFile(path.join(staging, 'Cargo.lock'))).digest('hex') !== backendLock.cargoLockSha256) throw new Error('Backend source lock mismatch.');
-      if (createHash('sha256').update(await fs.readFile(path.join(staging, 'build-config.json'))).digest('hex') !== backendLock.buildConfigSha256)
-        throw new Error('Backend build configuration mismatch.');
-      const compiler = await run('rustc', ['--version']);
-      if (compiler.code !== 0 || !compiler.output.startsWith(`rustc ${backendLock.rust} `))
-        throw new Error(`The source build requires Rust ${backendLock.rust}.`);
-      const target = path.join(staging, 'target');
-      log(`Building ${commit.slice(0, 10)} with Cargo…`);
-      result = await run('cargo', ['build', '--locked', '--release', '--no-default-features', '-p', 'xodus-cli', '-p', 'xodus-service'], {
-        cwd: staging,
-        env: { ...process.env, CARGO_TARGET_DIR: target },
-        onLine: log,
-        maxOutput: 5_000_000,
-      });
-      if (result.code !== 0) throw new Error(`cargo build exited with code ${result.code}`);
-      const builtCli = path.join(target, 'release', 'xodus-cli');
-      const capabilities = await this.validate(builtCli);
-      if (!capabilities?.login || !capabilities.streaming || !capabilities.account || !capabilities.externalAuth || !capabilities.packageSelection) throw new Error('The built backend failed command validation.');
-      const runHelp = await run(builtCli, ['run', '--help'], { maxOutput: 100_000 });
-      if (runHelp.code !== 0 || !runHelp.output.includes('--materialize-chain')) throw new Error('The built backend lacks launch-chain support.');
-      await this.assertUpdateAllowed();
-
-      const releaseDir = path.join(this.managedRoot, 'releases', `${commit}-${LINUX_RUN_RELEASE}-local-${randomUUID()}`);
-      await fs.mkdir(releaseDir, { recursive: true });
-      const managedCli = path.join(releaseDir, 'xodus-cli');
-      await fs.copyFile(builtCli, managedCli);
-      await fs.chmod(managedCli, 0o755);
-      const builtService = path.join(target, 'release', 'xodus-service');
-      await fs.copyFile(builtService, path.join(releaseDir, 'xodus-service'));
-      await fs.chmod(path.join(releaseDir, 'xodus-service'), 0o755);
-      await fs.writeFile(path.join(releaseDir, 'metadata.json'), JSON.stringify({ commit, builtAt: new Date().toISOString(), capabilities, linuxRunPatch: LINUX_RUN_PATCH }, null, 2));
-      const pointer: ManagedPointer = { commit, binaryPath: managedCli, builtAt: new Date().toISOString(), linuxRunPatch: LINUX_RUN_PATCH,
-        recipeSha256: backendRecipeSha256, version: backendLock.version, delivery: 'local' };
-      targetIdentity = { commit, binaryPath: managedCli, version: pointer.version, delivery: pointer.delivery, linuxRunPatch: pointer.linuxRunPatch, recipeSha256: pointer.recipeSha256 };
-      const pointerTmp = `${this.pointerFile}.${randomUUID()}.tmp`;
-      try {
-        await fs.writeFile(pointerTmp, JSON.stringify(pointer, null, 2));
-        await fs.rename(pointerTmp, this.pointerFile);
-        committed = true;
-        this.reconciliationEpoch++;
-      } finally { if (!committed) await fs.rm(pointerTmp, { force: true }); }
-      Object.assign(this.status, {
-        available: false, source: 'managed', binaryPath: managedCli, commit,
-        upstreamCommit: commit, updateAvailable: false, capabilities: EMPTY_CAPABILITIES, linuxRunPatch: LINUX_RUN_PATCH,
-      });
-      const refreshed = await this.refresh();
-      if (!refreshed.available || refreshed.source !== 'managed' || refreshed.binaryPath !== managedCli) throw new Error('The selected backend could not be confirmed after activation.');
-      reconciled = true;
-      log('The new backend passed validation and was activated atomically. Older builds were preserved.');
-    } catch (error) {
-      if (committed && !reconciled) Object.assign(this.status, { available: false, capabilities: EMPTY_CAPABILITIES,
-        source: 'managed', ...targetIdentity });
-      failure = this.mutationFailure('rebuild', error, committed, targetIdentity);
-      throw failure;
-    } finally {
-      await fs.rm(staging, { recursive: true, force: true }).catch(() => undefined);
-      this.status.updating = false;
-      this.notifyMutation('rebuild', onStatus, committed, targetIdentity, failure);
-    }
-  }
 }
