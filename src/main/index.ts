@@ -41,7 +41,7 @@ import { inspectGameDirectory, StateStore } from './store.js';
 import { inspectStartupLibrary } from './startup-library.js';
 import { hasIncompleteUpdate, INCOMPLETE_UPDATE_MESSAGE } from './installation-state.js';
 import { RuntimeManager, type RuntimeSettingsReservation } from './runtime.js';
-import { prepareProtonRunner, protonOptionalComponentNotices, syncPrefixUserLocale, syncUnrealCultureGameIni } from './proton.js';
+import { prepareProtonRunner, protonLaunchFeatureNotices, protonOptionalComponentNotices, syncPrefixUserLocale, syncUnrealCultureGameIni } from './proton.js';
 import { layoutOfWine } from './proton-layout.js';
 import { accountCacheKey } from './offline-identity.js';
 import { applyOfflinePermissions, assertOfflineAccessReady, bindOfflineAccess, licenseCacheDirectory, offlineAccessRevoked, revokeOfflineAccess, type OfflineRevocation } from './offline-access.js';
@@ -1387,7 +1387,7 @@ async function prepareGameLaunch(id: string, steam?: SteamGameContext): Promise<
     const legacyPrefixRoot = runtimeContext.legacyPrefixRoot;
     const compatibilityDataPath = runtimeContext.compatibilityDataPath;
     const steamRoot = path.join(app.getPath('home'), '.steam', 'root');
-    const protonRunner = await prepareProtonRunner(wine, compatibilityDataPath, steamRoot, store.settings.shaderCacheLimitGiB);
+    const protonRunner = await prepareProtonRunner(wine, compatibilityDataPath, steamRoot, store.settings.shaderCacheLimitGiB, { installPath: game.path });
     const wineCommand = protonRunner?.command ?? wine;
     // Play goes through the runtime's Proton session when one is available, so
     // the runtime's own launch options (for example PROTON_USE_OPTISCALER) are
@@ -1401,6 +1401,10 @@ async function prepareGameLaunch(id: string, steam?: SteamGameContext): Promise<
       const launchOptionsEnvironment = parseLaunchOptions(game.launchTools?.launchOptions ?? '').environment;
       for (const notice of await protonOptionalComponentNotices({ ...launchEnvironment, ...launchOptionsEnvironment },
         protonRunner.protonRoot, compatibilityDataPath, offlineLaunch)) addGameLog(notice);
+      // Options that need a Steam game id or the runtime's umu/Steam helper are
+      // reported as inactive instead of being simulated with an invented id.
+      for (const notice of await protonLaunchFeatureNotices({ ...launchEnvironment, ...launchOptionsEnvironment },
+        protonRunner.protonRoot, protonRunner.compatibilityLocation)) addGameLog(notice);
     }
     if (inspected.vcRedistEncrypted) {
       if (!protonRunner) throw new Error('This encrypted VC++ prerequisite requires a Proton prefix. Select Xodus Runtime in Settings.');
