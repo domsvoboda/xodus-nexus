@@ -14,6 +14,10 @@ on:
         type: choice
         options: [both, x64]
         default: both
+      bridge_043_candidate:
+        description: 'One-off launcher 0.4.3 transition candidate; valid only on fix/launcher-repo-bridge-0411'
+        type: boolean
+        default: false
 
 permissions:
   contents: read
@@ -31,6 +35,13 @@ jobs:
         with:
           node-version: '22'
           cache: npm
+      # A requested maintenance candidate proves its exact source before any
+      # dependency installation or build step starts. Other events are unaffected.
+      - name: Validate the one-off 0.4.3 bridge candidate request
+        id: bridge
+        env:
+          BRIDGE_043_REQUESTED: ${{ inputs.bridge_043_candidate || 'false' }}
+        run: node scripts/ci/bridge-043-preflight.mjs
       - run: npm ci
       - name: Install account-free runtime fixture toolchain
         timeout-minutes: 15
@@ -39,15 +50,15 @@ jobs:
           sudo apt-get -o Acquire::Retries=2 -o Acquire::http::Timeout=30 -o Acquire::https::Timeout=30 update
           sudo apt-get -o Acquire::Retries=2 -o Acquire::http::Timeout=30 -o Acquire::https::Timeout=30 install -y gcc-mingw-w64-x86-64
       - name: Check source without compiling a distribution candidate
-        if: github.ref != 'refs/heads/main' || contains(github.event.head_commit.message, '[source-only]')
+        if: steps.bridge.outputs.candidate != 'true' && (github.ref != 'refs/heads/main' || contains(github.event.head_commit.message, '[source-only]'))
         run: npm run i18n:check && npm run typecheck && npm run test
-      - name: Build and check the main candidate once
-        if: github.ref == 'refs/heads/main' && !contains(github.event.head_commit.message, '[source-only]')
+      - name: Build and check the launcher candidate once
+        if: (github.ref == 'refs/heads/main' && !contains(github.event.head_commit.message, '[source-only]')) || (steps.bridge.outputs.candidate == 'true' && github.ref == 'refs/heads/fix/launcher-repo-bridge-0411')
         run: npm run build
       - run: npm run test:runtime-tools
       - run: npm run test:ci-tools
       - name: Build launcher candidate (never publish)
-        if: github.ref == 'refs/heads/main' && !contains(github.event.head_commit.message, '[source-only]')
+        if: (github.ref == 'refs/heads/main' && !contains(github.event.head_commit.message, '[source-only]')) || (steps.bridge.outputs.candidate == 'true' && github.ref == 'refs/heads/fix/launcher-repo-bridge-0411')
         env:
           BUILD_ARCHITECTURE: ${{ inputs.architecture || 'both' }}
         run: |
@@ -57,10 +68,10 @@ jobs:
             *) echo 'Unsupported launcher architecture selection' >&2; exit 1 ;;
           esac
       - name: Bind candidate to source and checksums
-        if: github.ref == 'refs/heads/main' && !contains(github.event.head_commit.message, '[source-only]')
+        if: (github.ref == 'refs/heads/main' && !contains(github.event.head_commit.message, '[source-only]')) || (steps.bridge.outputs.candidate == 'true' && github.ref == 'refs/heads/fix/launcher-repo-bridge-0411')
         run: node scripts/ci/artifact-manifest.mjs write launcher release
       - uses: actions/upload-artifact@v4
-        if: github.ref == 'refs/heads/main' && !contains(github.event.head_commit.message, '[source-only]')
+        if: (github.ref == 'refs/heads/main' && !contains(github.event.head_commit.message, '[source-only]')) || (steps.bridge.outputs.candidate == 'true' && github.ref == 'refs/heads/fix/launcher-repo-bridge-0411')
         with:
           name: launcher-candidate
           path: |

@@ -4,7 +4,10 @@ import fs from 'node:fs/promises';
 import { createRequire } from 'node:module';
 const yaml=createRequire(import.meta.url)('js-yaml');
 const read=async name=>yaml.load(await fs.readFile(`.github/workflows/${name}.yml`,'utf8'));
-const candidateGuard="github.ref == 'refs/heads/main' && !contains(github.event.head_commit.message, '[source-only]')";
+const mainCandidateGuard="github.ref == 'refs/heads/main' && !contains(github.event.head_commit.message, '[source-only]')";
+const bridgeCandidateGuard="steps.bridge.outputs.candidate == 'true' && github.ref == 'refs/heads/fix/launcher-repo-bridge-0411'";
+const candidateGuard=`(${mainCandidateGuard}) || (${bridgeCandidateGuard})`;
+const sourceCheckGuard="steps.bridge.outputs.candidate != 'true' && (github.ref != 'refs/heads/main' || contains(github.event.head_commit.message, '[source-only]'))";
 test('manual launcher candidates can select x64 without weakening main-only checks', async()=>{
   const workflow=await read('ci');
   assert.deepEqual(workflow.on.workflow_dispatch.inputs.architecture.options,['both','x64']);
@@ -23,13 +26,13 @@ test('full backend/runtime workflows only build main, including manual dispatch'
     if(name==='backend')assert.deepEqual(workflow.on.push.branches,['main']);
     else assert.deepEqual(Object.keys(workflow.on),['workflow_dispatch']);
     assert.equal(workflow.on.pull_request,undefined);
-    assert.equal(workflow.jobs[job].if,name==='backend'?candidateGuard:"github.ref == 'refs/heads/main'");
+    assert.equal(workflow.jobs[job].if,name==='backend'?mainCandidateGuard:"github.ref == 'refs/heads/main'");
   }
 });
 test('develop/PR checks cannot package or upload launcher candidates',async()=>{
   const steps=(await read('ci')).jobs.checks.steps;
   const checks=steps.find(step=>step.name==='Check source without compiling a distribution candidate');
-  assert.equal(checks.if,"github.ref != 'refs/heads/main' || contains(github.event.head_commit.message, '[source-only]')");
+  assert.equal(checks.if,sourceCheckGuard);
   assert.equal(checks.run,'npm run i18n:check && npm run typecheck && npm run test');
   for(const step of steps.filter(step=>step.run?.includes('npm run build')||step.run?.includes('electron-builder')||step.run?.includes('artifact-manifest.mjs')||step.uses?.startsWith('actions/upload-artifact'))){
     assert.equal(step.if,candidateGuard);
@@ -39,12 +42,24 @@ test('source-only main integrations run checks but never package or compile cand
   const ci=await read('ci'),backend=await read('backend');
   const checks=ci.jobs.checks.steps.find(step=>step.name==='Check source without compiling a distribution candidate');
   const candidates=[backend.jobs.build,...ci.jobs.checks.steps.filter(step=>step.run?.includes('npm run build')||step.run?.includes('electron-builder')||step.run?.includes('artifact-manifest.mjs')||step.uses?.startsWith('actions/upload-artifact'))];
-  const evaluate=(expression,ref,message)=>Function('github','contains',`return (${expression})`)({ref,event:{head_commit:{message}}},(value,part)=>String(value??'').includes(part));
+  const launcherCandidates=candidates.filter(candidate=>candidate!==backend.jobs.build);
+  const evaluate=(expression,ref,message,bridge='false')=>Function('github','contains','steps',`return (${expression})`)({ref,event:{head_commit:{message}}},(value,part)=>String(value??'').includes(part),{bridge:{outputs:{candidate:bridge}}});
   for(const ref of ['refs/heads/main','refs/heads/develop','refs/pull/1/merge'])for(const message of ['ordinary integration','[source-only] Integrate verified source']){
     const expected=ref==='refs/heads/main'&&!message.includes('[source-only]');
     for(const candidate of candidates)assert.equal(evaluate(candidate.if,ref,message),expected);
     assert.equal(evaluate(checks.if,ref,message),!expected);
   }
+  // A granted maintenance exception is the only way a non-main ref may build, and
+  // the guard itself still restricts it to the exact maintenance branch.
+  for(const ref of ['refs/heads/main','refs/heads/develop','refs/pull/1/merge']){
+    for(const candidate of candidates)assert.equal(evaluate(candidate.if,ref,'ordinary integration','true'),ref==='refs/heads/main');
+  }
+  const bridgeRef='refs/heads/fix/launcher-repo-bridge-0411';
+  for(const candidate of launcherCandidates)assert.equal(evaluate(candidate.if,bridgeRef,'ordinary integration','true'),true);
+  assert.equal(evaluate(backend.jobs.build.if,bridgeRef,'ordinary integration','true'),false);
+  assert.equal(evaluate(checks.if,bridgeRef,'ordinary integration','true'),false);
+  for(const candidate of candidates)assert.equal(evaluate(candidate.if,bridgeRef,'ordinary integration','false'),false);
+  assert.equal(evaluate(checks.if,bridgeRef,'ordinary integration','false'),true);
   assert.deepEqual(Object.keys((await read('release')).on),['workflow_dispatch']);
 });
 test('the published backend uses the dedicated UI without WebKit build prerequisites',async()=>{
