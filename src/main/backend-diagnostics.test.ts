@@ -264,6 +264,35 @@ it('does not break backend calls when logging fails and never captures stdout or
   } finally { setBackendDiagnostics(undefined); await fs.rm(root, { recursive: true, force: true }); }
 });
 
+it('records only fixed installer stages with commit state and never a raw reason', async () => {
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), 'nexus-update-diagnostic-'));
+  try {
+    const log = new BackendDiagnostics(root);
+    log.record({ operation: 'update', event: 'start' });
+    log.record({ operation: 'update', event: 'diagnostic', stage: 'update-download' });
+    log.record({ operation: 'update', event: 'failure', stage: 'update-download-http', status: 503, committed: false });
+    log.record({ operation: 'update', event: 'failure', stage: 'update-confirm', committed: true });
+    log.record({ operation: 'update', event: 'exit', code: -1, elapsedMs: 1200 });
+    log.record({ operation: 'update', event: 'failure', stage: 'update-commit', committed: 'yes' as never });
+    log.record({ operation: 'login', event: 'failure', stage: 'update-checksum', committed: true });
+    log.record({ operation: 'update', event: 'diagnostic', stage: 'entitlements-http' });
+    log.record({ operation: 'login', event: 'diagnostic', stage: 'update-checksum' });
+    log.record({ operation: 'update', event: 'failure', stage: 'update-checksum', committed: false, message: 'EACCES /private/path' } as never);
+    log.record({ operation: 'update', event: 'failure', stage: 'private-secret' });
+    const { content } = await log.read();
+    const records = content.trim().split('\n').map(line => JSON.parse(line));
+    expect(records.map(row => row.event)).toEqual(['start', 'diagnostic', 'failure', 'failure', 'exit', 'failure', 'failure']);
+    expect(records[1]).toMatchObject({ stage: 'update-download' });
+    expect(records[2]).toMatchObject({ stage: 'update-download-http', status: 503, committed: false });
+    expect(records[3]).toMatchObject({ stage: 'update-confirm', committed: true });
+    expect(records[4]).toMatchObject({ code: -1, elapsedMs: 1200 });
+    expect(records[5].committed).toBeUndefined();
+    expect(records[6]).toMatchObject({ stage: 'update-checksum', committed: false });
+    expect(Object.keys(records[6]).sort()).toEqual(['at', 'backend', 'committed', 'event', 'launcher', 'operation', 'source', 'stage']);
+    expect(content).not.toMatch(/private-secret|EACCES|private\/path|entitlements-http|update-commit.*yes/);
+  } finally { await fs.rm(root, { recursive: true, force: true }); }
+});
+
 it('observes actual tracked CLI calls without capturing license JSON or paths', async () => {
   const root = await fs.mkdtemp(path.join(os.tmpdir(), 'nexus-log-cli-'));
   try {

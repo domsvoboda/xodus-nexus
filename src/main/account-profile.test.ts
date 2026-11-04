@@ -114,3 +114,23 @@ it('retains a fresh subscription only for the matching account and removes it on
     await profile.select(undefined); expect(profile.value?.subscription).toBeUndefined();
   } finally { await fs.rm(root, { recursive: true, force: true }); }
 });
+
+it('keeps Store membership and player profile in separate identity caches', async () => {
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), 'nexus-separate-profiles-'));
+  try {
+    const subscription = { status: 'active', productIds: ['CFQ7TTC0KGQ8'], checkedAt: new Date().toISOString() };
+    const store = new AccountProfile(root, () => {}, value => value, async () => JSON.stringify({ schema: 1, account: 'store@example.test', gamertag: 'StoreOwner', subscription }), true);
+    const player = new AccountProfile(root, () => {}, value => value, async () => JSON.stringify({ schema: 1, account: 'player@example.test', gamertag: 'PersonalPlayer' }));
+    await store.select('store@example.test', '/fake/backend'); await store.settled();
+    await player.select('player@example.test', '/fake/backend'); await player.settled();
+    expect(store.value?.subscription).toEqual(subscription);
+    expect(player.value?.gamertag).toBe('PersonalPlayer');
+    expect(player.value?.subscription).toBeUndefined();
+    await player.select(undefined);
+    expect(store.value?.subscription).toEqual(subscription);
+    const cachedStore = new AccountProfile(root, () => {}, value => value, undefined, true);
+    await cachedStore.select('store@example.test');
+    expect(cachedStore.value?.gamertag).toBe('StoreOwner');
+    expect(cachedStore.value?.subscription).toEqual(subscription);
+  } finally { await fs.rm(root, { recursive: true, force: true }); }
+});

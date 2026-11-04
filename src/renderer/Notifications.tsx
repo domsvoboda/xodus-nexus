@@ -7,8 +7,9 @@ import { ui } from './i18n';
 import './notifications.css';
 
 export function useNotifications(data:AppSnapshot) {
-  const identity=JSON.stringify([data.auth.stored===true?data.auth.username:null,data.backend.binaryPath]);
-  const storageKey=data.auth.stored===true&&data.auth.username?'nexus.notifications.v1.'+encodeURIComponent(data.auth.username):undefined;
+  const account=data.auth.player??(data.auth.stored===true?data.auth.username:undefined);
+  const identity=JSON.stringify([account??null,data.backend.binaryPath]);
+  const storageKey=account?'nexus.notifications.v1.'+encodeURIComponent(account):undefined;
   const [reads,setReads]=useState<{identity:string;keys:string[]}>({identity:'',keys:[]});
   const [inbox,setInbox]=useState<{identity:string;value:XboxConversation[]}>();
   const [names,setNames]=useState<{identity:string;value:Map<string,string>}>();
@@ -16,7 +17,7 @@ export function useNotifications(data:AppSnapshot) {
   const snapshot=useRef(data);snapshot.current=data;
   const currentIdentity=useRef(identity);currentIdentity.current=identity;
   const lastViewed=useRef<{identity:string;keys:string[]}>({identity,keys:[]});
-  const supported=data.auth.stored===true&&!data.auth.running&&data.backend.available&&data.backend.capabilities.nativeSocial===true;
+  const supported=Boolean(account)&&!data.auth.running&&data.backend.available&&data.backend.capabilities.nativeSocial===true;
   useEffect(()=>{
     let keys:string[]=[];
     try{if(storageKey)keys=parseNotificationReads(localStorage.getItem(storageKey));}catch{/* Read state is optional if storage is unavailable. */}
@@ -36,7 +37,7 @@ export function useNotifications(data:AppSnapshot) {
     if(!supported)return;
     let active=true;
     const receive=(state:Awaited<ReturnType<typeof window.launcher.getXboxChatReads>>)=>{
-      if(active&&currentIdentity.current===identity&&state&&state.account===data.auth.username&&state.binary===data.backend.binaryPath)
+      if(active&&currentIdentity.current===identity&&state&&state.account===account&&state.binary===data.backend.binaryPath)
         remember(parseNotificationReads(JSON.stringify(state.keys)));
     };
     const unsubscribe=window.launcher.onXboxChatReads(receive);
@@ -82,13 +83,13 @@ export function useNotifications(data:AppSnapshot) {
     return()=>{active=false;clearInterval(timer);};
   },[identity]);
   const notices=notificationItems(data,supported&&inbox?.identity===identity?inbox.value:undefined,names?.identity===identity?names.value:new Map(),reads.identity===identity?reads.keys:[]);
-  return {notices,readKeys:reads.identity===identity?reads.keys:[],failed:supported&&failed,unsupported:data.auth.stored===true&&!data.backend.capabilities.nativeSocial,
+  return {notices,readKeys:reads.identity===identity?reads.keys:[],failed:supported&&failed,unsupported:Boolean(account)&&!data.backend.capabilities.nativeSocial,
     acknowledge:(notice:Notice)=>{if(notice.kind==='update')remember([notice.key]);},
     viewed:(peer:string,ids:string[])=>{
       const keys=ids.map(id=>messageNoticeKey(peer,id));
       lastViewed.current={identity,keys};remember(keys);
-      if(supported&&data.auth.username&&data.backend.binaryPath)
-        void window.launcher.viewedXboxChat(data.auth.username,data.backend.binaryPath,peer,ids).catch(()=>{/* Local read state is still retained. */});
+      if(supported&&account&&data.backend.binaryPath)
+        void window.launcher.viewedXboxChat(account,data.backend.binaryPath,peer,ids).catch(()=>{/* Local read state is still retained. */});
     }};
 }
 

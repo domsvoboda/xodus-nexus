@@ -51,3 +51,12 @@ it('puts ranked installed and available games together without mutating cards or
  expect(rows.map(row=>row.id)).toEqual(['old-installed','new-available','old-available','new-installed']);
  expect(rankLibraryRows(rows,undefined,row=>row.id)).toEqual(rows);
 });
+
+it('ignores the retired folder preference while retaining access, play state and sort', () => {
+  let saved = JSON.stringify({ kind:'gamepass', playState:'installed', sort:'recent-gamepass', location:'/old/drive/Games' });
+  const storage = {getItem:()=>saved, setItem:(_key:string,value:string)=>{saved=value;}};
+  const filters = loadLibraryFilters(storage);
+  expect(filters).toEqual({kind:'gamepass',playState:'installed',sort:'recent-gamepass',query:''});
+  expect(saveLibraryFilters(filters,storage)).toBe(true);
+  expect(JSON.parse(saved)).toEqual({kind:'gamepass',playState:'installed',sort:'recent-gamepass'});
+});

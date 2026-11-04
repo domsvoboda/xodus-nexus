@@ -1,0 +1,83 @@
+// Run with Electron. Exercises only the launcher's session-only demo Library APIs.
+// XODUS_UI_SMOKE_OUTPUT must be a new private directory. Optional
+// XODUS_UI_SMOKE_SOURCE selects a built checkout (defaults to this checkout).
+const {app,session} = require('electron');
+const fs = require('node:fs/promises');
+const path = require('node:path');
+const {pathToFileURL} = require('node:url');
+const source = path.resolve(process.env.XODUS_UI_SMOKE_SOURCE || path.join(__dirname,'../..'));
+const output = process.env.XODUS_UI_SMOKE_OUTPUT;
+if (!output || !path.isAbsolute(output)) throw Error('Set XODUS_UI_SMOKE_OUTPUT to a new absolute private directory');
+if (process.argv.some(value=>value==='--launch-game'||value==='--nexus-profile')) throw Error('Demo fixture does not accept game or profile arguments');
+process.env.XODUS_DEMO = '1';
+app.disableHardwareAcceleration();
+const language='en-US';
+app.commandLine.appendSwitch('lang',language);
+// Never inherit another capture action or a developer server from the caller.
+for (const name of ['VITE_DEV_SERVER_URL','XODUS_DEMO_CAPTURE_DIR','XODUS_DEMO_TOUR','XODUS_NEXUS_SMOKE_SCREENSHOT','XODUS_NEXUS_SMOKE_STORE','XODUS_NEXUS_SMOKE_STORE_QUERY','XODUS_NEXUS_FONTCONFIG','XODUS_NEXUS_FONTCONFIG_ORIGINAL','XODUS_NEXUS_FONTCONFIG_ORIGINAL_SET']) delete process.env[name];
+// Block both main-process Store requests and renderer artwork. This fixture
+// needs no network and cannot accidentally fall through to live account APIs.
+globalThis.fetch = async () => { throw Error('Network disabled by demo UI fixture'); };
+let completed = false;
+const timer = setTimeout(()=>{console.error('Demo Library smoke timed out');app.exit(1);},30000);
+const evaluate = (window, fn, ...args) => window.webContents.executeJavaScript(`(${fn.toString()})(...${JSON.stringify(args)})`);
+const ready = async (window, selector) => evaluate(window, async selector => {
+  const deadline=Date.now()+6000;
+  while(!document.querySelector(selector)) {
+    if(Date.now()>deadline)throw Error('Missing demo element: '+selector);
+    await new Promise(resolve=>setTimeout(resolve,30));
+  }
+},selector);
+const settle = window => evaluate(window,async()=>{
+  await new Promise(resolve=>requestAnimationFrame(()=>requestAnimationFrame(resolve)));
+  await Promise.race([Promise.all(document.getAnimations().filter(animation=>Number.isFinite(animation.effect?.getTiming().iterations)).map(animation=>animation.finished.catch(()=>{}))),new Promise(resolve=>setTimeout(resolve,500))]);
+});
+async function capture(window) {
+  const results=[];
+  const snapshot=await evaluate(window,()=>window.launcher.getSnapshot());
+  if(snapshot.auth.username!=='sample@example.test')throw Error('Expected isolated sample account');
+  await ready(window,'.sidebar nav button:nth-child(2)');
+  await evaluate(window,()=>document.querySelector('.sidebar nav button:nth-child(2)').click());
+  await ready(window,'.library-filters select[aria-label="Play state"]');
+  for(const [width,height] of [[1280,800],[800,600]]) {
+    window.setContentSize(width,height);await settle(window);
+    await evaluate(window,()=>{
+      const select=document.querySelector('select[aria-label="Play state"]');
+      select.value='installed';select.dispatchEvent(new Event('change',{bubbles:true}));select.focus();
+    });
+    await settle(window);
+    const layout=await evaluate(window,()=>{
+      const controls=[...document.querySelectorAll('.library-filters select,.library-filters input,.library-refresh')].map(control=>{
+        const r=control.getBoundingClientRect();return {label:control.getAttribute('aria-label'),left:r.left,right:r.right,top:r.top,bottom:r.bottom,height:r.height,width:r.width,search:control.matches('.library-filter-search input')};
+      });
+      return {viewport:[innerWidth,innerHeight],documentWidth:document.documentElement.scrollWidth,lang:document.documentElement.lang,controls,
+        noFolderFilter:!document.querySelector('.library-filter-location,select[aria-label="Install location"]'),
+        focused:document.activeElement?.getAttribute('aria-label'),localCards:document.querySelectorAll('.library-card').length};
+    });
+    if(layout.documentWidth>width||!layout.noFolderFilter||layout.focused!=='Play state'||!layout.localCards||layout.controls.some(c=>c.left<0||c.right>width||c.top<0||c.bottom>height||c.height<44||(c.search&&c.width<150)))throw Error('Library bounds/filter regression: '+JSON.stringify(layout));
+    await fs.writeFile(path.join(output,`library-${width}x${height}.png`),(await window.webContents.capturePage()).toPNG());
+    window.webContents.sendInputEvent({type:'keyDown',keyCode:'TAB'});window.webContents.sendInputEvent({type:'keyUp',keyCode:'TAB'});await settle(window);
+    const tabReachedSearch=await evaluate(window,()=>document.activeElement?.matches('.library-filter-search input'));
+    if(!tabReachedSearch)throw Error('Tab did not reach Search from Play state');
+    results.push({...layout,width,height,tabReachedSearch});
+  }
+  await fs.writeFile(path.join(output,'library-results.json'),JSON.stringify({source,language,results,scope:'Actual English demo renderer, isolated fresh profile, network blocked, no account/game access'},null,2)+'\n');
+  completed=true;clearTimeout(timer);app.exit(0);
+}
+(async()=>{
+  // Refuse an existing directory, so no saved profile or prior result is reused.
+  await fs.mkdir(output,{mode:0o700});
+  const profile=path.join(output,'profile');await fs.mkdir(profile,{mode:0o700});
+  app.setPath('userData',profile);
+  app.on('browser-window-created',(_event,window)=>{
+    window.show=()=>{};window.hide();window.webContents.setBackgroundThrottling(false);
+    window.webContents.once('did-finish-load',()=>void capture(window).catch(error=>{console.error(error);app.exit(1);}));
+  });
+  await app.whenReady();
+  session.defaultSession.webRequest.onBeforeRequest({urls:['http://*/*','https://*/*','ws://*/*','wss://*/*']},(_details,callback)=>callback({cancel:true}));
+  // Use the built-in offscreen smoke surface, while this fixture owns exit.
+  process.env.XODUS_NEXUS_SMOKE_SCREENSHOT=path.join(output,'built-in-smoke.png');
+  app.quit=()=>{};
+  await import(pathToFileURL(path.join(source,'dist-electron/main/index.js')).href);
+})().catch(error=>{console.error(error);clearTimeout(timer);app.exit(1);});
+app.on('will-quit',()=>{if(!completed)clearTimeout(timer);});

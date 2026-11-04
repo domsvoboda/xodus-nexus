@@ -59,6 +59,114 @@ async function contentConfiguration(directory: string): Promise<ContentConfigura
 function contentPattern(pattern: string): RegExp {
   return new RegExp('^' + pattern.replace(/[.+^${}()|[\]\\]/g, '\\$&').replaceAll('*', '.*').replaceAll('?', '.') + '$', 'i');
 }
+type LayoutCoordinate = 'source' | 'destination';
+interface FileGroupLayout {
+  group: XmlNode;
+  source: string[]; destination: string[]; prefix: string[]; pattern: string;
+}
+/**
+ * Package layout paths are relative to the package root. A single leading
+ * separator still denotes that package root, never the host filesystem or a
+ * network share, so it is normalized away instead of being opened as `/SRC`.
+ */
+function layoutParts(value: string, optional = false): string[] {
+  if (!optional && !value) throw Error('Unsupported content layout path.');
+  if (/^[\\/]{2}/.test(value) || /[:\x00-\x1f]/.test(value)) throw Error('Unsupported content layout path.');
+  const parts = value.split(/[\\/]+/).filter(part => part && part !== '.');
+  if (parts.some(part => part === '..')) throw Error('Unsupported content layout path.');
+  return parts;
+}
+function layoutGroups(groups: XmlNode[]): FileGroupLayout[] {
+  return groups.map(group => {
+    const source = layoutParts(group.attributes.SourcePath ?? '');
+    const include = layoutParts(group.attributes.Include ?? '');
+    const destination = layoutParts(group.attributes.DestinationPath ?? '', true);
+    const pattern = include.at(-1), prefix = include.slice(0, -1);
+    if (!pattern || /[*?]/.test(source.join('/')) || prefix.some(part => /[*?]/.test(part)) || destination.some(part => /[*?]/.test(part)))
+      throw Error('Unsupported content layout wildcard.');
+    return { group, source, destination, prefix, pattern };
+  });
+}
+function layoutExcluded(layout: FileGroupLayout, relative: string[]): boolean {
+  const exclude = layout.group.attributes.Exclude;
+  if (!exclude) return false;
+  const parts = layoutParts(exclude);
+  return parts.length === relative.length && parts.every((part, index) => contentPattern(part).test(relative[index]));
+}
+function sameLayoutPath(expected: string[], actual: string[]): boolean {
+  return expected.length === actual.length && expected.every((part, index) => part.toLowerCase() === actual[index].toLowerCase());
+}
+async function layoutPayload(directory: string, layout: FileGroupLayout, coordinate: LayoutCoordinate): Promise<'ok' | 'missing' | 'ambiguous' | 'unsafe'> {
+  let folder = directory;
+  for (const part of [...(coordinate === 'source' ? layout.source : layout.destination), ...layout.prefix]) {
+    const matches = (await fs.readdir(folder)).filter(name => name.toLowerCase() === part.toLowerCase());
+    if (!matches.length) return 'missing';
+    if (matches.length > 1) return 'ambiguous';
+    folder = path.join(folder, matches[0]);
+    const stat = await fs.lstat(folder);
+    if (!stat.isDirectory() || stat.isSymbolicLink()) return 'unsafe';
+  }
+  const names = await fs.readdir(folder);
+  if (names.length > 4096) throw Error('Content payload directory limit exceeded.');
+  const pattern = contentPattern(layout.pattern);
+  for (const name of names.filter(name => pattern.test(name) && !layoutExcluded(layout, [...layout.prefix, name])))
+    if ((await fs.lstat(path.join(folder, name))).isFile()) return 'ok';
+  return 'missing';
+}
+/**
+ * Every declared group must resolve under the same coordinate; groups are never
+ * mixed. Returns the reported failure instead of throwing so that coordinate
+ * selection can compare whole-layout evidence first.
+ */
+async function layoutFailure(directory: string, layouts: FileGroupLayout[], coordinate: LayoutCoordinate): Promise<string | undefined> {
+  for (const layout of layouts) {
+    const result = await layoutPayload(directory, layout, coordinate);
+    if (result === 'ambiguous') return 'Missing or ambiguous content payload directory.';
+    if (result === 'unsafe') return 'Invalid content payload directory.';
+    if (result !== 'ok') return 'A file group declared by the content layout is missing.';
+  }
+  return undefined;
+}
+/**
+ * A downloaded tree can be extracted at either layout coordinate. The metadata
+ * copy that exists is authoritative (SRC when present, otherwise the root copy),
+ * and the whole layout must agree on one interpretation. Source-coordinate trees
+ * are deployable only when the metadata's declared destination is the package
+ * root that runtime discovery reads; destination-coordinate trees already sit at
+ * their deployment paths, including a package-relative \SRC.
+ *
+ * The metadata declaration alone can be coordinate-neutral (a source path equal
+ * to the deployed path), while the payload groups differ, so a neutral
+ * declaration is settled by whole-layout evidence. Two fully valid but distinct
+ * interpretations stay ambiguous and are rejected.
+ */
+async function layoutCoordinate(directory: string, layouts: FileGroupLayout[], configuration: ContentConfiguration): Promise<LayoutCoordinate> {
+  const configName = 'MicrosoftGame.config';
+  const physical = path.relative(directory, (configuration.source ?? configuration.root)!).split(path.sep).filter(Boolean);
+  const declarations = layouts.filter(group => {
+    if (!contentPattern(group.pattern).test(configName)) return false;
+    const relative = [...group.prefix, configName];
+    return (sameLayoutPath([...group.source, ...relative], physical) || sameLayoutPath([...group.destination, ...relative], physical))
+      && !layoutExcluded(group, relative);
+  });
+  if (declarations.length !== 1) throw Error('MicrosoftGame.config must be unambiguously mapped by the content layout.');
+  const declaration = declarations[0], relative = [...declaration.prefix, configName];
+  const sourcePath = [...declaration.source, ...relative], destinationPath = [...declaration.destination, ...relative];
+  const sourceCoordinate = sameLayoutPath(sourcePath, physical) && sameLayoutPath(destinationPath, [configName]);
+  const destinationCoordinate = sameLayoutPath(destinationPath, physical);
+  if (sourceCoordinate && destinationCoordinate) {
+    if (layouts.every(layout => sameLayoutPath(layout.source, layout.destination))) return 'source';
+    const sourceFailure = await layoutFailure(directory, layouts, 'source');
+    const destinationFailure = await layoutFailure(directory, layouts, 'destination');
+    if (!sourceFailure && !destinationFailure) throw Error('MicrosoftGame.config matches both layout coordinates.');
+    if (!sourceFailure) return 'source';
+    if (!destinationFailure) return 'destination';
+    throw Error(sourceFailure);
+  }
+  if (sourceCoordinate) return 'source';
+  if (destinationCoordinate) return 'destination';
+  throw Error('MicrosoftGame.config is not at a layout-declared location.');
+}
 export function contentManifest(xml: string): Manifest {
   const root = parsePackageXml(xml);
   if (root.name.split(':').at(-1) !== 'Game') throw Error('Expected a Microsoft Game manifest.');
@@ -202,38 +310,10 @@ export class GameContent {
     }
     visit(layout, 0);
     if (!groups.length || groups.length > 256) throw Error('Content layout contains no supported file groups.');
-    if (configuration.source) {
-      const parts = (value: string) => value.split(/[/\\]/).filter(part => part && part !== '.');
-      const mappings = groups.filter(group => {
-        const source = parts(group.attributes.SourcePath ?? '').join('/').toLowerCase();
-        const include = parts(group.attributes.Include ?? '');
-        const destination = parts(group.attributes.DestinationPath ?? '');
-        return source === 'src' && include.length === 1 && !destination.length
-          && !group.attributes.Exclude && contentPattern(include[0]).test('MicrosoftGame.config');
-      });
-      if (mappings.length !== 1) throw Error('SRC MicrosoftGame.config must be mapped to the package root by its layout.');
-    }
-    for (const group of groups) {
-      const source = group.attributes.SourcePath, include = group.attributes.Include;
-      const valid = (value: string | undefined) => value && !/^[/\\]/.test(value) && !/[:\x00-\x1f]/.test(value) && !value.split(/[/\\]/).includes('..');
-      if (!valid(source) || !valid(include) || /[*?]/.test(source)) throw Error('Unsupported content layout path.');
-      const parts = [...source.split(/[/\\]/), ...include.split(/[/\\]/)].filter(part => part && part !== '.');
-      const pattern = parts.pop();
-      if (!pattern || parts.some(part => /[*?]/.test(part))) throw Error('Unsupported content layout wildcard.');
-      let folder = directory;
-      for (const part of parts) {
-        const matches = (await fs.readdir(folder)).filter(name => name.toLowerCase() === part.toLowerCase());
-        if (matches.length !== 1) throw Error('Missing or ambiguous content payload directory.');
-        folder = path.join(folder, matches[0]);
-        if (!(await fs.lstat(folder)).isDirectory()) throw Error('Invalid content payload directory.');
-      }
-      const match = contentPattern(pattern);
-      const names = await fs.readdir(folder);
-      if (names.length > 4096) throw Error('Content payload directory limit exceeded.');
-      let found = false;
-      for (const name of names.filter(name => match.test(name))) if ((await fs.lstat(path.join(folder, name))).isFile()) { found = true; break; }
-      if (!found) throw Error('A file group declared by the content layout is missing.');
-    }
+    const fileGroups = layoutGroups(groups);
+    const coordinate = await layoutCoordinate(directory, fileGroups, configuration);
+    const failure = await layoutFailure(directory, fileGroups, coordinate);
+    if (failure) throw Error(failure);
     return { ...content, configuration };
   }
   async plan(game: Game, readAccess: () => Promise<{ checkedAt: string; accessByProductId: Access }>, market = 'US'): Promise<{ plan: GameContentPlan; packages: ContentPackage[] }> {
