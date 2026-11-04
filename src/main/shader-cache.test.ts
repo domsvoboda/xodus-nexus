@@ -24,7 +24,10 @@ async function fixture() {
   await fs.mkdir(path.dirname(wine), { recursive: true }); await fs.mkdir(system, { recursive: true });
   await fs.mkdir(path.join(path.dirname(wine), '../share/default_pfx'), { recursive: true });
   for (const name of ['libvkd3d-utils-1.dll', 'dxgi.dll', 'd3d12.dll']) await fs.writeFile(path.join(system, name), 'fixture');
-  await fs.writeFile(path.join(path.dirname(wine), '../../proton'), '#!/bin/sh\nexit 0\n', { mode: 0o700 });
+  // The runtime's Proton session is the Play route. Forward its `run` arguments
+  // to the exact fixture Wine so the Play environment can be observed.
+  await fs.writeFile(path.join(path.dirname(wine), '../../proton'),
+    `#!${process.execPath}\nconst {spawnSync}=require('child_process');const args=process.argv.slice(2);if(args[0]==='run')args.shift();const result=spawnSync(${JSON.stringify(wine)},args,{stdio:'inherit'});process.exit(result.status??1);\n`, { mode: 0o700 });
   await fs.writeFile(wine, `#!${process.execPath}\nconst fs=require('fs'),path=require('path');
 if(process.env.NEXUS_CACHE_TEST==='persist') {
  const file=path.join(process.env.VKD3D_SHADER_CACHE_PATH,'synthetic-cache');
@@ -58,7 +61,7 @@ describe('persistent shader cache', () => {
   });
 
   it.each([[0.25,'268435456','256M'],[2.5,'2684354560','2560M'],[8,'8589934592','8G']])('applies the chosen %s GiB limit to real driver environments',async(gib,bytes,mesa)=>{
-    const f=await fixture(),runner=(await prepareProtonRunner(f.wine,f.compat,f.steam,f.wine,Number(gib)))!;
+    const f=await fixture(),runner=(await prepareProtonRunner(f.wine,f.compat,f.steam,Number(gib)))!;
     const result=JSON.parse((await execFile(runner.command,[],{env:environment()})).stdout);
     expect(result.__GL_SHADER_DISK_CACHE_SIZE).toBe(bytes);expect(result.MESA_SHADER_CACHE_MAX_SIZE).toBe(mesa);
     const override=JSON.parse((await execFile(runner.command,[],{env:environment({__GL_SHADER_DISK_CACHE_SIZE:'123',MESA_SHADER_CACHE_MAX_SIZE:'512M'})})).stdout);
@@ -168,12 +171,12 @@ describe('persistent shader cache', () => {
 
   it('preserves per-game wrapper overrides without applying them to setup or Stop', async () => {
     const f = await fixture();
-    const tools = await prepareGameWrapper(f.wine, { ...defaultLaunchTools,
+    const runner = (await prepareProtonRunner(f.wine, f.compat, f.steam))!;
+    const tools = await prepareGameWrapper(runner.launchCommand, { ...defaultLaunchTools,
       launchOptions: 'VKD3D_SHADER_CACHE_PATH="/user/cache with spaces" __GL_SHADER_DISK_CACHE=0 MESA_SHADER_CACHE_MAX_SIZE=512M %command%' }, path.join(f.root, 'wrappers'), environment());
-    const runner = (await prepareProtonRunner(f.wine, f.compat, f.steam, tools.command))!;
     const setup = JSON.parse((await execFile(runner.command, [], { env: environment() })).stdout);
     expect(setup.VKD3D_SHADER_CACHE_PATH).toBe(path.join(f.cache, 'vkd3d-proton'));
-    const game = JSON.parse((await execFile(runner.launchCommand!, [], { env: environment() })).stdout);
+    const game = JSON.parse((await execFile(tools.command, [], { env: environment() })).stdout);
     expect(game).toMatchObject({ VKD3D_SHADER_CACHE_PATH: '/user/cache with spaces', __GL_SHADER_DISK_CACHE: '0', MESA_SHADER_CACHE_MAX_SIZE: '512M' });
     const server = path.join(path.dirname(f.wine), 'wineserver'); await fs.writeFile(server, '#!/bin/sh\n[ "$1" = -k ]\n', { mode: 0o700 });
     await execFile(runner.command, ['--nexus-stop-prefix'], { env: environment({ NEXUS_CACHE_TEST: 'persist' }) });

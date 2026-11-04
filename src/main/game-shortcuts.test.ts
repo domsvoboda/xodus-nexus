@@ -51,7 +51,7 @@ it('writes safe persistent desktop descriptors for live Steam imports without to
     expect((await fs.stat(prepared.file)).mode & 0o777).toBe(0o600);
     await expect(fs.access(f.locations.applications)).rejects.toThrow();
     const nexus = await f.shortcuts.steamDesktop();
-    expect(await fs.readFile(nexus.file, 'utf8')).toContain('Name=Xodus Nexus\n');
+    expect(await fs.readFile(nexus.file, 'utf8')).toContain('Name=Nexus Launcher\n');
     await fs.writeFile(prepared.file, 'unrelated user file');
     await expect(f.shortcuts.steamDesktop(game)).rejects.toThrow('unrelated');
     expect(await fs.readFile(prepared.file, 'utf8')).toBe('unrelated user file');

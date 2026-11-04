@@ -1,6 +1,6 @@
 # Translating the launcher
 
-Translations use the [Xodus Nexus Tolgee project](https://app.tolgee.io/projects/36162) and flat
+Translations use the [launcher Tolgee project](https://app.tolgee.io/projects/36162) and flat
 [i18next JSON](https://docs.tolgee.io/platform/formats/i18next_json).
 English is the source language. Translation files live in `assets/locales/`.
 

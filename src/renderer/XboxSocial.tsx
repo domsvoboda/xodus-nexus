@@ -28,7 +28,7 @@ export function XboxSocial({auth,api,voice,overlay=false,shelf=false,close,openO
  const [profiles,setProfiles]=useState<Record<string,XboxPlayerProfile>>({});
  const [partyRecipient,setPartyRecipient]=useState<{xuid:string;gamertag:string}>();
  const generation=useRef(0);
- const identity=auth.stored===true&&!auth.running?auth.username:undefined;
+ const identity=!auth.running?(auth.player??(auth.stored===true?auth.username:undefined)):undefined;
  const selectedPerson=friends.find(person=>person.xuid===selected);
  const selectedConversation=inbox.find(row=>row.participants.includes(selected??''));
  const selectedName=selectedPerson?.gamertag??selectedConversation?.gamertag??'Xbox player';

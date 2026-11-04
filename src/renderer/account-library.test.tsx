@@ -40,7 +40,7 @@ it.each(['supported', 'unsupported', 'unknown'] as const)('uses the Store %s bad
   const product: AccountLibraryPage['products'][number] = { productId: '9AAAAAAAAAAA', title: 'Owned & game', access: 'owned',
     description: '', categories: [], installability, supportNote: 'Package <reason>' };
   const html = renderToStaticMarkup(<LibraryProductCard product={product} present={false} downloading={false} canInstall install={() => {}} />);
-  const store = renderToStaticMarkup(<StoreProductCard product={product} selected={false} disabled={installability !== 'supported'} label="Install" select={() => {}} install={() => {}} />);
+  const store = renderToStaticMarkup(<StoreProductCard licensed product={product} selected={false} disabled={installability !== 'supported'} label="Install" select={() => {}} install={() => {}} />);
   const badge = (text: string) => text.match(/<span class="catalog-support[^>]*>[\s\S]*?<\/span>/)?.[0];
   expect(badge(html)).toBe(badge(store));
   expect(html).toContain('<span>Owned</span>');

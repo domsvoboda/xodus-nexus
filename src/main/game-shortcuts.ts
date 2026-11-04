@@ -205,7 +205,7 @@ export class GameShortcuts {
     const file = path.join(directory, `${game?.id ?? 'launcher'}.desktop`);
     const identity = `X-Xodus-Nexus-Steam=${game?.id ?? 'launcher'}`;
     const entry = game ? this.entry! : this.nexusEntry!;
-    const body = `[Desktop Entry]\nType=Application\nName=${desktopValue(launch.title)}\nExec=/bin/sh ${desktopArgument(entry)}${game ? ' ' + desktopArgument(game.id) : ''}\nPath=${desktopValue(launch.directory)}\nIcon=${desktopValue(launch.icon)}\nTerminal=false\nCategories=Game;\n${this.marker}\n${identity}\n`;
+    const body = `[Desktop Entry]\nType=Application\nName=${desktopValue(game ? launch.title : 'Nexus Launcher')}\nExec=/bin/sh ${desktopArgument(entry)}${game ? ' ' + desktopArgument(game.id) : ''}\nPath=${desktopValue(launch.directory)}\nIcon=${desktopValue(launch.icon)}\nTerminal=false\nCategories=Game;\n${this.marker}\n${identity}\n`;
     await this.write(file, body, 0o600, [this.marker, identity]);
     return { launch, file };
   }
@@ -220,7 +220,7 @@ export class GameShortcuts {
     const title = game.title.replace(/[\0\r\n\t]/g, ' ').trim() || 'Xodus Nexus game';
     // Keep the executable field constant: desktop loaders may check it before
     // expanding %% in arguments. /bin/sh runs a file, never a shell -c string.
-    const body = `[Desktop Entry]\nType=Application\nVersion=1.0\nName=${desktopValue(title)}\nComment=Play with Xodus Nexus\nExec=/bin/sh ${desktopArgument(this.entry)} ${desktopArgument(game.id)}\nIcon=${desktopValue(icon)}\nTerminal=false\nCategories=Game;\nStartupNotify=false\n${this.marker}\n${this.gameMarker(game.id)}\n`;
+    const body = `[Desktop Entry]\nType=Application\nVersion=1.0\nName=${desktopValue(title)}\nComment=Play with Nexus Launcher\nExec=/bin/sh ${desktopArgument(this.entry)} ${desktopArgument(game.id)}\nIcon=${desktopValue(icon)}\nTerminal=false\nCategories=Game;\nStartupNotify=false\n${this.marker}\n${this.gameMarker(game.id)}\n`;
     const target = await this.writeEntry(directory, shortcutTitleStem(title), game.id, body, destination === 'desktop' ? 0o755 : 0o644);
     // Migrate only this game's managed entries, after the replacement is safe.
     const windowEntry = path.join(this.locations.applications, `xodus-nexus-game-${this.profileId}-${game.id}.desktop`);

@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Xodus Nexus user installer.
+# Nexus Launcher user installer.
 #
 # One-liner (once the repository is public):
 #   curl -fsSL https://raw.githubusercontent.com/domsvoboda/xodus-nexus/main/scripts/install.sh | bash
@@ -8,7 +8,7 @@
 #   1. Installs system prerequisites with your package manager (skip with
 #      XODUS_NEXUS_SKIP_DEPS=1): backend sign-in and Electron runtime libraries.
 #      Rust/Cargo/protoc are not needed for the prebuilt backend.
-#   2. Downloads the latest Xodus Nexus AppImage from GitHub Releases.
+#   2. Downloads the latest Nexus Launcher AppImage from GitHub Releases.
 #   3. Installs it to ~/.local/opt/xodus-nexus, links it into ~/.local/bin
 #      and registers a desktop entry with the app icon.
 #
@@ -133,7 +133,7 @@ ln -sf "$target" "$BIN_DIR/xodus-nexus"
 cat > "$DESKTOP_DIR/xodus-nexus.desktop" <<EOF
 [Desktop Entry]
 Type=Application
-Name=Xodus Nexus
+Name=Nexus Launcher
 Comment=Open-source Xbox-inspired game launcher
 Exec=$BIN_DIR/xodus-nexus %U
 Icon=$APP_DIR/icon.png
@@ -148,11 +148,11 @@ case ":$PATH:" in
   *) warn "Add $BIN_DIR to PATH to run 'xodus-nexus' from a terminal (usually already in ~/.profile)." ;;
 esac
 
-log "Xodus Nexus installed."
+log "Nexus Launcher installed."
 cat <<'EOF'
 
 First run:
-  1. Start Xodus Nexus from your application menu (or: xodus-nexus).
+  1. Start Nexus Launcher from your application menu (or: xodus-nexus).
   2. In Settings -> Xodus backend, click Install backend.
      This downloads and verifies our patched, prebuilt Xodus backend; no compiler needed.
   3. In Settings -> Nexus runtime, click Install Nexus runtime.

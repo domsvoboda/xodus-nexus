@@ -8,6 +8,7 @@ import { StateStore } from './store.js';
 import { GameContent } from './game-content.js';
 import { ContentCatalog } from './content-catalog.js';
 import { DownloadCleanup } from './download-cleanup.js';
+import { accountCacheKey } from './offline-identity.js';
 import { offerSteamHandoff } from './steam-launch-context.js';
 
 // Run the real IPC/admission/download lifecycle with synthetic child processes.
@@ -43,13 +44,18 @@ const h = vi.hoisted(() => ({
   launchEnvironments: [] as NodeJS.ProcessEnv[],
   launchArguments: [] as string[][],
   backendRefreshes: 0, runtimeRefreshes: 0,
-  accountRequests: 0,
+  retentionEnables:0, retentionEnabled:false, retentionFailure:false,
+  accountRequests: 0, accountPlayer: undefined as string | undefined,
   trayCreated: vi.fn(), trayDestroyed: vi.fn(),
   prefixLocales: [] as (string | undefined)[],
   planOverrides: new Map<string, any>(),
   libraryRows: [] as any[],
   accountReads: [] as ((result: { code: number; output: string }) => void)[],
   posters: vi.fn(async (ids: string[]) => new Map(ids.map(id => [id, `https://store-images.s-microsoft.com/${id}`]))),
+}));
+vi.mock('./saved-accounts.js',async original=>({...(await original<typeof import('./saved-accounts.js')>()),
+ enableSavedAccounts:async()=>{h.retentionEnables++;if(h.retentionFailure)throw Error('Account retention could not be verified.');h.retentionEnabled=true;},
+ listSavedAccounts:async()=>({accounts:h.retentionEnabled?['sample@example.test']:[],active:'sample@example.test',enabled:h.retentionEnabled}),
 }));
 vi.mock('./launcher-tray-desktop.js',()=>({desktopTrayAvailable:()=>true}));
 vi.mock('electron', () => ({
@@ -67,7 +73,16 @@ vi.mock('electron', () => ({
 vi.mock('./backend.js', () => ({ LINUX_RUN_PATCH: 'test-patch', BackendManager: class {
   get current() { return h.backend; } async refresh() {h.backendRefreshes++;} async checkUpdate() {} async externalDownloadRunning() { return false; }
   setExternalRoot() {} } }));
-vi.mock('./runtime.js', () => ({ RuntimeManager: class { get current() { return h.runtime; } async refresh() {h.runtimeRefreshes++;} async checkNexus() {} setRoot() {} } }));
+vi.mock('./runtime.js', async original => {
+  const actual = await original<typeof import('./runtime.js')>();
+  // Keep actual mutation ownership and root binding; only component probes are
+  // replaced, so Settings exercises the same reservation as production IPC.
+  return { RuntimeManager: class extends actual.RuntimeManager {
+    get current() { return { ...h.runtime, runtimeRoot: super.current.runtimeRoot, updating: super.current.updating }; }
+    async refresh() { h.runtimeRefreshes++; return this.current; }
+    async checkNexus() { return this.current; }
+  } };
+});
 vi.mock('./catalog.js', () => ({ CatalogService: class { async artwork() { return new Map(); } posters = h.posters; } }));
 vi.mock('./account-profile.js', () => ({ AccountProfile: class { async select() {} cancel() {} } }));
 vi.mock('./launcher-update.js', () => ({ LauncherUpdater: class { state = {}; async initialize() {} async check() {} cancel() {} } }));
@@ -119,7 +134,7 @@ vi.mock('./connectivity.js',()=>({ConnectivityMonitor:class {
 vi.mock('./proton.js', () => ({ prepareProtonRunner: async () => undefined, syncPrefixUserLocale: async (_wine: string, _prefix: string, locale: string | undefined) => { h.prefixLocales.push(locale); }, syncUnrealCultureGameIni: async () => {} }));
 vi.mock('./game-wrapper.js', () => ({ prepareGameWrapper: async () => { await h.wrapperGate; return { command: h.wine, cleanup: async () => {} }; } }));
 vi.mock('./process.js', () => ({
-  run: async (_command: string, args: string[]) => ({ code: 0, output: args[0] === 'account' ? JSON.stringify({ stored: true, username: 'sample@example.test' }) : '' }),
+  run: async (_command: string, args: string[]) => ({ code: 0, output: args[0] === 'account' ? JSON.stringify({ stored: true, username: 'sample@example.test', player: h.accountPlayer ? { username: h.accountPlayer } : null }) : '' }),
   spawnTracked: (_command: string, args: string[], options: any) => {
     if (args[0] === 'library') { h.libraryReads++;return {
       child: { kill: vi.fn(), stderr: { on() {}, removeListener() {} } },
@@ -129,7 +144,7 @@ vi.mock('./process.js', () => ({
       child: { kill: vi.fn(() => true), stdin: { end: vi.fn() } },
       result: h.holdAccountReads
         ? new Promise<{ code: number; output: string }>(resolve => { h.accountReads.push(resolve); })
-        : Promise.resolve({ code: 0, output: JSON.stringify({ stored: true, username: 'sample@example.test' }) }),
+        : Promise.resolve({ code: 0, output: JSON.stringify({ stored: true, username: 'sample@example.test', player: h.accountPlayer ? { username: h.accountPlayer } : null }) }),
     }; }
     let resolve!: (result: { code: number; output: string }) => void, sequence = 0;
     const result = new Promise<{ code: number; output: string }>(done => { resolve = done; });
@@ -183,6 +198,23 @@ it('saves shader cache limits through real IPC without refreshing components or 
   expect(snapshot().settings.shaderCacheLimitGiB).toBe(8.5);expect([h.backendRefreshes,h.runtimeRefreshes]).toEqual(refreshes);
 });
 
+it('opts into retention before persisting presentation and hides it without changing credentials',async()=>{
+ const prior=h.backend.capabilities.savedAccounts;h.backend.capabilities.savedAccounts=true;
+ try{
+  expect(snapshot().settings.multiAccountEnabled).toBe(false);
+  h.retentionFailure=true;await expect(ipc('update-settings',{multiAccountEnabled:true})).rejects.toThrow('could not be verified');
+  expect(snapshot().settings.multiAccountEnabled).toBe(false);
+  h.retentionFailure=false;await ipc('update-settings',{multiAccountEnabled:true});
+  expect(snapshot().settings.multiAccountEnabled).toBe(true);expect(snapshot().auth.savedAccountsEnabled).toBe(true);
+  const beforeReset=h.retentionEnables;h.retentionEnabled=false;await ipc('account-refresh');
+  expect(snapshot().settings.multiAccountEnabled).toBe(true);expect(snapshot().auth.savedAccountsEnabled).toBe(false);
+  await ipc('update-settings',{multiAccountEnabled:true});expect(h.retentionEnables).toBe(beforeReset+1);expect(snapshot().auth.savedAccountsEnabled).toBe(true);
+  const enabled=h.retentionEnables,reads=h.accountRequests,auth=snapshot().auth;
+  await ipc('update-settings',{multiAccountEnabled:false});
+  expect(h.retentionEnables).toBe(enabled);expect(h.accountRequests).toBe(reads);expect(snapshot().auth).toEqual(auth);expect(h.retentionEnabled).toBe(true);
+ } finally {h.retentionFailure=false;h.backend.capabilities.savedAccounts=prior;}
+});
+
 it('saves ordinary launcher preferences without re-probing components or reading the account', async () => {
   const before=snapshot(),refreshes=[h.backendRefreshes,h.runtimeRefreshes],accounts=h.accountRequests;
   const settings={...before.settings,installRoot:path.join(h.root,'future-games'),parallelDownloads:6,verboseLogs:!before.settings.verboseLogs};
@@ -208,6 +240,8 @@ it.each(['market','winePath','externalXodusRoot','runtimeRoot'] as const)
     await ipc('update-settings',{[key]:selected});
     expect([h.backendRefreshes,h.runtimeRefreshes]).toEqual(counts.map(n=>n+1));
     expect(h.accountRequests).toBe(accounts+1);expect(snapshot().settings[key]).toBe(selected);
+    expect(snapshot().runtime.updating).toBe(false);
+    expect(snapshot().runtime.runtimeRoot).toBe(snapshot().settings.runtimeRoot);
   }finally{await ipc('update-settings',{[key]:previous});}
 });
 
@@ -286,7 +320,7 @@ it('real account-refresh IPC shares status reads and cannot publish a late old b
     h.backend = { ...backend, binaryPath: path.join(h.root, 'new-synthetic-cli') };
     const current = ipc('account-refresh');
     await vi.waitFor(() => expect(h.accountReads).toHaveLength(2));
-    h.accountReads[1]({ code: 0, output: JSON.stringify({ stored: true, username: 'sample@example.test' }) });
+    h.accountReads[1]({ code: 0, output: JSON.stringify({ stored: true, username: 'sample@example.test', player: h.accountPlayer ? { username: h.accountPlayer } : null }) });
     await current;
     h.accountReads[0]({ code: 0, output: JSON.stringify({ stored: false }) });
     await Promise.all([old, repeated]);
@@ -577,6 +611,23 @@ it('saves and launches locale overrides without catalog or exhaustive manifest l
     if (oldWine === undefined) delete process.env.WINEUSERLOCALE; else process.env.WINEUSERLOCALE = oldWine;
     h.blockDisplay.mockClear(); h.releaseDisplay.mockClear();
   }
+});
+
+it('launches with the player identity cache while keeping Store licensing bound to the Store account', async () => {
+ const prior=h.backend.capabilities.playerAccount;h.backend.capabilities.playerAccount=true;
+ try {
+  for(const player of ['personal-one@example.test','personal-two@example.test']) {
+   h.accountPlayer=player;await ipc('account-refresh');
+   expect(snapshot().auth.player).toBe(player);
+   await ipc('launch-game','sample');
+   expect(h.launchEnvironments.at(-1)!.XODUS_ACCOUNT_HASH).toBe(accountCacheKey(player));
+   expect(h.launchEnvironments.at(-1)!.XODUS_ACCOUNT_HASH).not.toBe(accountCacheKey('sample@example.test'));
+   expect((await fs.readFile(path.join(path.dirname(snapshot().settings.runtimeRoot),'offline-owner'),'utf8')).trim()).toBe(accountCacheKey('sample@example.test'));
+   h.game!.finish(0);await vi.waitFor(()=>expect(snapshot().gameOperation.status).toBe('complete'));
+  }
+ } finally {
+  h.accountPlayer=undefined;h.backend.capabilities.playerAccount=prior;await ipc('account-refresh');
+ }
 });
 
 it('launches offline only with both compatible components and discards inherited identity modes', async () => {

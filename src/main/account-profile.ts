@@ -10,9 +10,9 @@ type Reader = (binary: string, signal: AbortSignal) => Promise<string>;
 const name = (value: unknown): value is string => typeof value === 'string' && Boolean(value.trim()) && value.length <= 128 && !/[\x00-\x1f\x7f]/.test(value);
 const image = (value: unknown): value is string => typeof value === 'string' && value.length < 3_000_000 && /^data:image\/(png|jpeg|webp);base64,[A-Za-z0-9+/=]+$/.test(value);
 
-async function readProfile(binary: string, signal: AbortSignal): Promise<string> {
+async function readProfileWith(args: string[], binary: string, signal: AbortSignal): Promise<string> {
   signal.throwIfAborted();
-  const tracked = spawnTracked(binary, ['profile', '--json'], { maxOutput: 4_000_000, stdoutOnly: true });
+  const tracked = spawnTracked(binary, args, { maxOutput: 4_000_000, stdoutOnly: true });
   const stop = () => { tracked.child.kill('SIGKILL'); };
   signal.addEventListener('abort', stop, { once: true });
   if (signal.aborted) stop();
@@ -25,6 +25,9 @@ async function readProfile(binary: string, signal: AbortSignal): Promise<string>
   } finally { clearTimeout(timer); signal.removeEventListener('abort', stop); }
 }
 
+const readProfile: Reader = (binary, signal) => readProfileWith(['profile', '--json'], binary, signal);
+const readLicenseProfile: Reader = (binary, signal) => readProfileWith(['profile', '--json', '--license'], binary, signal);
+
 /** Only the currently stored account can publish/cache a profile result. */
 export class AccountProfile {
   value?: XboxProfile;
@@ -36,9 +39,11 @@ export class AccountProfile {
   private job?: Promise<void>;
   private disk: Promise<void> = Promise.resolve();
   private readonly file: string;
+  private readonly reader: Reader;
   constructor(userData: string, private changed: () => void,
-    private normalize: (dataUrl: string) => string | undefined, private reader: Reader = readProfile) {
-    this.file = path.join(userData, 'xbox-profile.json');
+    private normalize: (dataUrl: string) => string | undefined, reader?: Reader, license = false) {
+    this.reader = reader ?? (license ? readLicenseProfile : readProfile);
+    this.file = path.join(userData, license ? 'xbox-profile-license.json' : 'xbox-profile.json');
   }
   cancel(): void { this.generation++; this.controller?.abort(); this.controller = undefined; }
   async settled(): Promise<void> { await this.job; await this.disk; }

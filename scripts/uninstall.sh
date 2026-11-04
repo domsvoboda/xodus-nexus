@@ -69,7 +69,7 @@ elif [[ -e "$nexus_command" ]]; then
   warn "command not created by the installer: $nexus_command"
 fi
 if [[ -f "$nexus_desktop" && ! -L "$nexus_desktop" ]]; then
-  if grep -Fxq -- 'Name=Xodus Nexus' "$nexus_desktop" &&
+  if { grep -Fxq -- 'Name=Xodus Nexus' "$nexus_desktop" || grep -Fxq -- 'Name=Nexus Launcher' "$nexus_desktop"; } &&
      grep -Fxq -- "Exec=$nexus_prefix/bin/xodus-nexus %U" "$nexus_desktop" &&
      grep -Fxq -- "Icon=$nexus_app/icon.png" "$nexus_desktop"; then
     remove_file "$nexus_desktop"

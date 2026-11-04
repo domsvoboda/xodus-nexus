@@ -37,9 +37,6 @@ git -C "$work_dir/src" apply --check "$script_root/assets/xgameruntime-tcp-bridg
 git -C "$work_dir/src" apply "$script_root/assets/xgameruntime-tcp-bridge.patch"
 git -C "$work_dir/src" apply --check "$script_root/assets/xgameruntime-async-completion-lifetime.patch"
 git -C "$work_dir/src" apply "$script_root/assets/xgameruntime-async-completion-lifetime.patch"
-# The xuser-state/xuser-guest patches stay in assets for research only: they
-# regressed the in-game offline choice of tested titles after the game had
-# loaded a cloud save.
 if [[ ${3:-} == --xuser-contract ]]; then
   # ABI-preserving replacement experiment, not the old two research patches.
   git -C "$work_dir/src" apply --check "$script_root/assets/xgameruntime-xuser-contract.patch"

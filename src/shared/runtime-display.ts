@@ -1,6 +1,9 @@
 import type { RuntimeStatus } from './types.js';
 
 export function nexusRuntimeUpdateAvailable(runtime: RuntimeStatus): boolean {
+  // A CachyOS-family runtime is a different family from the Standard Nexus
+  // release, so an active one never advertises a Standard update as same-family.
+  if (activeRuntimeIsCachyos(runtime)) return false;
   return Boolean(runtime.nexusAvailable && runtime.nexusName &&
     runtime.name !== runtime.nexusName.replace(/-x86_64\.tar\.xz$/, ''));
 }
@@ -21,4 +24,12 @@ export function runtimeDisplay(runtime: RuntimeStatus): { title: string; source:
     version: nexusPrefix ? name.slice(nexusPrefix.length)
       : runtime.commit ? `Build ${runtime.commit.slice(0, 12)}` : name || 'Version unavailable',
   };
+}
+
+/** The verified default runtime belongs to the optional CachyOS family when its
+ * recorded build name carries the CachyOS family prefix. Local diagnostic
+ * builds use the same prefix, so an explicitly selected local CachyOS runtime
+ * is presented truthfully without inventing a managed-family installation. */
+export function activeRuntimeIsCachyos(runtime: RuntimeStatus): boolean {
+  return runtime.installed === true && /^nexus-runtime-cachyos-/.test(runtime.name ?? '');
 }

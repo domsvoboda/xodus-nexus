@@ -4,7 +4,7 @@ import { BrowserWindow } from 'electron';
 export async function nexusSteamArtwork(icon: Buffer): Promise<{ cover: Buffer; wide: Buffer }> {
   return renderSteamArtwork((width, height) => `
       main{text-align:center;width:100%;padding:48px}img{width:${width > height ? 220 : 280}px;height:${width > height ? 220 : 280}px;object-fit:contain;display:block;margin:0 auto 32px}h1{font-size:${width > height ? 64 : 52}px;letter-spacing:3px;margin:0;font-weight:700}p{color:#aebcb6;font-size:21px;letter-spacing:2px;margin:24px 0 0}.line{height:4px;width:84px;background:#67b43c;margin:32px auto 0}
-      </style></head><body><main><img src="data:image/png;base64,${icon.toString('base64')}" alt=""><h1>XODUS NEXUS</h1><div class="line"></div><p>YOUR PC GAMES, TOGETHER.</p></main>`, [[600, 900], [1280, 720]]);
+      </style></head><body><main><img src="data:image/png;base64,${icon.toString('base64')}" alt=""><h1>NEXUS</h1><div class="line"></div><p>YOUR PC GAMES, TOGETHER.</p></main>`, [[600, 900], [1280, 720]]);
 }
 
 /** Portrait library slot only. Keep the original image's proportions and the

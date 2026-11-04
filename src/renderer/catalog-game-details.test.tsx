@@ -4,19 +4,19 @@ import type {CatalogProduct} from '../shared/types';
 import {demoSnapshot} from '../shared/demo-data';
 import {CatalogGameDetails,catalogGameInstalled,catalogGameQueued} from './CatalogGameDetails';
 import {GameDetailsContent} from './GameDetails';
-import {LibraryProductCard,StoreProductCard} from './App';
+import {LibraryProductCard,StoreProductCard,StorePage} from './App';
 const product:CatalogProduct={productId:'9AAAAAAAAAAA',title:'Uninstalled game',description:'Description',publisher:'Studio',installability:'supported',supportNote:'Windows.Desktop MSIXVC',categories:[]};
-it('renders the same full detail layout with Install, screenshots and achievements, without fabricated installation actions',()=>{
+it('renders full public details with only a Store page action until a license is verified',()=>{
  const data=demoSnapshot();data.downloads=[];
- const html=renderToStaticMarkup(<CatalogGameDetails product={product} data={data} back={()=>{}} toast={()=>{}}/>);
- expect(html).toContain('game-details-page');expect(html).toContain('Not installed');expect(html).toContain('>Install</button>');expect(html).toContain('Screenshots');expect(html).toContain('Achievements');
- expect(html).toContain('Install location');
+ const html=renderToStaticMarkup(<CatalogGameDetails storeMode product={product} data={data} back={()=>{}} toast={()=>{}}/>);
+ expect(html).toContain('game-details-page');expect(html).toContain('Not installed');expect(html).not.toContain('>Install</button>');expect(html).toContain('Store page');expect(html).toContain('Screenshots');expect(html).toContain('Achievements');
+ expect(html).not.toContain('Install location');
  expect(html).not.toMatch(/>Play<|>Manage<|Installation details|Executable|>Imported</);
  expect(html).toContain(`data-gamepad-detail="${product.productId}"`);
 });
 it.each(['unsupported','unknown'] as const)('keeps %s products viewable without enabling installation',installability=>{
- const html=renderToStaticMarkup(<CatalogGameDetails product={{...product,installability}} data={demoSnapshot()} back={()=>{}} toast={()=>{}}/>);
- expect(html).toMatch(/<button[^>]*data-gamepad-play[^>]*disabled=""/);expect(html).toContain('Screenshots');expect(html).toContain('Achievements');
+ const html=renderToStaticMarkup(<CatalogGameDetails storeMode product={{...product,installability}} data={demoSnapshot()} back={()=>{}} toast={()=>{}}/>);
+ expect(html).not.toContain('data-gamepad-play');expect(html).toContain('Screenshots');expect(html).toContain('Achievements');
 });
 it('does not mistake an unrelated imported game without a Store ID for an installed catalog game',()=>{
  const data=demoSnapshot();data.games=[{...data.games[0],storeId:undefined}];data.downloads=[];
@@ -34,7 +34,17 @@ it('keeps product-card detail clicks independent from installation and Store foc
  library.props.children[0].props.onClick();expect(calls).toEqual([['open',product.productId]]);
  library.props.children[1].props.onClick();expect(calls.at(-1)).toEqual(['install',product.productId]);
  calls.length=0;
- const store=StoreProductCard({product,selected:false,disabled:false,label:'Install',select:(p,open)=>calls.push(['select',p.productId,open]),install:p=>calls.push(['install',p.productId])});
+ const store=StoreProductCard({licensed:true,product,selected:false,disabled:false,label:'Install',select:(p,open)=>calls.push(['select',p.productId,open]),install:p=>calls.push(['install',p.productId])});
  store.props.children[0].props.onFocus();expect(calls).toEqual([['select',product.productId,false]]);
  store.props.children[0].props.onClick();expect(calls.at(-1)).toEqual(['select',product.productId,true]);
+});
+
+it('applies strict public Store eligibility without changing the existing Library detail verification route',()=>{
+ const data=demoSnapshot();data.games=[];data.downloads=[];
+ const store=renderToStaticMarkup(<CatalogGameDetails storeMode product={product} data={data} back={()=>{}} toast={()=>{}}/>);
+ const library=renderToStaticMarkup(<CatalogGameDetails product={product} data={data} back={()=>{}} toast={()=>{}}/>);
+ expect(store).not.toContain('>Install</button>');expect(store).not.toContain('Install location');expect(store).not.toContain(product.supportNote);
+ expect(library).toContain('>Install</button>');expect(library).toContain('Install location');expect(library).toContain(product.supportNote);
+ const page=renderToStaticMarkup(<StorePage data={data} toast={()=>{}} go={()=>{}} initialQuery=""/>);
+ expect(page).not.toContain('manual-install');expect(page).not.toContain('Install unlisted ID');
 });
