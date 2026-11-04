@@ -101,7 +101,13 @@ export async function protonLaunchFeatureNotices(
   const notices: string[] = [];
   if (upstreamNonzero(environment.PROTON_DISCORD_BRIDGE)) {
     if (await present('files/lib/wine/discord-rpc-bridge/bridge.exe')) {
-      notices.push('PROTON_DISCORD_BRIDGE is set. The Discord RPC bridge is installed in this runtime, but its service is started only by the runtime umu or Steam helper. This launch starts the runtime Proton session directly and does not start the bridge, so Rich Presence stays inactive.');
+      // The pinned bridge documents --steam through PROTON_REMOTE_DEBUG_CMD
+      // (extras/discord-rpc-bridge/build/bridge.sh), and the pinned Proton
+      // session starts that command before the game (CachyOS proton:2418,
+      // 2507-2514, 2553-2560). A --rpc companion is another route. Nexus
+      // configures neither and cannot verify a user starter or an existing
+      // prefix service, so the payload alone proves no Rich Presence state.
+      notices.push('PROTON_DISCORD_BRIDGE is set. This runtime includes the Discord RPC bridge. The Nexus Proton Play route does not automatically configure or start it, so the bundled payload alone does not establish Rich Presence. Custom service startup or an existing prefix service is not verified by Nexus.');
     } else {
       notices.push('PROTON_DISCORD_BRIDGE is set, but this runtime does not include the Discord RPC bridge, so the option has no effect.');
     }

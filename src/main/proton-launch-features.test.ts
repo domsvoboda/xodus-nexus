@@ -53,8 +53,7 @@ describe('protonLaunchFeatureNotices', () => {
       PROTON_LOCAL_SHADER_CACHE: '1', PROTON_DISCORD_BRIDGE: '1', PROTON_LOG: '1', PROTON_SET_GAME_DRIVE: '1',
     }, root);
     expect(notices).toHaveLength(4);
-    expect(notices[0]).toContain('does not include the Discord RPC bridge');
-    expect(notices[0]).toContain('no effect');
+    expect(notices[0]).toBe('PROTON_DISCORD_BRIDGE is set, but this runtime does not include the Discord RPC bridge, so the option has no effect.');
     expect(notices[1]).toContain('PROTON_LOCAL_SHADER_CACHE');
     expect(notices[1]).toContain('does not implement it');
     expect(notices[2]).toContain('Steam game id');
@@ -108,21 +107,25 @@ describe('protonLaunchFeatureNotices', () => {
     expect(mapped.join(' ')).not.toContain('S: game drive');
   });
 
-  it('accepts the local shader cache when the runtime implements it and keeps the bridge inactive', async () => {
+  it('describes the installed bridge payload neutrally with or without a custom remote-debug starter', async () => {
     const root = await runtime({ protonfixes: true, discordBridge: true });
     // The CachyOS feature set implements local shader caches through protonfixes.
     expect(await protonLaunchFeatureNotices({ PROTON_LOCAL_SHADER_CACHE: '1' }, root)).toEqual([]);
-    // The bridge payload alone is not a running service: only the runtime's
-    // umu/Steam helper starts it, and this launch path does not use that helper.
-    const notices = await protonLaunchFeatureNotices({ PROTON_DISCORD_BRIDGE: '1' }, root);
-    expect(notices).toHaveLength(1);
-    expect(notices[0]).toContain('Discord RPC bridge is installed');
-    expect(notices[0]).toContain('helper');
-    expect(notices[0]).toContain('does not start the bridge');
-    expect(notices[0]).toContain('inactive');
-    // The reason is the direct Proton session launch, not a missing identity.
-    expect(notices[0]).not.toContain('Steam game id');
-    expectNoPositiveClaim(notices);
+    const defaultNotice = (await protonLaunchFeatureNotices({ PROTON_DISCORD_BRIDGE: '1' }, root))[0];
+    // The pinned bridge documents this route through PROTON_REMOTE_DEBUG_CMD.
+    // Nexus does not configure it and must not claim the resulting state.
+    const remoteDebugNotice = (await protonLaunchFeatureNotices({
+      PROTON_DISCORD_BRIDGE: '1',
+      PROTON_REMOTE_DEBUG_CMD: '"$BRIDGE_PATH" --steam',
+    }, root))[0];
+    expect(defaultNotice).toBe(remoteDebugNotice);
+    expect(defaultNotice).toContain('includes the Discord RPC bridge');
+    expect(defaultNotice).toContain('does not automatically configure or start it');
+    expect(defaultNotice).toContain('bundled payload alone does not establish Rich Presence');
+    expect(defaultNotice).toContain('Custom service startup or an existing prefix service is not verified by Nexus');
+    // No global start route, missing identity or definitely inactive claim.
+    expect(defaultNotice).not.toMatch(/only .*helper|only .*umu|Steam game id|Steam id|stays inactive|definitely inactive|is inactive/i);
+    expectNoPositiveClaim([defaultNotice, remoteDebugNotice]);
   });
 
   // Pinned setup_logging creates the Proton log file when the effective
@@ -178,7 +181,7 @@ describe('protonLaunchFeatureNotices', () => {
     // Logging works in this genuine Steam context, so no no-log claim appears.
     expect(notices).toHaveLength(1);
     expect(notices[0]).toContain('PROTON_DISCORD_BRIDGE');
-    expect(notices[0]).toContain('does not start the bridge');
+    expect(notices[0]).toContain('does not automatically configure or start it');
     expect(notices.join(' ')).not.toContain('Steam game id');
   });
 
