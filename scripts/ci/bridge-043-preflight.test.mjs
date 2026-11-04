@@ -3,10 +3,14 @@ import assert from 'node:assert/strict';
 import { execFileSync } from 'node:child_process';
 import fs from 'node:fs/promises';
 import { createRequire } from 'node:module';
+import os from 'node:os';
+import path from 'node:path';
+import { pathToFileURL } from 'node:url';
 import {
-  BRIDGE_BASE, BRIDGE_PRODUCT, BRIDGE_REF, BRIDGE_VERSION, CI_SUPPORT_FILES, FROZEN_PRODUCT_FILES,
+  BRIDGE_BASE, BRIDGE_PRODUCT, BRIDGE_REF, BRIDGE_VERSION, CI_SUPPORT_FILES, FROZEN_PRODUCT_FILES, REQUIRED_HISTORY,
   assertCiSupportOnly, assertExactProductPatch, assertOnlyVersionsChanged, assertVersionMetadata,
-  assertBridgeRequest, parseNameStatus, parseRequest, verifyBridgeCheckout,
+  assertBridgeRequest, createRepositoryGit, createRepositoryHistory, ensureHistory, parseNameStatus, parseRequest,
+  runPreflight, verifyBridgeCheckout,
 } from './bridge-043-preflight.mjs';
 
 const yaml = createRequire(import.meta.url)('js-yaml');
@@ -225,4 +229,82 @@ test('a stale, unexpected or drifted checkout is rejected before any build', asy
   changed.packages[''].dependencies.i18next = '0.0.0';
   changedLock.blobs.set(`${HEAD}:package-lock.json`, Buffer.from(JSON.stringify(changed)));
   assert.throws(() => verifyBridgeCheckout({ request, sha: HEAD, git: changedLock.git }), /may only change its version fields/);
+});
+
+test('history preparation is bounded and skipped for non-candidates', () => {
+  const calls = [];
+  assert.deepEqual(ensureHistory({ isShallow: () => false, hasCommit: () => true, fetch: options => calls.push(options) }), { action: 'none' });
+  assert.deepEqual(calls, []);
+  const present = new Set([BRIDGE_PRODUCT]);
+  const fetches = [];
+  assert.deepEqual(ensureHistory({
+    isShallow: () => false,
+    hasCommit: revision => present.has(revision),
+    fetch: options => { fetches.push(options); present.add(BRIDGE_BASE); },
+  }), { action: 'fetch' });
+  assert.deepEqual(fetches, [{ unshallow: false }]);
+  const shallowFetches = [];
+  assert.deepEqual(ensureHistory({ isShallow: () => true, hasCommit: () => true, fetch: options => shallowFetches.push(options) }), { action: 'unshallow' });
+  assert.deepEqual(shallowFetches, [{ unshallow: true }]);
+  assert.throws(() => ensureHistory({ isShallow: () => false, hasCommit: () => false, fetch: () => {} }), /Pinned commit objects are unavailable/);
+  assert.deepEqual([...REQUIRED_HISTORY], [BRIDGE_BASE, BRIDGE_PRODUCT]);
+  const untouchedGit = new Proxy({}, { get() { throw Error('candidate git must not be inspected'); } });
+  const untouchedHistory = new Proxy({}, { get() { throw Error('candidate history must not be prepared'); } });
+  assert.deepEqual(runPreflight({ request: { requested: 'false', eventName: 'push', ref: 'refs/heads/main' }, sha: HEAD, git: untouchedGit, history: untouchedHistory }), { candidate: false });
+});
+
+test('the production entry prepares history before validating a candidate', async () => {
+  const { git } = await repositoryFixture();
+  const fetches = [];
+  const history = { isShallow: () => true, hasCommit: () => true, fetch: options => fetches.push(options) };
+  assert.equal(runPreflight({ request: dispatch(BRIDGE_REF), sha: HEAD, git, history }).candidate, true);
+  assert.deepEqual(fetches, [{ unshallow: true }]);
+});
+
+test('a shallow clone is deepened although git echoes the absent pinned base hash', async () => {
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), 'bridge-history-'));
+  try {
+    const origin = path.join(root, 'origin');
+    const write = async (relative, content) => {
+      const target = path.join(origin, relative);
+      await fs.mkdir(path.dirname(target), { recursive: true });
+      await fs.writeFile(target, content);
+    };
+    const fixtureGit = args => execFileSync('git', ['-C', origin, '-c', 'commit.gpgsign=false', '-c', 'user.name=Bridge Fixture', '-c', 'user.email=bridge@example.invalid', ...args], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] });
+    await fs.mkdir(origin, { recursive: true });
+    fixtureGit(['init', '--quiet', '-b', 'main']);
+    await write('package.json', '{"name":"bridge-fixture","version":"0.4.2"}\n');
+    fixtureGit(['add', '-A']);
+    fixtureGit(['commit', '--quiet', '-m', 'released base']);
+    const base = fixtureGit(['rev-parse', 'HEAD']).trim();
+    await write('package.json', '{"name":"bridge-fixture","version":"0.4.3"}\n');
+    fixtureGit(['add', '-A']);
+    fixtureGit(['commit', '--quiet', '-m', 'accepted product patch']);
+    const product = fixtureGit(['rev-parse', 'HEAD']).trim();
+    for (const file of CI_SUPPORT_FILES) await write(file, 'fixture\n');
+    fixtureGit(['add', '-A']);
+    fixtureGit(['commit', '--quiet', '-m', 'maintenance CI support']);
+    const head = fixtureGit(['rev-parse', 'HEAD']).trim();
+    const clone = path.join(root, 'clone');
+    execFileSync('git', ['clone', '--quiet', '--depth', '1', pathToFileURL(origin).href, clone], { stdio: ['ignore', 'pipe', 'pipe'] });
+    const cloneGit = createRepositoryGit({ cwd: clone });
+    assert.equal(cloneGit.hasCommit(head), true);
+    assert.equal(cloneGit.hasCommit(product), false);
+    assert.equal(cloneGit.hasCommit(base), false);
+    // Root cause: a valid full hash can be echoed without the object existing,
+    // so a presence check must use cat-file instead of rev-parse.
+    const echoed = cloneGit.tryResolve(base);
+    if (echoed !== null) assert.equal(echoed, base);
+    assert.throws(() => cloneGit.resolve(`${product}^`), /Needed a single revision|Command failed/);
+    const history = createRepositoryHistory({ cwd: clone });
+    assert.equal(history.isShallow(), true);
+    assert.deepEqual(ensureHistory({ required: [base, product], ...history }), { action: 'unshallow' });
+    assert.equal(history.isShallow(), false);
+    assert.equal(cloneGit.hasCommit(base), true);
+    assert.equal(cloneGit.hasCommit(product), true);
+    assert.equal(cloneGit.resolve(`${product}^`), base);
+    assert.equal(cloneGit.isAncestor(product, head), true);
+  } finally {
+    await fs.rm(root, { recursive: true, force: true });
+  }
 });

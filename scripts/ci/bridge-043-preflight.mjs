@@ -147,8 +147,42 @@ export function sha256(bytes) {
   return createHash('sha256').update(bytes).digest('hex');
 }
 
-function repositoryGit() {
-  const run = (args, options = {}) => execFileSync('git', args, {
+// A syntactically valid full hash can be echoed by `git rev-parse --verify`
+// without the object being present, so history preparation must never trust
+// that check. These revisions need real commit objects before validation.
+export const REQUIRED_HISTORY = Object.freeze([BRIDGE_BASE, BRIDGE_PRODUCT]);
+
+/**
+ * Prepare the object graph for a requested maintenance candidate only.
+ * A shallow clone is always deepened: its grafts can hide the pinned commits,
+ * their parent chain or the ancestry path even when one object happens to exist.
+ * A complete clone that lacks a pinned object gets one bounded fetch.
+ */
+export function ensureHistory({ required = REQUIRED_HISTORY, isShallow, hasCommit, fetch }) {
+  const missing = () => required.filter(revision => !hasCommit(revision));
+  let action = 'none';
+  if (isShallow()) {
+    fetch({ unshallow: true });
+    action = 'unshallow';
+  } else if (missing().length) {
+    fetch({ unshallow: false });
+    action = 'fetch';
+  }
+  const unavailable = missing();
+  if (unavailable.length) throw Error(`Pinned commit objects are unavailable after history preparation: ${unavailable.join(', ')}`);
+  return { action };
+}
+
+/** Production entry: skipped candidates must not touch Git history or fetch. */
+export function runPreflight({ request, sha, git, history }) {
+  if (!assertBridgeRequest(request)) return { candidate: false };
+  ensureHistory(history);
+  return verifyBridgeCheckout({ request, sha, git });
+}
+
+export function createRepositoryGit({ cwd } = {}) {
+  const prefix = cwd ? ['-C', cwd] : [];
+  const run = (args, options = {}) => execFileSync('git', [...prefix, ...args], {
     encoding: 'utf8',
     stdio: ['ignore', 'pipe', 'pipe'],
     maxBuffer: 128 * 1024 * 1024,
@@ -159,6 +193,11 @@ function repositoryGit() {
     tryResolve: revision => {
       try { return run(['rev-parse', '--verify', revision]).trim(); } catch { return null; }
     },
+    // Requires the actual commit object; unlike rev-parse this cannot echo a
+    // missing hash from a shallow checkout.
+    hasCommit: revision => {
+      try { run(['cat-file', '-e', `${revision}^{commit}`]); return true; } catch { return false; }
+    },
     isAncestor: (ancestor, descendant) => {
       try { run(['merge-base', '--is-ancestor', ancestor, descendant]); return true; } catch { return false; }
     },
@@ -167,19 +206,21 @@ function repositoryGit() {
   };
 }
 
-/** The default checkout is shallow; the maintenance exception needs the pinned base history. */
-function ensurePinnedBase() {
-  if (repositoryGit().tryResolve(BRIDGE_BASE)) return;
-  const shallow = execFileSync('git', ['rev-parse', '--is-shallow-repository'], { encoding: 'utf8' }).trim() === 'true';
-  const args = ['fetch', '--no-recurse-submodules', '--tags', ...(shallow ? ['--unshallow'] : []), 'origin'];
-  execFileSync('git', args, { stdio: ['ignore', 'inherit', 'inherit'] });
+/** Real history seam for the maintenance entry point. */
+export function createRepositoryHistory({ cwd, git = createRepositoryGit({ cwd }) } = {}) {
+  const prefix = cwd ? ['-C', cwd] : [];
+  return {
+    isShallow: () => execFileSync('git', [...prefix, 'rev-parse', '--is-shallow-repository'], { encoding: 'utf8' }).trim() === 'true',
+    hasCommit: revision => git.hasCommit(revision),
+    fetch: ({ unshallow }) => execFileSync('git', [...prefix, 'fetch', '--no-recurse-submodules', '--tags', ...(unshallow ? ['--unshallow'] : []), 'origin'], { stdio: ['ignore', 'inherit', 'inherit'] }),
+  };
 }
 
 if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
   try {
+    const git = createRepositoryGit();
     const request = { requested: process.env.BRIDGE_043_REQUESTED, eventName: process.env.GITHUB_EVENT_NAME, ref: process.env.GITHUB_REF };
-    if (assertBridgeRequest(request)) ensurePinnedBase();
-    const result = verifyBridgeCheckout({ request, sha: process.env.GITHUB_SHA, git: repositoryGit() });
+    const result = runPreflight({ request, sha: process.env.GITHUB_SHA, git, history: createRepositoryHistory({ git }) });
     const output = `candidate=${result.candidate}\n`;
     if (process.env.GITHUB_OUTPUT) fs.appendFileSync(process.env.GITHUB_OUTPUT, output);
     else process.stdout.write(output);
