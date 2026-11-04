@@ -113,6 +113,60 @@ async function layoutPayload(directory: string, layout: FileGroupLayout, coordin
     if ((await fs.lstat(path.join(folder, name))).isFile()) return 'ok';
   return 'missing';
 }
+/**
+ * Every declared group must resolve under the same coordinate; groups are never
+ * mixed. Returns the reported failure instead of throwing so that coordinate
+ * selection can compare whole-layout evidence first.
+ */
+async function layoutFailure(directory: string, layouts: FileGroupLayout[], coordinate: LayoutCoordinate): Promise<string | undefined> {
+  for (const layout of layouts) {
+    const result = await layoutPayload(directory, layout, coordinate);
+    if (result === 'ambiguous') return 'Missing or ambiguous content payload directory.';
+    if (result === 'unsafe') return 'Invalid content payload directory.';
+    if (result !== 'ok') return 'A file group declared by the content layout is missing.';
+  }
+  return undefined;
+}
+/**
+ * A downloaded tree can be extracted at either layout coordinate. The metadata
+ * copy that exists is authoritative (SRC when present, otherwise the root copy),
+ * and the whole layout must agree on one interpretation. Source-coordinate trees
+ * are deployable only when the metadata's declared destination is the package
+ * root that runtime discovery reads; destination-coordinate trees already sit at
+ * their deployment paths, including a package-relative \SRC.
+ *
+ * The metadata declaration alone can be coordinate-neutral (a source path equal
+ * to the deployed path), while the payload groups differ, so a neutral
+ * declaration is settled by whole-layout evidence. Two fully valid but distinct
+ * interpretations stay ambiguous and are rejected.
+ */
+async function layoutCoordinate(directory: string, layouts: FileGroupLayout[], configuration: ContentConfiguration): Promise<LayoutCoordinate> {
+  const configName = 'MicrosoftGame.config';
+  const physical = path.relative(directory, (configuration.source ?? configuration.root)!).split(path.sep).filter(Boolean);
+  const declarations = layouts.filter(group => {
+    if (!contentPattern(group.pattern).test(configName)) return false;
+    const relative = [...group.prefix, configName];
+    return (sameLayoutPath([...group.source, ...relative], physical) || sameLayoutPath([...group.destination, ...relative], physical))
+      && !layoutExcluded(group, relative);
+  });
+  if (declarations.length !== 1) throw Error('MicrosoftGame.config must be unambiguously mapped by the content layout.');
+  const declaration = declarations[0], relative = [...declaration.prefix, configName];
+  const sourcePath = [...declaration.source, ...relative], destinationPath = [...declaration.destination, ...relative];
+  const sourceCoordinate = sameLayoutPath(sourcePath, physical) && sameLayoutPath(destinationPath, [configName]);
+  const destinationCoordinate = sameLayoutPath(destinationPath, physical);
+  if (sourceCoordinate && destinationCoordinate) {
+    if (layouts.every(layout => sameLayoutPath(layout.source, layout.destination))) return 'source';
+    const sourceFailure = await layoutFailure(directory, layouts, 'source');
+    const destinationFailure = await layoutFailure(directory, layouts, 'destination');
+    if (!sourceFailure && !destinationFailure) throw Error('MicrosoftGame.config matches both layout coordinates.');
+    if (!sourceFailure) return 'source';
+    if (!destinationFailure) return 'destination';
+    throw Error(sourceFailure);
+  }
+  if (sourceCoordinate) return 'source';
+  if (destinationCoordinate) return 'destination';
+  throw Error('MicrosoftGame.config is not at a layout-declared location.');
+}
 export function contentManifest(xml: string): Manifest {
   const root = parsePackageXml(xml);
   if (root.name.split(':').at(-1) !== 'Game') throw Error('Expected a Microsoft Game manifest.');
@@ -257,38 +311,9 @@ export class GameContent {
     visit(layout, 0);
     if (!groups.length || groups.length > 256) throw Error('Content layout contains no supported file groups.');
     const fileGroups = layoutGroups(groups);
-    let coordinate: LayoutCoordinate = 'source';
-    if (configuration.source) {
-      // A downloaded tree can be extracted at either layout coordinate. SRC
-      // metadata is authoritative because the root copy is optional, then the
-      // whole layout must agree on one interpretation. Source-coordinate trees
-      // are deployable only when their declared destination is the package root
-      // that runtime discovery reads; destination-coordinate trees already sit
-      // at their deployment paths, including a package-relative \SRC.
-      const configName = 'MicrosoftGame.config';
-      const physical = path.relative(directory, configuration.source).split(path.sep).filter(Boolean);
-      const declarations = fileGroups.filter(group => {
-        if (!contentPattern(group.pattern).test(configName)) return false;
-        const relative = [...group.prefix, configName];
-        return (sameLayoutPath([...group.source, ...relative], physical) || sameLayoutPath([...group.destination, ...relative], physical))
-          && !layoutExcluded(group, relative);
-      });
-      if (declarations.length !== 1) throw Error('MicrosoftGame.config must be unambiguously mapped by the content layout.');
-      const declaration = declarations[0], relative = [...declaration.prefix, configName];
-      const sourcePath = [...declaration.source, ...relative], destinationPath = [...declaration.destination, ...relative];
-      // A source-coordinate tree can be registered only when its declared
-      // deployment is the package root. Otherwise the tree must already sit at
-      // its destination coordinates, including a package-relative \SRC.
-      if (sameLayoutPath(sourcePath, physical) && sameLayoutPath(destinationPath, [configName])) coordinate = 'source';
-      else if (sameLayoutPath(destinationPath, physical)) coordinate = 'destination';
-      else throw Error('MicrosoftGame.config is not at a layout-declared location.');
-    }
-    for (const group of fileGroups) {
-      const result = await layoutPayload(directory, group, coordinate);
-      if (result === 'ambiguous') throw Error('Missing or ambiguous content payload directory.');
-      if (result === 'unsafe') throw Error('Invalid content payload directory.');
-      if (result !== 'ok') throw Error('A file group declared by the content layout is missing.');
-    }
+    const coordinate = await layoutCoordinate(directory, fileGroups, configuration);
+    const failure = await layoutFailure(directory, fileGroups, coordinate);
+    if (failure) throw Error(failure);
     return { ...content, configuration };
   }
   async plan(game: Game, readAccess: () => Promise<{ checkedAt: string; accessByProductId: Access }>, market = 'US'): Promise<{ plan: GameContentPlan; packages: ContentPackage[] }> {
