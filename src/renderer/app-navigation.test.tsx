@@ -175,7 +175,9 @@ it.each(['.home-feature-card', '.poster-card'])('opens the clicked Home game and
 });
 
 it('falls back to Back to Home when the selected game cannot be played', async () => {
-  const game = demoSnapshot().games.find(game => game.installState === 'incomplete')!;
+  // Incomplete installations are not part of the Recently installed shelf.
+  await emitSnapshot(data => { data.runtime.winePath = ''; data.settings.winePath = ''; });
+  const game = demoSnapshot().games.find(game => game.installState === 'ready')!;
   await click(`[data-gamepad-key="home-poster:${game.id}"]`);
   expect(get('[data-gamepad-play]').matches(':disabled')).toBe(true);
   expect(document.activeElement).toBe(get('[data-gamepad-detail-back]'));

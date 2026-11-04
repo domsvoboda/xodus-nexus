@@ -394,3 +394,48 @@ describe('Store-only offer policy',()=>{
   expect(await service.licensedProducts([id],'US')).toHaveLength(1);
  });
 });
+
+describe('public collection metadata',()=>{
+ const offers=(price=29.99)=>({Sku:{SkuType:'full',Properties:{Packages:[{PackageFormat:'MSIXVC',PlatformDependencies:[{PlatformName:'Windows.Desktop'}]}]}},Availabilities:[{OrderManagementData:{Price:{MSRP:price,ListPrice:price}}}]});
+ const freeOffer={Sku:{SkuType:'full',Properties:{}},Availabilities:[{OrderManagementData:{Price:{MSRP:0,ListPrice:0}}}]};
+ const detail=(productId:string,title:string,offersValue:unknown[],type='Game')=>({ProductId:productId,ProductType:type,
+  LocalizedProperties:[{ProductTitle:title,PublisherName:'Studio'}],DisplaySkuAvailabilities:offersValue});
+ it('keeps the requested official order and applies public Store eligibility',async()=>{
+  const ids=['9AAAAAA00001','9BBBBBB00002','9CCCCCC00003','9DDDDDD00004'];
+  const products=[detail(ids[2],'Third',[offers()]),detail(ids[0],'First',[offers()]),
+   detail(ids[1],'Free',[freeOffer]),detail(ids[3],'Add-on',[offers()],'Durable')];
+  const fetcher=async(input:unknown)=>{
+   const url=new URL(String(input));
+   expect(url.pathname).toBe('/v7.0/products');
+   expect(url.searchParams.get('market')).toBe('US');
+   expect(url.searchParams.get('bigIds')).toBe(ids.join(','));
+   return new Response(JSON.stringify({Products:products}),{status:200});
+  };
+  const result=await new CatalogService(fetcher as typeof fetch).publicProducts(ids,'US');
+  expect(result.map(product=>product.productId)).toEqual([ids[0],ids[2]]);
+  expect(result.every(product=>!('access' in product))).toBe(true);
+ });
+ it('batches large metadata windows without losing the requested order',async()=>{
+  const ids=Array.from({length:30},(_,index)=>`9${String(index+1).padStart(11,'0')}`);
+  const batches:string[][]=[];
+  const fetcher=async(input:unknown)=>{
+   const url=new URL(String(input)),batch=(url.searchParams.get('bigIds')??'').split(',');
+   batches.push(batch);
+   return new Response(JSON.stringify({Products:[...batch].reverse().map(value=>detail(value,`Title ${value}`,[offers()]))}),{status:200});
+  };
+  const result=await new CatalogService(fetcher as typeof fetch).publicProducts(ids,'US');
+  expect(batches.map(batch=>batch.length)).toEqual([25,5]);
+  expect(result.map(product=>product.productId)).toEqual(ids);
+ });
+ it('fails the shelf when display metadata is unavailable instead of reporting an empty collection',async()=>{
+  const fetcher=async()=>new Response('{}',{status:503});
+  await expect(new CatalogService(fetcher as typeof fetch).publicProducts(['9AAAAAA00001'],'US')).rejects.toThrow('public Store metadata');
+ });
+ it('skips rows without a real localized title and rejects malformed or unbounded lists',async()=>{
+  const fetcher=async()=>new Response(JSON.stringify({Products:[detail('9AAAAAA00001','',[]),detail('9BBBBBB00002','Visible',[offers()])]}),{status:200});
+  const service=new CatalogService(fetcher as typeof fetch);
+  expect((await service.publicProducts(['9AAAAAA00001','9BBBBBB00002'],'US')).map(product=>product.title)).toEqual(['Visible']);
+  for(const value of [[],['9aaaaaa00001'],Array.from({length:61},(_,index)=>`9${String(index).padStart(11,'0')}`)])
+   await expect(service.publicProducts(value,'US')).rejects.toThrow('public product list');
+ });
+});

@@ -185,6 +185,15 @@ button.primary svg, button.secondary svg { width: 17px; height: 17px; }
 .poster-card:hover .game-cover, .poster-card:hover .cover-placeholder { transform: translateY(-3px); outline: 2px solid rgba(255,255,255,.6); }
 .poster-card strong { display: block; margin-top: 9px; font-size: 12px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .poster-card > span { display: block; margin-top: 3px; color: var(--muted); font-size: 9px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.poster-card .gamepass-badge { display: inline-block; margin-top: 6px; padding: 1px 6px; border: 1px solid #6f9e57; border-radius: 999px; color: #b9e29f; font-size: 9px; line-height: 1.5; }
+.section-title .shelf-loading { display: inline-flex; align-items: center; gap: 6px; color: var(--muted); font-size: 10px; }
+.section-title .shelf-loading svg { width: 13px; }
+.shelf-warning { display: flex; align-items: center; gap: 8px; margin-top: 12px; padding: 8px 10px; border: 1px solid #6b5e35; background: #2a271c; color: #e8d9a8; font-size: 10px; }
+.shelf-warning svg { width: 14px; flex: none; }
+.shelf-warning span { flex: 1; }
+.shelf-warning button { display: inline-flex; align-items: center; gap: 5px; border: 1px solid #8b7b48; background: transparent; color: inherit; padding: 3px 8px; cursor: pointer; font-size: 10px; }
+.shelf-warning button svg { width: 12px; }
+.catalog-empty button.secondary { margin-top: 14px; }
 .game-cover, .cover-placeholder { width: 100%; object-fit: cover; background: #30343a; }
 .game-cover.cover-local { object-fit: contain; }
 .cover-placeholder { display: grid; place-items: center; color: #91969c; }

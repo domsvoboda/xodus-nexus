@@ -221,6 +221,22 @@ function mergeCollections(...collections: StoreSearchResponse[]): StoreSearchRes
   return { productsList };
 }
 
+/** Build the search-shaped row that both the licensed and public catalog
+ * paths feed into the shared parser. It only reuses display metadata that the
+ * detail response already returned; absence is never replaced by a guess. */
+function localizedRow(product: Record<string, unknown>): StoreSearchProduct | undefined {
+  const productId = string(product.ProductId)?.toUpperCase();
+  if (!productId) return;
+  const localized = Array.isArray(product.LocalizedProperties) ? object(product.LocalizedProperties[0]) : undefined;
+  const images = Array.isArray(localized?.Images) ? localized.Images as DisplayCatalogImage[] : [];
+  const find = (purposes: string[]) => {
+    const uri = string(purposes.flatMap(purpose => images.filter(image => image.ImagePurpose === purpose))[0]?.Uri);
+    return uri?.startsWith('//') ? `https:${uri}` : uri;
+  };
+  return { productId, title: string(localized?.ProductTitle) ?? productId, description: localized?.ProductDescription,
+    publisherName: localized?.PublisherName, boxArtUrl: find(POSTER_PURPOSES), isGame: true };
+}
+
 function packageSupport(productId: string, details: Map<string, Record<string, unknown>>, visited = new Set<string>(), budget = { remaining: 512 }): PackageSupport {
   if (visited.size > 6 || budget.remaining-- <= 0) return {
     installability: 'unknown', supportNote: 'The Store bundle metadata could not be fully resolved.',
@@ -420,18 +436,38 @@ export class CatalogService {
       const product = object(entry);
       const id = string(product?.ProductId);
       if (!product || !id || !wanted.has(id) || product.ProductType !== 'Game') return [];
-      const localized = Array.isArray(product.LocalizedProperties) ? object(product.LocalizedProperties[0]) : undefined;
-      const images = Array.isArray(localized?.Images) ? localized.Images as DisplayCatalogImage[] : [];
-      const find = (purposes: string[]) => {
-        const uri = string(purposes.flatMap(purpose => images.filter(image => image.ImagePurpose === purpose))[0]?.Uri);
-        return uri?.startsWith('//') ? `https:${uri}` : uri;
-      };
-      return [{ productId: id, title: string(localized?.ProductTitle) ?? id, description: localized?.ProductDescription,
-        publisherName: localized?.PublisherName, boxArtUrl: find(POSTER_PURPOSES), isGame: true }];
+      const row = localizedRow(product);
+      return row ? [row] : [];
     });
     // Ownership and installation support are independent. Preserve the game's
     // real package status for the library badge and Ready to install filter.
     return parseCatalogProducts({ productsList: rows }, catalog);
+  }
+
+  /** Read public descriptive metadata for an official collection in the given
+   * order. Public browsing eligibility hides demos, trials and positively free
+   * offers; the result never implies ownership or permission to install. */
+  async publicProducts(ids: string[], rawMarket: string): Promise<CatalogProduct[]> {
+    if (!ids.length || ids.length > 60 || ids.some(id => !/^[A-Z0-9]{12}$/.test(id))) throw Error('Invalid public product list.');
+    const unique = [...new Set(ids)];
+    const catalog = await this.details(unique, normalizeMarket(rawMarket));
+    // `details` tolerates one failed enrichment batch for search cards. A shelf
+    // with no display metadata at all is an honest load failure, not an empty
+    // collection or a reason to present guessed games.
+    if (!Array.isArray(catalog.Products) || catalog.Products.length === 0)
+      throw Error('The public Store metadata could not be loaded. Check your connection and retry.');
+    const details = new Map<string, Record<string, unknown>>();
+    for (const entry of Array.isArray(catalog.Products) ? catalog.Products : []) {
+      const product = object(entry), productId = string(product?.ProductId)?.toUpperCase();
+      if (product && productId) details.set(productId, product);
+    }
+    const rows = unique.flatMap(id => {
+      const product = details.get(id);
+      const row = product ? localizedRow(product) : undefined;
+      // A display row without its real localized title is not a usable card.
+      return row && row.title !== id ? [row] : [];
+    });
+    return parseCatalogProducts({ productsList: rows }, catalog, 'store');
   }
 
   private async fetchDetails(batch: string[], market: string): Promise<Record<string, unknown>[]> {

@@ -35,6 +35,8 @@ import { ConfirmationProvider, useConfirmation } from './Confirmation';
 import { GameRemovalContents } from './GameRemovalContents';
 import { GameDetails } from './GameDetails';
 import {CatalogGameDetails,catalogGameInstalled,publicStorePrice} from './CatalogGameDetails';
+import {HomeGamePassSection,useRecentGamePassShelf} from './HomeGamePass';
+import {recentlyInstalledGames} from './home-shelves';
 import { GameLanguage } from './GameLanguage';
 import { DownloadCancelDialog } from './DownloadCancelDialog';
 import { OfflinePermissionsCard } from './OfflinePermissions';
@@ -232,8 +234,8 @@ function useGameLaunchOptions(game: Game | undefined, data: AppSnapshot): GameLa
   return options;
 }
 
-export function HomePage({ data, go, action, openGame, returnFocusKey }: {
-  data: AppSnapshot; go: (page: Page) => void; action: (fn: () => Promise<unknown>, success?: string) => void; openGame?: (id: string, returnKey: string) => void; returnFocusKey?: string;
+export function HomePage({ data, go, action, openGame, returnFocusKey, toast }: {
+  data: AppSnapshot; go: (page: Page) => void; action: (fn: () => Promise<unknown>, success?: string) => void; openGame?: (id: string, returnKey: string) => void; returnFocusKey?: string; toast?: (value: Toast) => void;
 }) {
   const featured = data.games[0];
   const featuredRuntimeReady=useGameRuntimeReady(featured,data);
@@ -242,11 +244,42 @@ export function HomePage({ data, go, action, openGame, returnFocusKey }: {
   const spotlightArt = featured?.heroUrl ?? featured?.coverUrl;
   const home = useRef<HTMLElement>(null);
   const initialFocusKey = useRef(returnFocusKey);
+  const recentInstalled = recentlyInstalledGames(data.games, data.downloads);
+  const gamePass = useRecentGamePassShelf();
+  const [gamePassProduct, setGamePassProduct] = useState<CatalogProduct>();
+  const [gamePassOpen, setGamePassOpen] = useState(false);
+  const gamePassAccess = useStoreAccess(data, gamePassOpen);
+  const homeScroll = useRef(0);
+  const gamePassWasOpen = useRef(false);
   useBrowserLayoutEffect(() => {
     if (document.activeElement?.closest('.sidebar')) return;
     const returnTarget = [...home.current?.querySelectorAll<HTMLElement>('[data-gamepad-key]') ?? []].find(element => element.dataset.gamepadKey === initialFocusKey.current);
     (returnTarget ?? home.current?.querySelector<HTMLElement>('[data-gamepad-home-primary]'))?.focus({ preventScroll: true });
   }, []);
+  useBrowserLayoutEffect(() => {
+    const scroll = home.current?.closest('.page-scroll');
+    if (gamePassOpen && gamePassProduct) {
+      if (scroll) scroll.scrollTop = 0;
+      focusDetailEntry(home.current);
+    } else if (gamePassWasOpen.current) {
+      if (scroll) scroll.scrollTop = homeScroll.current;
+      [...home.current?.querySelectorAll<HTMLElement>('[data-gamepad-key]') ?? []]
+        .find(element => element.dataset.gamepadKey === `home-gamepass:${gamePassProduct?.productId}`)?.focus({ preventScroll: true });
+    }
+    gamePassWasOpen.current = gamePassOpen && Boolean(gamePassProduct);
+  }, [gamePassOpen, gamePassProduct?.productId]);
+
+  function openGamePass(product: CatalogProduct) {
+    homeScroll.current = home.current?.closest('.page-scroll')?.scrollTop ?? 0;
+    setGamePassProduct(product);
+    setGamePassOpen(true);
+  }
+
+  if (gamePassOpen && gamePassProduct) return <main ref={home} className="page home-page library-detail-open">
+    <CatalogGameDetails key={`${gamePassProduct.productId}:${data.auth.username}:${data.auth.player}:${data.auth.stored}:${data.auth.running}:${data.backend.binaryPath}:${data.settings.market}`}
+      product={gamePassProduct} data={data} storeMode storeAccess={gamePassAccess}
+      back={() => setGamePassOpen(false)} backLabel={ui('game.back_to_home')} toast={toast ?? (() => {})}/>
+  </main>;
 
   return <main ref={home} className="page home-page">
     <div className={`home-highlights${data.games.length>1?' has-secondary':''}`}>
@@ -271,12 +304,15 @@ export function HomePage({ data, go, action, openGame, returnFocusKey }: {
     </button>)}</div>:null}
     </div>
 
-    <SectionTitle title={ui("ui.recently_added_96ec5d3")} action={ui("ui.see_all_d7a8c44")} onClick={() => go('library')} />
-    {data.games.length > 0 ? <div className="poster-row">
-      {data.games.slice(0, 6).map((game) => <button className="poster-card" key={game.id} data-gamepad-key={`home-poster:${game.id}`} onClick={() => openGame ? openGame(game.id, `home-poster:${game.id}`) : go('library')}>
+    <SectionTitle title={ui("ui.recently_installed_d12be06")} action={ui("ui.see_all_d7a8c44")} onClick={() => go('library')} />
+    {recentInstalled.length > 0 ? <div className="poster-row">
+      {recentInstalled.slice(0, 6).map((game) => <button className="poster-card" key={game.id} data-gamepad-key={`home-poster:${game.id}`} onClick={() => openGame ? openGame(game.id, `home-poster:${game.id}`) : go('library')}>
         <Cover game={game} /><GameTitle title={game.title} /><span>{game.publisher ?? (game.storeId ? ui("ui.microsoft_store_installation_99bfa99") : ui("ui.local_installation_e5d8322"))}</span>
       </button>)}
-    </div> : <div className="empty-strip"><Gamepad2 /><div><strong>{ui("ui.no_games_imported_0bbcb51")}</strong><span>{ui("ui.your_library_is_built_only_from_real_local_manif_1513d78")}</span></div><button className="secondary" onClick={() => go('library')}>{ui("ui.import_folder_b849e38")}</button></div>}
+    </div> : data.games.length === 0 ? <div className="empty-strip"><Gamepad2 /><div><strong>{ui("ui.no_games_imported_0bbcb51")}</strong><span>{ui("ui.your_library_is_built_only_from_real_local_manif_1513d78")}</span></div><button className="secondary" onClick={() => go('library')}>{ui("ui.import_folder_b849e38")}</button></div>
+      : <div className="empty-strip"><Gamepad2 /><div><strong>{ui("ui.no_completed_installations_yet_c0d583a")}</strong><span>{ui("ui.your_library_is_built_only_from_real_local_manif_1513d78")}</span></div><button className="secondary" onClick={() => go('library')}>{ui("ui.view_library_108eb25")}</button></div>}
+
+    <HomeGamePassSection {...gamePass} open={openGamePass}/>
 
     <div className="support-bar"><CircleAlert /><div><strong>{ui("ui.compatibility_status_65cfaa2")}</strong><span>{ui("ui.package_ownership_and_installation_do_not_guaran_af576d1")}</span></div></div>
   </main>;
@@ -1322,7 +1358,7 @@ export default function App() {
     <section className="content-shell">
       <header className="topbar" ref={inertRef(socialOpen)}><GlobalSearch games={data.games} page={page} query={search} change={setSearch} submit={value => { setSubmittedSearch(value); go('store'); }} select={openLibraryGame} /><TopStatus data={data} go={go} /></header>
       <CloudSaveWarning operation={data.gameOperation} openGame={openLibraryGame} disabled={socialOpen} />
-      <div data-gamepad-page={page} ref={inertRef(socialOpen)} className={'page-scroll'+(page==='social'?' social-full-page':'')}>{page === 'home' ? <HomePage data={data} go={go} action={action} openGame={openLibraryGame} returnFocusKey={homeReturnKey} /> : null}{page === 'store' ? <StorePage data={data} toast={setToast} go={go} initialQuery={submittedSearch} /> : null}{page === 'library' ? <LibraryPage data={data} toast={setToast} filters={libraryFilters} onFiltersChange={changeLibraryFilters} selection={librarySelection} onSelectionHandled={request => setLibrarySelection(current => current === request ? undefined : current)} returnHome={key => { setHomeReturnKey(key); go('home'); }} /> : null}{page === 'downloads' ? <DownloadsPage data={data} toast={setToast} /> : null}{page === 'settings' ? <SettingsPage data={data} toast={setToast} /> : null}{page === 'social' ? <div className="nexus-social-page"><Suspense fallback={<SocialLoading/>}><XboxSocial key={JSON.stringify([data.auth.player??data.auth.username,data.backend.binaryPath])} auth={data.auth} api={window.launcher.nativeSocial} voice={data.backend.available&&data.backend.capabilities.nativeSocial?window.launcher:undefined} runtimeInvites={data.social} runtimeApi={window.launcher} expanded active={!socialOpen} readKeys={notifications.readKeys} onViewed={notifications.viewed} showProfile={desktopProfile}/></Suspense></div> : null}</div>
+      <div data-gamepad-page={page} ref={inertRef(socialOpen)} className={'page-scroll'+(page==='social'?' social-full-page':'')}>{page === 'home' ? <HomePage data={data} go={go} action={action} openGame={openLibraryGame} returnFocusKey={homeReturnKey} toast={setToast} /> : null}{page === 'store' ? <StorePage data={data} toast={setToast} go={go} initialQuery={submittedSearch} /> : null}{page === 'library' ? <LibraryPage data={data} toast={setToast} filters={libraryFilters} onFiltersChange={changeLibraryFilters} selection={librarySelection} onSelectionHandled={request => setLibrarySelection(current => current === request ? undefined : current)} returnHome={key => { setHomeReturnKey(key); go('home'); }} /> : null}{page === 'downloads' ? <DownloadsPage data={data} toast={setToast} /> : null}{page === 'settings' ? <SettingsPage data={data} toast={setToast} /> : null}{page === 'social' ? <div className="nexus-social-page"><Suspense fallback={<SocialLoading/>}><XboxSocial key={JSON.stringify([data.auth.player??data.auth.username,data.backend.binaryPath])} auth={data.auth} api={window.launcher.nativeSocial} voice={data.backend.available&&data.backend.capabilities.nativeSocial?window.launcher:undefined} runtimeInvites={data.social} runtimeApi={window.launcher} expanded active={!socialOpen} readKeys={notifications.readKeys} onViewed={notifications.viewed} showProfile={desktopProfile}/></Suspense></div> : null}</div>
       {socialOpen?<button className="nexus-social-scrim" aria-label={ui("social.close_social_shelf_09c6eb")} onClick={()=>setSocialOpen(false)}/>:null}
       <aside id="nexus-social-shelf" role="dialog" aria-modal={socialOpen || undefined} data-gamepad-layer data-gamepad-social-shelf className={'nexus-social-shelf'+(socialOpen?' is-open':'')} aria-label={ui("social.xbox_social_shelf_bb6aaf")} aria-hidden={!socialOpen}
         ref={inertRef(!socialOpen)}>

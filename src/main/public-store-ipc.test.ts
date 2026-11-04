@@ -29,29 +29,30 @@ function handlerStatements(names:string[],owner:string):string{
  if(missing.length)throw Error(`Missing IPC handlers: ${missing.join(', ')}.`);
  return found.map(node=>node.getText(parsed)).join('\n');
 }
-const mainNames=['catalog-search','catalog-featured','game-details','store-access','account-library','install-plan','game-activity','game-achievements'];
+const mainNames=['catalog-search','catalog-featured','catalog-recent-gamepass','game-details','store-access','account-library','install-plan','game-activity','game-achievements'];
 const mainCode=ts.transpileModule([declarations(['storeAccess']),handlerStatements(mainNames,'registerIpc')].join('\n'),{compilerOptions:{target:ts.ScriptTarget.ES2022}}).outputText;
-const demoCode=ts.transpileModule(handlerStatements(['catalog-search','catalog-featured','game-details','store-access'],'registerDemoIpc'),{compilerOptions:{target:ts.ScriptTarget.ES2022}}).outputText;
+const demoCode=ts.transpileModule(handlerStatements(['catalog-search','catalog-featured','catalog-recent-gamepass','game-details','store-access'],'registerDemoIpc'),{compilerOptions:{target:ts.ScriptTarget.ES2022}}).outputText;
 
 function fixture(mode:'main'|'demo'){
  const handlers=new Map<string,Function>(),products={query:'q',market:'US',products:[],hasMore:false,fetchedAt:'',source:'Microsoft Store'};
  // CZ desktop with settings.market 'neutral': the effective account region.
  let market='CZ';
  const catalog={search:vi.fn(async()=>products),featured:vi.fn(async()=>products),gameDetails:vi.fn(async(productId:string)=>({productId,xboxTitleId:'123'}))};
+ const homeGamePassShelf={get:vi.fn(async(market:string)=>({market,products:[],fetchedAt:'2026-11-04T10:00:00.000Z',source:'Microsoft Game Pass catalog'}))};
  const games=[{id:'owned-game',storeId:'9GGGGGGGGGGG',title:'Owned Game',path:'/synthetic/game'}];
  const store={games,settings:{market:'neutral'}};
  const accountLibrary={select:vi.fn(),get:vi.fn(async()=>({kind:'owned',products:[],accessByProductId:{}})),storeAccess:vi.fn(async(configuredMarket:string)=>({configuredMarket,account:'fixture',market,checkedAt:new Date().toISOString(),expiresAt:new Date(Date.now()+60_000).toISOString(),accessByProductId:{},backend:'/fixture/cli'}))};
  const installPlans={get:vi.fn(async()=>({choices:[]}))};
  const gameActivities={select:vi.fn(),get:vi.fn(async()=>({status:'available'}))},gameAchievements={select:vi.fn(),get:vi.fn(async()=>({status:'available'}))};
  const installedTitleId=vi.fn(async()=> '456');
- const context:any={ipcMain:{handle:(name:string,fn:Function)=>handlers.set(name,fn)},catalog,currentMarket:()=>market,publicStoreMarket,catalogDetailMarket,gameDetailsTarget,store,accountLibrary,installPlans,
+ const context:any={ipcMain:{handle:(name:string,fn:Function)=>handlers.set(name,fn)},catalog,homeGamePassShelf,currentMarket:()=>market,publicStoreMarket,catalogDetailMarket,gameDetailsTarget,store,accountLibrary,installPlans,
   authState:{running:false,stored:true,username:'fixture',player:undefined},backend:{current:{binaryPath:'/fixture/cli',capabilities:{library:true,packageSelection:true,gameActivity:true,achievements:true}}},
   requireBackend:()=>'/fixture/cli',safeProductId:(value:string)=>value,availableInstallBytes:async()=>1024,
   gameActivities,gameAchievements,installedTitleId,
   snapshot:()=>({settings:{market:'neutral'},auth:{username:'fixture'},backend:{binaryPath:'/fixture/cli'}}),
   catalogMarket:()=>market,demoGames:games,demoArtwork:new Map(),demoAccountLibrary:vi.fn(),demoLocales:{},demoLaunchOptions:{}};
  runInNewContext(mode==='main'?mainCode:demoCode,context);
- return {catalog,accountLibrary,installPlans,gameActivities,gameAchievements,setMarket:(value:string)=>market=value,call:(name:string,...args:unknown[])=>handlers.get(name)!(undefined,...args)};
+ return {catalog,homeGamePassShelf,accountLibrary,installPlans,gameActivities,gameAchievements,setMarket:(value:string)=>market=value,call:(name:string,...args:unknown[])=>handlers.get(name)!(undefined,...args)};
 }
 
 it('browses the neutral US Store on a CZ desktop while Store access keeps the effective region',async()=>{
@@ -60,6 +61,11 @@ it('browses the neutral US Store on a CZ desktop while Store access keeps the ef
  expect(f.catalog.search).toHaveBeenCalledWith('gears','US','cursor');
  await f.call('catalog-featured');
  expect(f.catalog.featured).toHaveBeenCalledWith('US');
+ await f.call('catalog-recent-gamepass');
+ expect(f.homeGamePassShelf.get).toHaveBeenCalledWith('US');
+ // A public shelf never reads or verifies account access.
+ expect(f.accountLibrary.storeAccess).not.toHaveBeenCalled();
+ expect(f.accountLibrary.select).not.toHaveBeenCalled();
  const access=await f.call('store-access');
  expect(access).toMatchObject({configuredMarket:'neutral',market:'CZ'});
  expect(f.accountLibrary.storeAccess).toHaveBeenCalledWith('neutral');
@@ -96,6 +102,8 @@ it('uses the public market only for an explicit public Store scope and keeps eve
 it('keeps public metadata stable while account operations follow a market change',async()=>{
  const f=fixture('main');
  f.setMarket('DE');
+ await f.call('catalog-recent-gamepass');
+ expect(f.homeGamePassShelf.get).toHaveBeenCalledWith('US');
  await f.call('game-details',{productId:'9PUBLICGAME1',scope:'public-store'});
  expect(f.catalog.gameDetails).toHaveBeenLastCalledWith('9PUBLICGAME1','US');
  await f.call('game-details',{productId:'9ACCOUNTGAME'});
@@ -114,6 +122,8 @@ it('demo applies the same scoped policy instead of an all-US catalog',async()=>{
  expect(f.catalog.search).toHaveBeenCalledWith('gears','US','cursor');
  await f.call('catalog-featured');
  expect(f.catalog.featured).toHaveBeenCalledWith('US');
+ await f.call('catalog-recent-gamepass');
+ expect(f.homeGamePassShelf.get).toHaveBeenCalledWith('US');
  await f.call('game-details',{productId:'9PUBLICGAME1',scope:'public-store'});
  expect(f.catalog.gameDetails).toHaveBeenLastCalledWith('9PUBLICGAME1','US');
  await f.call('game-details',{productId:'9ACCOUNTGAME'});

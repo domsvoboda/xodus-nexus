@@ -158,6 +158,9 @@ export interface Game {
     encryptedTarget: boolean;
   };
   addedAt: string;
+  /** Completion of a genuine new installation. Older profiles and imports have
+   * no value, so presentation must not treat `addedAt` as proof of installation. */
+  installedAt?: string;
 }
 
 export interface GameLaunchOptions {
@@ -459,6 +462,16 @@ export interface CatalogSearchResult {
   source: 'Microsoft Store';
 }
 
+/** Public presence in the official PC Game Pass recent collection.
+ * This is not an owned Library page and grants no account access. */
+export interface RecentGamePassShelf {
+  market: string;
+  products: CatalogProduct[];
+  fetchedAt: string;
+  source: 'Microsoft Game Pass catalog';
+  stale?: boolean;
+}
+
 export type LibraryAccess = 'owned' | 'gamepass' | 'other';
 export interface StoreAccess {
   configuredMarket: string;
@@ -663,6 +676,7 @@ export interface LauncherApi {
   setOfflinePermissions(enabled: boolean): Promise<OfflinePermissions>;
   searchCatalog(query: string, cursor?: string): Promise<CatalogSearchResult>;
   getFeaturedCatalog(): Promise<CatalogSearchResult>;
+  getRecentGamePassShelf(): Promise<RecentGamePassShelf>;
   getStoreAccess(): Promise<StoreAccess>;
   getAccountLibrary(kind: AccountLibraryPage['kind'], cursor?: string, refresh?: boolean, sort?: AccountLibraryPage['sort']): Promise<AccountLibraryPage>;
   startInstall(request: InstallRequest): Promise<string>;
