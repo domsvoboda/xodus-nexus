@@ -76,8 +76,8 @@ it.each(['success','busy','timeout'])('automatically selects the install Store a
   assertActivityCompatible,nativeSocialBeforeAuth:[],resetNativeSocial:vi.fn(),xboxSocial:{close:vi.fn()},
   useSavedAccount:use,accountRefresh:{invalidate:vi.fn()},emitSnapshot:vi.fn(),accountProfile:{select:vi.fn(async()=>{})},licenseProfile:undefined,
   refreshAccount:async()=>{context.authState.username='install-store';}};
- const start=source.indexOf('  if (game.licenseAccount &&',source.indexOf('async function prepareGameLaunch('));
- const block=source.slice(start,source.indexOf('  const inspected',start));
+ const start=source.indexOf('  if (game.licenseAccount &&',source.indexOf('async function activateLicenseAccount('));
+ const block=source.slice(start,source.indexOf('\n}\n',start));
  const code=ts.transpileModule('async function selectInstallAccount(){'+block+'}',{compilerOptions:{target:ts.ScriptTarget.ES2022}}).outputText;
  runInNewContext(code,context);
  if(busy){await expect(context.selectInstallAccount()).rejects.toThrow('Another Xodus operation');expect(use).not.toHaveBeenCalled();}

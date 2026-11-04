@@ -1214,6 +1214,30 @@ async function gameLaunchOptions(id: string): Promise<GameLaunchOptions> {
   };
 }
 
+async function activateLicenseAccount(game: Game): Promise<void> {
+  if (game.licenseAccount && game.licenseAccount !== authState.username
+      && savedAccounts.includes(game.licenseAccount) && backend.current.binaryPath && backend.current.capabilities.savedAccounts) {
+    // Changing Store credentials must not race a download using another account.
+    assertActivityCompatible(operations.keys(), store.downloads, gameOperation, installQueue.size);
+    // The game was installed with another saved Store account: use that one, no sign-in needed.
+    authState = { ...authState, running: true };
+    accountRefresh.invalidate();
+    emitSnapshot();
+    try {
+      for (const prepare of nativeSocialBeforeAuth) await prepare();
+      resetNativeSocial(); xboxSocial.close();
+      await accountProfile.select(undefined);
+      await licenseProfile?.select(undefined);
+      await useSavedAccount(backend.current.binaryPath, game.licenseAccount);
+    } finally {
+      accountRefresh.invalidate();
+      try { await refreshAccount(false, true); }
+      finally { authState.running = false; emitSnapshot(); }
+    }
+    if (authState.stored !== true || authState.username !== game.licenseAccount) throw Error('The saved Store account could not be activated. Sign in to it again.');
+  }
+}
+
 const ephemeralServices = new EphemeralServiceSessions();
 const gameSession = new GameSession({
   store: { get games() { return store.games; }, get downloads() { return store.downloads; }, get settings() { return store.settings; } },
@@ -1234,28 +1258,7 @@ const gameSession = new GameSession({
       return { ...session, release: async () => { try { await session.release(); } finally { serviceSessions.delete(session.socketPath); } } };
     },
   },
-  activateLicenseAccount: async (game) => {
-    if (!game.licenseAccount || game.licenseAccount === authState.username
-      || !savedAccounts.includes(game.licenseAccount) || !backend.current.binaryPath || !backend.current.capabilities.savedAccounts) return;
-    // Changing Store credentials must not race a download using another account.
-    assertActivityCompatible(operations.keys(), store.downloads, gameOperation, installQueue.size);
-    // The game was installed with another saved Store account: use that one, no sign-in needed.
-    authState = { ...authState, running: true };
-    accountRefresh.invalidate();
-    emitSnapshot();
-    try {
-      for (const prepare of nativeSocialBeforeAuth) await prepare();
-      resetNativeSocial(); xboxSocial.close();
-      await accountProfile.select(undefined);
-      await licenseProfile?.select(undefined);
-      await useSavedAccount(backend.current.binaryPath, game.licenseAccount);
-    } finally {
-      accountRefresh.invalidate();
-      try { await refreshAccount(false, true); }
-      finally { authState.running = false; emitSnapshot(); }
-    }
-    if (authState.stored !== true || authState.username !== game.licenseAccount) throw Error('The saved Store account could not be activated. Sign in to it again.');
-  },
+  activateLicenseAccount: (game) => activateLicenseAccount(game),
   incompleteUpdate: async (game) => { if (await refreshIncompleteUpdate(game)) { emitSnapshot(); return true; } return false; },
   persistGame: async (id, patch) => { await store.patchGame(id, patch); emitSnapshot(); },
   licenseCache: () => offlineLicenseCache(),
