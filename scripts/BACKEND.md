@@ -62,6 +62,25 @@ offers an in-app viewer and Copy log. Arbitrary stdout, stderr, command
 arguments and sign-in protocol messages are not saved. Logs remain local and
 are never uploaded automatically.
 
+### Backend update diagnostics
+
+Launcher-side component updates use operation `update` in the same private
+`backend.log`. Progress stages are `update-download`, `update-verify`,
+`update-validate`, `update-activate`, `update-confirm` and `update-ready`.
+Failures use fixed codes: `update-blocked` (activity gate or an update already
+running), `update-discovery` (install release lookup), `update-check-failed`
+(standalone release check, with the HTTP status when available),
+`update-download-http` (with the HTTP status), `update-download-limit`,
+`update-checksum`, `update-archive`, `update-extract`, `update-file-mismatch`,
+`update-binary`, `update-permission`, `update-validate`, `update-commit`,
+`update-cleanup`, `update-confirm` and `update-notify`. A cleanup failure after
+another installer failure is recorded as the fixed `update-cleanup` diagnostic
+while the original failure and its reason are kept; a cleanup failure after an
+otherwise valid install fails the operation before activation. Each update
+failure record carries `committed`, so a failure before `current.json`
+publication is distinguishable from an activation that needs attention. These
+records never contain messages, paths, URLs, tokens, accounts or child output.
+
 ## Package selection
 
 `resolve-package PRODUCT --json --market US` reads public Store metadata without

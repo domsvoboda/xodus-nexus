@@ -5,7 +5,8 @@ import type { BackendCapabilities, BackendStatus } from '../shared/types.js';
 import { parseBackendHelp } from '../shared/utils.js';
 import { run } from './process.js';
 import { backendLock, backendRecipeSha256, compareVersions } from './backend-package.js';
-import { discoverBackend, installBackend, type BackendArtifact } from './backend-releases.js';
+import { discoverBackend, installBackend, backendHttpStatus, type BackendArtifact, BackendInstallError, type BackendUpdateStage } from './backend-releases.js';
+import { backendDiagnostic } from './backend-diagnostics.js';
 import type { PreparedComponentUpdate } from './component-updates.js';
 import { BackendPrerequisiteError, backendPrerequisiteFailure } from './backend-prerequisites.js';
 
@@ -212,6 +213,10 @@ export class BackendManager {
       const message = (error as Error).message;
       this.status.blockReason = message.startsWith('No compatible Nexus backend release')
         ? message : `Backend release check failed: ${message}`;
+      // A read-only discovery failure is not an install attempt, so the fixed
+      // stage differs from install discovery and no state is mutated.
+      backendDiagnostic({ operation: 'update', event: 'failure', stage: 'update-check-failed', committed: false,
+        status: backendHttpStatus(error) });
     } finally { this.status.checking = false; }
     return this.current;
   }
@@ -288,7 +293,10 @@ export class BackendManager {
   async update(onStatus: () => void): Promise<void> { return this.performUpdate(onStatus); }
 
   private async performUpdate(onStatus: () => void, selected?: BackendArtifact, expectedCurrent?: () => Promise<boolean>): Promise<void> {
-    if (this.status.updating) throw new Error('A backend installation is already running.');
+    if (this.status.updating) {
+      backendDiagnostic({ operation: 'update', event: 'failure', stage: 'update-blocked', committed: false });
+      throw new Error('A backend installation is already running.');
+    }
     // Reserve before the first awaited external activity check. Notification
     // failures must also release this reservation.
     this.status.updating = true;
@@ -298,14 +306,21 @@ export class BackendManager {
     let failure: BackendMutationError | undefined;
     let target: BackendMutationTarget | undefined;
     let reconciled = false;
+    const started = performance.now();
+    // Fixed installer stages only. No messages, paths, URLs or child output.
+    let stage: BackendUpdateStage = 'update-blocked';
+    backendDiagnostic({ operation: 'update', event: 'start' });
     try {
       onStatus();
       await this.assertUpdateAllowed();
       // Keep this operation's verified target independent of later read-only
       // release checks, which may replace the manager's discovery cache.
+      stage = 'update-stale';
       if (expectedCurrent && !await expectedCurrent()) throw Error('The installed backend changed. Check again.');
+      stage = 'update-discovery';
       const artifact = selected ?? await discoverBackend(this.fetcher);
       if (!selected) this.artifact = artifact;
+      stage = 'update-storage';
       const binaryPath = await installBackend(this.managedRoot, artifact, this.fetcher, async cli => {
         const caps = await this.validate(cli);
         if (!caps?.account || !caps.run || !caps.streaming || !caps.login || !caps.logout || !caps.download || !caps.externalAuth || !caps.packageSelection) {
@@ -316,13 +331,16 @@ export class BackendManager {
       }, () => this.assertUpdateAllowed(), message => {
         this.status.phase = message; this.emitLog('backend', message); onStatus();
       });
+      stage = 'update-blocked';
       await this.assertUpdateAllowed();
+      stage = 'update-stale';
       if (expectedCurrent && !await expectedCurrent()) throw Error('The installed backend changed before activation. Check again.');
       const manifest = artifact.manifest;
       const pointer: ManagedPointer = { commit: manifest.commit, binaryPath, builtAt: new Date().toISOString(),
         linuxRunPatch: manifest.compatibility, recipeSha256: manifest.recipeSha256, version: manifest.version, delivery: 'release' };
       target = { commit: pointer.commit, binaryPath, version: pointer.version, delivery: pointer.delivery, linuxRunPatch: pointer.linuxRunPatch, recipeSha256: pointer.recipeSha256 };
       const temporary = `${this.pointerFile}.${randomUUID()}.tmp`;
+      stage = 'update-commit';
       try {
         await fs.writeFile(temporary, JSON.stringify(pointer, null, 2));
         await fs.rename(temporary, this.pointerFile);
@@ -336,6 +354,8 @@ export class BackendManager {
       Object.assign(this.status, { available: false, capabilities: EMPTY_CAPABILITIES, source: 'managed', binaryPath, commit: manifest.commit,
         linuxRunPatch: manifest.compatibility, recipeSha256: manifest.recipeSha256,
         version: manifest.version, delivery: 'release', phase: 'Backend activated; checking availability.' });
+      stage = 'update-confirm';
+      backendDiagnostic({ operation: 'update', event: 'diagnostic', stage: 'update-confirm' });
       const refreshed = await this.refresh();
       if (!refreshed.available || refreshed.source !== 'managed' || refreshed.binaryPath !== binaryPath) {
         throw new Error('The selected backend could not be confirmed after activation.');
@@ -346,14 +366,23 @@ export class BackendManager {
       const latest = cached && compareVersions(cached.version, manifest.version) >= 0 ? cached : manifest;
       Object.assign(this.status, { releaseAvailable: Boolean(latest), releaseVersion: latest?.version,
         updateAvailable: Boolean(latest && compareVersions(manifest.version, latest.version) < 0), phase: 'Backend is ready.' });
+      backendDiagnostic({ operation: 'update', event: 'diagnostic', stage: 'update-ready' });
     } catch (error) {
+      const failureStage = error instanceof BackendInstallError ? error.stage : stage;
+      backendDiagnostic({ operation: 'update', event: 'failure', stage: failureStage, committed,
+        status: error instanceof BackendInstallError ? error.status : backendHttpStatus(error) });
       if (committed && !reconciled) Object.assign(this.status, { available: false, capabilities: EMPTY_CAPABILITIES,
         source: 'managed', ...target });
       failure = this.mutationFailure('update', error, committed, target);
       throw failure;
     } finally {
       this.status.updating = false;
-      this.notifyMutation('update', onStatus, committed, target, failure);
+      backendDiagnostic({ operation: 'update', event: 'exit', code: reconciled ? 0 : -1, elapsedMs: performance.now() - started });
+      try { this.notifyMutation('update', onStatus, committed, target, failure); }
+      catch (error) {
+        backendDiagnostic({ operation: 'update', event: 'failure', stage: 'update-notify', committed });
+        throw error;
+      }
     }
   }
 

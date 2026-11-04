@@ -1898,7 +1898,13 @@ function registerIpc(): void {
   ipcMain.handle('component-updates-plan', () => componentUpdates!.plan());
   ipcMain.handle('component-updates-apply', (_event,id:unknown) => {if(typeof id!=='string'||id.length>80)throw Error('Invalid update plan.');return componentUpdates!.apply(id);});
   ipcMain.handle('component-updates-retry', (_event,id:unknown,item:unknown) => {if(typeof id!=='string'||id.length>80||typeof item!=='string'||item.length>80)throw Error('Invalid update retry.');return componentUpdates!.apply(id,item);});
-  ipcMain.handle('backend-update', async () => { ensureIdle(); await backend.update(emitSnapshot); await refreshAccount(); });
+  ipcMain.handle('backend-update', async () => {
+    // A rejected activity gate never enters BackendManager, so the attempt is
+    // recorded here as a fixed blocker instead of vanishing from diagnostics.
+    try { ensureIdle(); }
+    catch (error) { backendDiagnostic({ operation: 'update', event: 'failure', stage: 'update-blocked', committed: false }); throw error; }
+    await backend.update(emitSnapshot); await refreshAccount();
+  });
   ipcMain.handle('backend-rebuild', async () => { ensureIdle(); await backend.rebuild(emitSnapshot); await refreshAccount(); });
   ipcMain.handle('runtime-refresh', async () => {
     ensureIdle();

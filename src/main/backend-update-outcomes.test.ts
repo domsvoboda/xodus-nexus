@@ -6,7 +6,10 @@ import path from 'node:path';
 import { BackendManager, BackendMutationError } from './backend.js';
 import { discoverBackend, installBackend, type BackendArtifact } from './backend-releases.js';
 import { backendLock, backendRecipeSha256 } from './backend-package.js';
-vi.mock('./backend-releases.js', () => ({ discoverBackend: vi.fn(), installBackend: vi.fn() }));
+vi.mock('./backend-releases.js', async importOriginal => {
+  const actual = await importOriginal<typeof import('./backend-releases.js')>();
+  return { ...actual, discoverBackend: vi.fn(), installBackend: vi.fn() };
+});
 vi.mock('./process.js', () => ({ run: vi.fn(async () => ({ code: 0, output: '' })) }));
 const deferred = <T,>() => { let resolve!: (value: T) => void; const promise = new Promise<T>(r => { resolve = r; }); return { promise, resolve }; };
 const artifact = (version = '99.0.0'): BackendArtifact => ({ repository: 'domsvoboda/nexus-backend', tag: `backend-v${version}`, archiveUrl: 'https://example.invalid/unused', manifest: { version, commit: backendLock.commit, compatibility: backendLock.compatibility, recipeSha256: backendRecipeSha256 } } as BackendArtifact);
