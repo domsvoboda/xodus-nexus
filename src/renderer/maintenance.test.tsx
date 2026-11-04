@@ -17,20 +17,20 @@ it('offers an app-owned overlay shortcut and left/right shelf settings with left
   expect(html).toMatch(/<details class="settings-card settings-guide" aria-label="Nexus Overlay">/);
   expect(html).not.toContain('Desktop portal');
 });
-it('keeps backend health and launcher update notices distinct', () => {
+it('shows one update action without a permanent ready badge or duplicate settings control', () => {
   const data = demoSnapshot(); data.launcherUpdate!.latestVersion = '0.3.1';
   const html = renderToStaticMarkup(<TopStatus data={data} go={() => {}} />);
-  expect(html).toContain('Update available'); expect(html).toContain('Xodus ready');
+  expect(html).toContain('Update available'); expect(html).toContain('Launcher 0.3.1');
+  expect(html).not.toContain('Xodus ready'); expect(html).not.toContain('status-dot');
+  expect(html.match(/<button/g) ?? []).toHaveLength(1);
 });
-it('shows the offline verdict only while the backend itself is available', () => {
+it('leaves the decluttered header empty while the backend is reachable, offline or unavailable', () => {
   const data = demoSnapshot(); data.connectivity = { state: 'offline', reason: 'No network interface is connected.' };
-  const offline = renderToStaticMarkup(<TopStatus data={data} go={() => {}} />);
-  expect(offline).toContain('status-dot amber'); expect(offline).toContain('>Offline<'); expect(offline).toContain('stored offline licenses');
+  expect(renderToStaticMarkup(<TopStatus data={data} go={() => {}} />)).toBe('');
   data.backend.available = false;
-  const noBackend = renderToStaticMarkup(<TopStatus data={data} go={() => {}} />);
-  expect(noBackend).toContain('status-dot red'); expect(noBackend).toContain('Backend offline'); expect(noBackend).not.toContain('>Offline<');
+  expect(renderToStaticMarkup(<TopStatus data={data} go={() => {}} />)).toBe('');
   data.backend.available = true; data.connectivity = { state: 'unknown' };
-  expect(renderToStaticMarkup(<TopStatus data={data} go={() => {}} />)).toContain('Xodus ready');
+  expect(renderToStaticMarkup(<TopStatus data={data} go={() => {}} />)).toBe('');
 });
 it.each([
   [false, false, false], [true, false, false], [false, true, false], [false, false, true],
@@ -47,7 +47,6 @@ it.each([
   for (const [available, label] of [[launcher, 'Launcher 0.3.9'], [backend, 'Backend 0.2.9'], [runtime, 'Runtime 11.0-new']] as const) {
     if (available) expect(html).toContain(label); else expect(html).not.toContain(label);
   }
-  expect(html).toContain('Xodus ready');
 });
 it('never advertises the Standard runtime release in the top notice while a CachyOS runtime is active', () => {
   const data = demoSnapshot();

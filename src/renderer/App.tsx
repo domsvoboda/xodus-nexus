@@ -4,7 +4,7 @@ import {StatusDot} from './StatusDot';
 import {useGameRuntimeReady} from './useGameRuntimeReady';
 import {useStoreAccess} from './store-access';
 import {GameRuntimeFields} from './GameRuntimeFields';
-import {type InstalledRuntimeFamily,type GameRuntimeSelection} from '../shared/runtime-selection';
+import {runtimeFamilyLabels,type InstalledRuntimeFamily,type GameRuntimeSelection} from '../shared/runtime-selection';
 import { CloudSaveWarning } from './CloudSaveWarning';
 import { CheckField } from './CheckField';
 import { useDialogFocus } from './use-dialog-focus';
@@ -20,7 +20,7 @@ import {OverlayShortcutRecorder} from './OverlayShortcutRecorder';
 import {reconcileSettingsDraft, storageSettingsPatch} from './settings-draft';
 import {xboxOverlaySettings} from '../shared/xbox-overlay-settings';
 import './xbox-desktop-social.css';
-import { estimateTimeRemaining } from '../shared/utils';
+import { estimateTimeRemaining, isNewerVersion } from '../shared/utils';
 import { nexusRuntimeUpdateAvailable, runtimeDisplay, activeRuntimeIsCachyos } from '../shared/runtime-display';
 import { subscriptionBadge } from '../shared/subscription';
 import { defaultLaunchTools, normalizeLaunchTools } from '../shared/launch-tools';
@@ -126,21 +126,37 @@ function AccountAvatar({ auth, large = false, license = false }: { auth: AppSnap
   </div>;
 }
 
+/** The top bar only carries a real component-update (or restart) action. A
+ * permanent readied/offline badge and a second global Settings shortcut would
+ * duplicate the sidebar and the existing Settings, Home and launch surfaces.
+ * Discovery only reads authoritative snapshot fields here: a managed family is
+ * an update only when it is installed and its verified candidate differs, and
+ * an uninstalled optional family is never advertised or checked on render. */
 export function TopStatus({ data, go, openFriends }: { data: AppSnapshot; go: (page: Page) => void; openFriends?: () => void }) {
   const restart = data.launcherUpdate?.restartRequired;
+  // The default-runtime notice and the managed Standard family describe the
+  // same runtime family, so one entry survives the deduplication below.
+  const managed = (data.runtime.managedFamilies ?? []).filter(family =>
+    Boolean(family.installed) && Boolean(family.available) && family.updateAvailable === true);
+  const runtimeUpdates = new Map<string, string>();
+  if (nexusRuntimeUpdateAvailable(data.runtime) && !managed.some(family => family.id === 'nexus'))
+    runtimeUpdates.set('nexus', ui('home.runtime_update', { version: data.runtime.nexusVersion?.replace(/^runtime-/, '') ?? '' }).trim());
+  for (const family of managed) {
+    const candidate = family.available;
+    if (!candidate || runtimeUpdates.has(family.id)) continue;
+    const version = candidate.version.replace(/^runtime-/, '').replace(/^cachyos-/, '');
+    runtimeUpdates.set(family.id, ui('home.runtime_update', { version: `${runtimeFamilyLabels[family.id]} ${version}` }).trim());
+  }
+  const latest = data.launcherUpdate?.latestVersion;
   const updates = [
-    data.launcherUpdate?.latestVersion && !restart ? ui("ui.launcher_ba8971d", { version: data.launcherUpdate.latestVersion }) : '',
+    latest && !restart && isNewerVersion(latest, data.launcherUpdate?.currentVersion ?? '') ? ui("ui.launcher_ba8971d", { version: latest }) : '',
     data.backend.releaseAvailable && data.backend.updateAvailable ? ui("ui.backend_35f8dc4", { version: data.backend.releaseVersion ?? '' }).trim() : '',
-    nexusRuntimeUpdateAvailable(data.runtime) ? ui('home.runtime_update', { version: data.runtime.nexusVersion?.replace(/^runtime-/, '') ?? '' }).trim() : '',
+    ...runtimeUpdates.values(),
   ].filter(Boolean);
   const updateTitle = [restart ? ui('home.restart_update') : '', updates.length ? ui('home.available_updates', { updates: updates.join(', ') }) : ''].filter(Boolean).join(' ');
-  const offline = data.backend.available && data.connectivity?.state === 'offline';
+  if (!restart && !updates.length) return null;
   return <div className="top-status">
-    {updates.length || restart ? <button className="update-notice" title={updateTitle} aria-label={updateTitle} onClick={() => go('settings')}><ArrowDownToLine /><strong>{restart ? ui("ui.restart_available_cad1527") : ui("ui.update_available_ff8b555")}</strong></button> : null}
-    <StatusDot tone={!data.backend.available ? 'red' : offline ? 'amber' : 'green'} />
-    <span title={offline ? `${uiText(data.connectivity?.reason) ?? ui('offline.unreachable')} ${ui('offline.header_hint')}` : undefined}>
-      {!data.backend.available ? ui("ui.backend_offline_5904a63") : offline ? ui('offline.header') : ui("ui.xodus_ready_b131015")}
-    </span><button title={ui("ui.settings_74a883a")} onClick={() => go('settings')}><Settings2 /></button>
+    <button className="update-notice" title={updateTitle} aria-label={updateTitle} onClick={() => go('settings')}><ArrowDownToLine /><strong>{restart ? ui("ui.restart_available_cad1527") : ui("ui.update_available_ff8b555")}</strong></button>
   </div>;
 }
 
