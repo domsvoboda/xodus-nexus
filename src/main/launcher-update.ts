@@ -4,15 +4,17 @@ import path from 'node:path';
 import type { LauncherUpdate } from '../shared/types.js';
 import { isNewerVersion } from '../shared/utils.js';
 import { APPIMAGE_ARCH_SUFFIX, currentArch, isLinuxElf64, type NexusArch } from './arch.js';
+import {
+  LAUNCHER_RELEASE_REPOSITORIES, assetRepository, type LauncherReleaseRepository,
+} from './release-repositories.js';
 
-const REPO = 'domsvoboda/xodus-nexus';
-const API = `https://api.github.com/repos/${REPO}/releases?per_page=100`;
+const API = (repository: LauncherReleaseRepository) => `https://api.github.com/repos/${repository}/releases?per_page=100`;
 interface Asset { name: string; browser_download_url: string; size: number }
 interface Release { tag_name: string; draft?: boolean; prerelease?: boolean; assets: Asset[] }
 export interface LauncherCandidate { version: string; image: Asset; checksum: Asset; releaseUrl: string }
 
-function assetUrl(url: string, tag: string, name: string): boolean {
-  return url === `https://github.com/${REPO}/releases/download/${tag}/${name}`;
+function assetUrl(url: string, tag: string, name: string): LauncherReleaseRepository | undefined {
+  return assetRepository(LAUNCHER_RELEASE_REPOSITORIES, tag, name, url);
 }
 export function launcherCandidate(releases: Release[], current: string, arch: NexusArch = currentArch()): LauncherCandidate | undefined {
   const stable = releases.filter(r => !r.draft && !r.prerelease && /^v\d+\.\d+\.\d+$/.test(r.tag_name));
@@ -22,11 +24,13 @@ export function launcherCandidate(releases: Release[], current: string, arch: Ne
     const name = `Xodus-Nexus-${r.tag_name.slice(1)}-${APPIMAGE_ARCH_SUFFIX[arch]}.AppImage`;
     const image = r.assets?.find(a => a.name === name);
     const checksum = r.assets?.find(a => a.name === `${name}.sha512sum`);
-    if (!image || !checksum || !assetUrl(image.browser_download_url, r.tag_name, image.name) ||
-        !assetUrl(checksum.browser_download_url, r.tag_name, checksum.name) ||
+    if (!image || !checksum) continue;
+    const imageRepository = assetUrl(image.browser_download_url, r.tag_name, image.name);
+    const checksumRepository = assetUrl(checksum.browser_download_url, r.tag_name, checksum.name);
+    if (!imageRepository || imageRepository !== checksumRepository ||
         !Number.isSafeInteger(image.size) || image.size < 64 || image.size > 1024 ** 3 ||
         !Number.isSafeInteger(checksum.size) || checksum.size < 1 || checksum.size > 4096) continue;
-    return { version: r.tag_name.slice(1), image, checksum, releaseUrl: `https://github.com/${REPO}/releases/tag/${r.tag_name}` };
+    return { version: r.tag_name.slice(1), image, checksum, releaseUrl: `https://github.com/${imageRepository}/releases/tag/${encodeURIComponent(r.tag_name)}` };
   }
   return undefined;
 }
@@ -73,10 +77,23 @@ export class LauncherUpdater {
   private async performCheck(): Promise<void> {
     this.state.checking = true; this.state.error = undefined; this.changed();
     try {
-      const response = await this.fetcher(API, { headers: { Accept: 'application/vnd.github+json' }, signal: AbortSignal.timeout(15_000) });
-      if (!response.ok) throw new Error(`GitHub update check returned HTTP ${response.status}.`);
-      const releases = await response.json() as Release[];
-      if (!Array.isArray(releases)) throw new Error('Invalid GitHub release list.');
+      // Both launcher repository names are optional feeds: one may not exist yet
+      // or may be temporarily unavailable after the rename. Only report a
+      // failure when every allowed feed failed to produce a release list.
+      const releases: Release[] = [];
+      const failures: string[] = [];
+      let availableFeeds = 0;
+      for (const repository of LAUNCHER_RELEASE_REPOSITORIES) {
+        try {
+          const response = await this.fetcher(API(repository), { headers: { Accept: 'application/vnd.github+json' }, signal: AbortSignal.timeout(15_000) });
+          if (!response.ok) throw new Error(`GitHub update check returned HTTP ${response.status}.`);
+          const list = await response.json() as Release[];
+          if (!Array.isArray(list)) throw new Error('Invalid GitHub release list.');
+          availableFeeds += 1;
+          releases.push(...list);
+        } catch (error) { failures.push((error as Error).message); }
+      }
+      if (!availableFeeds) throw new Error([...new Set(failures)].join(' ') || 'GitHub update check failed for all release feeds.');
       this.candidate = launcherCandidate(releases, this.version, this.arch);
       this.state.latestVersion = this.candidate?.version;
       this.state.releaseUrl = this.candidate?.releaseUrl;

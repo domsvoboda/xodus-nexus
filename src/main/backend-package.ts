@@ -2,8 +2,12 @@ import { createHash } from 'node:crypto';
 import { readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { BACKEND_ARCH_SUFFIX, currentArch, type NexusArch } from './arch.js';
+import {
+  BACKEND_RELEASE_REPOSITORIES, LEGACY_LAUNCHER_REPOSITORY, assetRepository, releaseAssetUrl,
+} from './release-repositories.js';
 
-export const BACKEND_REPOSITORY = 'domsvoboda/xodus-nexus';
+/** Legacy launcher repository that also hosts existing backend releases. */
+export const BACKEND_REPOSITORY = LEGACY_LAUNCHER_REPOSITORY;
 export const backendAssets = fileURLToPath(new URL('../../assets/', import.meta.url));
 const lockBytes = readFileSync(new URL('../../assets/backend-source.lock.json', import.meta.url));
 export const backendLock = JSON.parse(lockBytes.toString()) as {
@@ -48,9 +52,9 @@ export function validateBackendManifest(value: unknown, arch: NexusArch = curren
 }
 
 export function backendAssetUrl(tag: string, name: string, url: unknown): string {
-  const expected = `https://github.com/${BACKEND_REPOSITORY}/releases/download/${encodeURIComponent(tag)}/${name}`;
-  if (url !== expected) throw new Error('Unexpected backend release asset URL.');
-  return expected;
+  const repository = assetRepository(BACKEND_RELEASE_REPOSITORIES, tag, name, url);
+  if (!repository) throw new Error('Unexpected backend release asset URL.');
+  return releaseAssetUrl(repository, tag, name);
 }
 
 export function validateBackendArchive(entries: string[], verbose: string[], packageName = backendPackageName(backendLock.version)): void {
