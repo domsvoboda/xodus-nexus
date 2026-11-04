@@ -570,8 +570,18 @@ export async function prepareProtonRunner(
     `export MEDIACONV_BLANK_VIDEO_FILE=${shellQuote(path.join(files, 'share', 'media', 'blank.mkv'))}`,
     `export MEDIACONV_BLANK_AUDIO_FILE=${shellQuote(path.join(files, 'share', 'media', 'blank.ptna'))}`,
     `export PATH=${shellQuote(executablePath)}`,
+    // The Proton session enables large-address-aware by default through its own
+    // PROTON_FORCE_LARGE_ADDRESS_AWARE handling, so Play never exports a Wine
+    // default here. An explicit launch-option value must still win: tell that
+    // session to drop its default whenever Wine's own variable is defined. The
+    // variable Proton received is never replaced, its own pair stays coherent.
     ...(overridable
-      ? [...defaultEnvironment('WINEDLLOVERRIDES', wineOverrides), ...defaultEnvironment('WINE_LARGE_ADDRESS_AWARE', '1')]
+      ? [
+        ...defaultEnvironment('WINEDLLOVERRIDES', wineOverrides),
+        'if [ "${WINE_LARGE_ADDRESS_AWARE+x}" = x ] && [ "${PROTON_FORCE_LARGE_ADDRESS_AWARE+x}" != x ]; then',
+        "  export PROTON_FORCE_LARGE_ADDRESS_AWARE='0'",
+        'fi',
+      ]
       : [`export WINEDLLOVERRIDES=${shellQuote(wineOverrides)}`, "export WINE_LARGE_ADDRESS_AWARE='1'"]),
     // Preserve each explicit setting, including disabled/empty values. Limits
     // apply only when selecting our managed driver directory, not a custom one.
@@ -585,13 +595,10 @@ export async function prepareProtonRunner(
     `  export MESA_SHADER_CACHE_DIR=${shellQuote(shaderCaches.mesa)}`,
     ...defaultEnvironment('MESA_SHADER_CACHE_MAX_SIZE', cacheLimits.mesa),
     'fi',
-    // Use Steam's genuine compatibility bridge when installed. Never force a
-    // particular game to load it or replace an explicit user configuration.
-    ...(eacRuntime ? [
-      'if [ -z "${PROTON_EAC_RUNTIME:-}" ]; then',
-      `  export PROTON_EAC_RUNTIME=${shellQuote(eacRuntime)}`,
-      'fi',
-    ] : []),
+    // Use Steam's genuine compatibility bridge only when the launch did not
+    // configure it at all. An explicit value, including an empty one, is a
+    // choice: it must win over auto-discovery exactly like the settings above.
+    ...(eacRuntime ? defaultEnvironment('PROTON_EAC_RUNTIME', eacRuntime) : []),
     // Private lifecycle command uses the exact same prefix/library environment
     // as launch. It is only invoked for explicit Stop/launcher shutdown.
     'if [ "${1:-}" = "--nexus-stop-prefix" ]; then',

@@ -13,6 +13,17 @@ import { preparedGameWine } from './game-launch.js';
 const created: string[] = [];
 const execFile = promisify(execFileCallback);
 
+/**
+ * Per-DLL view of WINEDLLOVERRIDES. Proton appends its own managed entries, so
+ * tests compare the DLLs they own instead of the whole environment string.
+ */
+function dllOverrides(value: string | undefined): Map<string, string> {
+  return new Map((value ?? '').split(';').filter(Boolean).map((entry) => {
+    const equals = entry.indexOf('=');
+    return [entry.slice(0, equals).toLowerCase(), entry.slice(equals + 1)] as const;
+  }));
+}
+
 afterEach(async () => {
   await Promise.all(created.splice(0).map((directory) => rm(directory, { recursive: true, force: true })));
 });
@@ -165,8 +176,17 @@ describe('prepareProtonRunner', () => {
     expect(game.stdout).not.toContain('/wrong/host/data');
     expect(game.stdout).toContain('steam-context:xodus-nexus');
     expect(game.stdout).toContain('<controller:0x054c/0x0ce6:16968485195965530112>');
+    const [overridesLine, hud] = game.stdout.split('\n');
+    const overrides = dllOverrides(overridesLine);
+    // Per-DLL entries, not the whole string: the Proton session appends its own
+    // managed overrides. Launch options replace them for the DLLs they name.
+    expect(overrides.get('dxgi')).toBe(withTools ? 'n,b' : 'n');
+    expect(overrides.get('d3d11')).toBe(withTools ? undefined : 'n');
+    expect(overrides.get('d3d12')).toBe(withTools ? undefined : 'n');
+    expect(overrides.get('winhttp')).toBe(withTools ? 'b' : undefined);
     if (withTools) {
-      expect(game.stdout).toContain(`dxgi=n,b;winhttp=b\nfps\n${path.join(compat,'pfx')}`);
+      expect(hud).toBe('fps');
+      expect(game.stdout).toContain(path.join(compat,'pfx'));
       expect(game.stdout).toContain('<actual game.exe>\n<--launcher-skip>');
     } else {
       expect(wrapper.command).toBe(runner.launchCommand);
@@ -175,6 +195,89 @@ describe('prepareProtonRunner', () => {
     }
     expect(runner.stopPrefix.command).toBe(runner.command);
     await execFile(runner.stopPrefix.command,runner.stopPrefix.args);
+  });
+
+  // The Proton session owns large-address-aware on Play: it enables that flag by
+  // default, so Play must neither export a Wine default nor let that session
+  // default replace an explicit launch-option value.
+  async function largeAddressFixture() {
+    const root = await mkdtemp(path.join(tmpdir(), 'nexus-proton-laa-')); created.push(root);
+    const runtime = path.join(root, 'runtime'), wine = path.join(runtime, 'files/bin/wine');
+    const compat = path.join(root, 'compat'), system32 = path.join(compat, 'pfx/drive_c/windows/system32');
+    await mkdir(path.dirname(wine), { recursive: true });
+    await mkdir(path.join(runtime, 'files/share/default_pfx'), { recursive: true });
+    await mkdir(system32, { recursive: true });
+    for (const name of ['libvkd3d-utils-1.dll', 'dxgi.dll', 'd3d12.dll']) await writeFile(path.join(system32, name), 'ready');
+    const quotedWine = `'${wine.replaceAll("'", `'"'"'`)}'`;
+    // Only the large-address-aware part of the real Proton session is emulated:
+    // forcelgadd is its default, PROTON_FORCE_LARGE_ADDRESS_AWARE=0 disables it,
+    // and a disabled force keeps the inherited WINE_LARGE_ADDRESS_AWARE value.
+    await writeFile(path.join(runtime, 'proton'), [
+      '#!/bin/sh',
+      '[ "$1" = run ] && shift',
+      'if [ "${PROTON_FORCE_LARGE_ADDRESS_AWARE+x}" = x ]; then',
+      '  case "$PROTON_FORCE_LARGE_ADDRESS_AWARE" in',
+      "    0|'') ;;",
+      '    *) export WINE_LARGE_ADDRESS_AWARE=1 ;;',
+      '  esac',
+      'else',
+      '  export WINE_LARGE_ADDRESS_AWARE=1',
+      'fi',
+      `exec ${quotedWine} "$@"`,
+      '',
+    ].join('\n'), { mode: 0o700 });
+    await writeFile(wine, '#!/bin/sh\nprintf \'laa=<%s>\\nforce=<%s>\\noverrides=<%s>\\n\' "${WINE_LARGE_ADDRESS_AWARE-unset}" "${PROTON_FORCE_LARGE_ADDRESS_AWARE-unset}" "$WINEDLLOVERRIDES"\n', { mode: 0o700 });
+    await writeFile(path.join(runtime, 'files/bin/wineserver'), '#!/bin/sh\nexit 0\n', { mode: 0o700 });
+    const runner = (await prepareProtonRunner(wine, compat, path.join(root, 'steam')))!;
+    return { root, runner };
+  }
+
+  function launchEnvironment(): NodeJS.ProcessEnv {
+    const environment: NodeJS.ProcessEnv = { ...process.env };
+    for (const name of ['WINEDLLOVERRIDES', 'WINE_LARGE_ADDRESS_AWARE', 'PROTON_FORCE_LARGE_ADDRESS_AWARE']) delete environment[name];
+    return environment;
+  }
+
+  it.each([
+    ['the Proton default', '', '1', 'unset'],
+    ['an explicit disabled value', 'WINE_LARGE_ADDRESS_AWARE=0', '0', '0'],
+    ['an explicit empty value', 'WINE_LARGE_ADDRESS_AWARE=', '', '0'],
+    ['an explicit enabled value', 'WINE_LARGE_ADDRESS_AWARE=1', '1', '0'],
+    ['an explicit Proton force', 'WINE_LARGE_ADDRESS_AWARE=0 PROTON_FORCE_LARGE_ADDRESS_AWARE=1', '1', '1'],
+  ])('honours %s for large-address-aware on Play', async (_label, launchOptions, expectedLaa, expectedForce) => {
+    const { root, runner } = await largeAddressFixture();
+    const wrapper = await prepareGameWrapper(runner.launchCommand,
+      launchOptions ? { ...defaultLaunchTools, launchOptions: `${launchOptions} %command%` } : undefined,
+      path.join(root, 'wrappers'));
+    const { stdout } = await execFile(wrapper.command, ['game.exe'], { env: launchEnvironment() });
+    const [laa, force, overrides] = stdout.trimEnd().split('\n');
+    expect(laa).toBe(`laa=<${expectedLaa}>`);
+    expect(force).toBe(`force=<${expectedForce}>`);
+    // The managed DLL overrides stay per-DLL: the session appends its own entries.
+    const values = dllOverrides(overrides.slice('overrides=<'.length, -1));
+    expect(values.get('dxgi')).toBe('n');
+    expect(values.get('d3d11')).toBe('n');
+    expect(values.get('d3d12')).toBe('n');
+    expect(values.has('winhttp')).toBe(false);
+  });
+
+  it('keeps the managed large-address-aware default of bare Wine and Stop', async () => {
+    const { runner } = await largeAddressFixture();
+    const launchScript = await readFile(runner.launchCommand, 'utf8');
+    const stopScript = await readFile(runner.command, 'utf8');
+    // Play delegates the default to its Proton session. Internal prefix work and
+    // Stop keep the bare Wine default and never pass a Proton force variable.
+    expect(launchScript).not.toContain('export WINE_LARGE_ADDRESS_AWARE');
+    expect(launchScript).toContain("export PROTON_FORCE_LARGE_ADDRESS_AWARE='0'");
+    expect(stopScript).toContain("export WINE_LARGE_ADDRESS_AWARE='1'");
+    expect(stopScript).not.toContain('PROTON_FORCE_LARGE_ADDRESS_AWARE');
+    const defaults = await execFile(runner.command, ['game.exe'], { env: launchEnvironment() });
+    expect(defaults.stdout).toContain('laa=<1>');
+    expect(defaults.stdout).toContain('force=<unset>');
+    const explicit = await execFile(runner.command, ['game.exe'],
+      { env: { ...launchEnvironment(), WINE_LARGE_ADDRESS_AWARE: '0' } });
+    expect(explicit.stdout).toContain('laa=<1>');
+    expect(explicit.stdout).toContain('force=<unset>');
   });
   it.each([false, true])('provisions shared HTTP/2 dependencies safely (old symlink: %s)', async (oldSymlink) => {
     const root = await mkdtemp(path.join(tmpdir(), 'xodus-nexus-h2-prefix-'));
@@ -270,7 +373,12 @@ describe('prepareProtonRunner', () => {
     expect(await prepareProtonRunner(path.join(root, 'bin', 'wine'), path.join(root, 'compat'), path.join(root, 'steam'))).toBeUndefined();
   });
 
-  it.each(['', '/explicit/eac'])('discovers the installed EAC bridge without overriding configuration (%s)', async (explicit) => {
+  it.each([
+    ['unset', undefined],
+    ['empty', ''],
+    ['zero', '0'],
+    ['custom', '/explicit/eac'],
+  ] as const)('uses the installed EAC bridge only when PROTON_EAC_RUNTIME is unset (%s)', async (_label, explicit) => {
     const root = await mkdtemp(path.join(tmpdir(), 'xodus-nexus-eac-runner-'));
     created.push(root);
     const files = path.join(root, 'runtime/files');
@@ -283,15 +391,27 @@ describe('prepareProtonRunner', () => {
     await mkdir(path.join(files, 'share/default_pfx'), { recursive: true });
     await mkdir(system32, { recursive: true });
     for (const dll of ['libvkd3d-utils-1.dll', 'dxgi.dll', 'd3d12.dll']) await writeFile(path.join(system32, dll), 'ready');
-    await writeFile(wine, '#!/bin/sh\nprintf \'%s\\n\' "$PROTON_EAC_RUNTIME"\n');
-    await chmod(wine, 0o700);
-    await writeFile(path.join(files, '../proton'), '#!/bin/sh\nexit 0\n');
-    await chmod(path.join(files, '../proton'), 0o700);
+    // Both managed commands run the same environment block, so both are checked.
+    await writeFile(wine, '#!/bin/sh\nprintf \'eac=<%s>\\n\' "${PROTON_EAC_RUNTIME-unset}"\n', { mode: 0o700 });
+    const quotedWine = `'${wine.replaceAll("'", `'"'"'`)}'`;
+    await writeFile(path.join(files, '../proton'), `#!/bin/sh\n[ "$1" = run ] && shift\nexec ${quotedWine} "$@"\n`, { mode: 0o700 });
+    await writeFile(path.join(files, 'bin/wineserver'), '#!/bin/sh\nexit 0\n', { mode: 0o700 });
     await mkdir(path.join(eac, 'v2/lib64'), { recursive: true });
     for (const name of ['easyanticheat_x64.dll', 'easyanticheat_x64.so']) await writeFile(path.join(eac, 'v2/lib64', name), 'fixture');
-    const runner = await prepareProtonRunner(wine, compat, steam);
-    const { stdout } = await execFile(runner!.command, [], { env: { ...process.env, PROTON_EAC_RUNTIME: explicit } });
-    expect(stdout.trim()).toBe(explicit || eac);
+    const runner = (await prepareProtonRunner(wine, compat, steam))!;
+    const environment: NodeJS.ProcessEnv = { ...process.env };
+    delete environment.PROTON_EAC_RUNTIME;
+    if (explicit !== undefined) environment.PROTON_EAC_RUNTIME = explicit;
+    const expected = explicit === undefined ? eac : explicit;
+    for (const command of [runner.command, runner.launchCommand]) {
+      expect((await execFile(command, [], { env: environment })).stdout.trim()).toBe(`eac=<${expected}>`);
+    }
+    // The generated script must key on definedness, never on emptiness.
+    for (const command of [runner.command, runner.launchCommand]) {
+      const script = await readFile(command, 'utf8');
+      expect(script).toContain('if [ "${PROTON_EAC_RUNTIME+x}" != x ]; then');
+      expect(script).not.toContain('${PROTON_EAC_RUNTIME:-}');
+    }
   });
 
   it("keeps each game's shader caches beside its prefix without overriding configuration", async () => {

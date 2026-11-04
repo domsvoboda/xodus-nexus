@@ -7,6 +7,7 @@ import { promisify } from 'node:util';
 import { afterAll, describe, expect, it } from 'vitest';
 import { prepareProtonRunner, protonOptionalComponentNotices } from './proton.js';
 import { prepareGameWrapper } from './game-wrapper.js';
+import { launchEnvironmentForRuntime } from './game-launch.js';
 import { defaultLaunchTools } from '../shared/launch-tools.js';
 
 // End-to-end fixture for the Play command of a real runtime payload. It is
@@ -62,7 +63,10 @@ async function session(payload: string, launchOptions: string, reusedRoot?: stri
   if (!runner) throw new Error('payload is not a Proton runtime');
   const wrapper = await prepareGameWrapper(runner.launchCommand,
     { ...defaultLaunchTools, launchOptions }, path.join(root, 'wrappers'));
-  const childEnvironment = {
+  // The launcher drops a stale inherited WINEDLLOVERRIDES and
+  // WINE_LARGE_ADDRESS_AWARE for a Proton session, so the fixture applies the
+  // same policy. Only that game's launch options may define them here.
+  const childEnvironment = launchEnvironmentForRuntime({
     ...process.env,
     HOME: home,
     XDG_CACHE_HOME: cache,
@@ -70,7 +74,8 @@ async function session(payload: string, launchOptions: string, reusedRoot?: stri
     WINEPREFIX: '/wrong/prefix',
     WINEDLLOVERRIDES: 'dxgi=b;stale=1',
     UMU_ID: 'stale-umu',
-  };
+  }, true);
+  delete childEnvironment.PROTON_FORCE_LARGE_ADDRESS_AWARE;
   let stdout = '', stderr = '';
   try {
     ({ stdout, stderr } = await execFile(wrapper.command, ['cmd', '/c', 'set'], {
@@ -93,17 +98,29 @@ function environmentOf(stdout: string): Map<string, string> {
   return values;
 }
 
+/** Per-DLL view of WINEDLLOVERRIDES: the Proton session appends its own entries. */
+function dllOverrides(value: string | undefined): Map<string, string> {
+  return new Map((value ?? '').split(';').filter(Boolean).map((entry) => {
+    const equals = entry.indexOf('=');
+    return [entry.slice(0, equals).toLowerCase(), entry.slice(equals + 1)] as const;
+  }));
+}
+
 async function deployedPayload(compatibilityDataPath: string) {
   const directory = path.join(compatibilityDataPath, 'pfx/drive_c/windows/system32/umu');
   let names: string[] = [];
   try { names = (await readdir(directory)).sort(); } catch { names = []; }
-  const files: Record<string, { size: number; magic: string }> = {};
+  const files: Record<string, { size: number; magic: string; sha256: string }> = {};
   for (const name of names) {
     const file = path.join(directory, name);
     const info = await stat(file);
     if (!info.isFile()) continue;
-    const head = await readFile(file).then((bytes) => bytes.subarray(0, 2).toString('latin1'), () => '');
-    files[name] = { size: info.size, magic: head };
+    const bytes = await readFile(file);
+    files[name] = {
+      size: info.size,
+      magic: bytes.subarray(0, 2).toString('latin1'),
+      sha256: createHash('sha256').update(bytes).digest('hex'),
+    };
   }
   return files;
 }
@@ -114,6 +131,40 @@ function expectNoIntegrityFailure(output: string) {
   expect(output).not.toMatch(/CRIT: MD5 mismatch/);
   expect(output).not.toMatch(/Failed to download/);
   expect(output).not.toMatch(/Failed to extract/);
+}
+
+/**
+ * The managed overrides are asserted per DLL: the Proton session appends its own
+ * entries, so the whole environment string differs from what the launcher sets.
+ */
+function expectManagedDllOverrides(environment: Map<string, string>) {
+  const overrides = dllOverrides(environment.get('WINEDLLOVERRIDES'));
+  expect(overrides.get('dxgi')).toBe('n');
+  expect(overrides.get('d3d11')).toBe('n');
+  expect(overrides.get('d3d12')).toBe('n');
+  expect(overrides.get('d3d8')).toBe('n');
+  expect(overrides.get('winhttp')).toBe('b');
+  expect(overrides.get('libnghttp2')).toBe('n');
+  // The stale inherited value must not survive as a DLL entry of its own.
+  expect(overrides.has('stale')).toBe(false);
+}
+
+/**
+ * Play never exports WINE_LARGE_ADDRESS_AWARE: the Proton session enables large
+ * address awareness itself, unless the launch options define Wine's variable and
+ * the session's own force variable stays untouched.
+ */
+const largeAddressCases: ReadonlyArray<[label: string, launchOptions: string, laa: string, force: string | undefined]> = [
+  ['the Proton default', '%command%', '1', undefined],
+  ['an explicit Wine 0', 'WINE_LARGE_ADDRESS_AWARE=0 %command%', '0', '0'],
+  ['an explicit empty Wine value', 'WINE_LARGE_ADDRESS_AWARE= %command%', '', '0'],
+  ['an explicit Proton force', 'WINE_LARGE_ADDRESS_AWARE=0 PROTON_FORCE_LARGE_ADDRESS_AWARE=1 %command%', '1', '1'],
+];
+
+function expectLargeAddress(environment: Map<string, string>, laa: string, force: string | undefined) {
+  expect(environment.get('WINE_LARGE_ADDRESS_AWARE')).toBe(laa);
+  expect(environment.get('PROTON_FORCE_LARGE_ADDRESS_AWARE')).toBe(force);
+  expectManagedDllOverrides(environment);
 }
 
 describe.skipIf(!cachyos)('CachyOS Play command with a real payload', () => {
@@ -133,7 +184,18 @@ describe.skipIf(!cachyos)('CachyOS Play command with a real payload', () => {
       expect(files[name].size).toBeGreaterThan(0);
     }
     expect(files['OptiScaler.dll'].magic).toBe('MZ');
+    // The Wine loader loads the alias named by WINE_OPTISCALER_NAME, so the
+    // deployed dxgi.dll must be readable and hold exactly the OptiScaler bytes.
+    expect(files['dxgi.dll'], 'the dxgi.dll loader alias must be deployed').toBeDefined();
+    expect(files['dxgi.dll'].magic).toBe('MZ');
+    expect(files['dxgi.dll'].size).toBe(files['OptiScaler.dll'].size);
+    expect(files['dxgi.dll'].sha256).toBe(files['OptiScaler.dll'].sha256);
   }, 900_000);
+
+  it.each(largeAddressCases)('keeps %s for large-address-aware on Play', async (_label, launchOptions, laa, force) => {
+    const { stdout } = await session(cachyos!, launchOptions);
+    expectLargeAddress(environmentOf(stdout), laa, force);
+  }, 120_000);
 
   it('starts the same game without the optional component when the option is absent', async () => {
     const { compatibilityDataPath, stdout, output } = await session(cachyos!, '%command%');
@@ -213,5 +275,11 @@ describe.skipIf(!standard)('Standard Play command with a real payload', () => {
     expect(environment.get('WINEPREFIX')?.replace(/\/$/, '')).toBe(path.join(compatibilityDataPath, 'pfx'));
     expect(environment.has('WINE_OPTISCALER_NAME')).toBe(false);
     expect(await deployedPayload(compatibilityDataPath)).toEqual({});
+    expectManagedDllOverrides(environment);
   }, 900_000);
+
+  it.each(largeAddressCases)('keeps %s for large-address-aware on Play', async (_label, launchOptions, laa, force) => {
+    const { stdout } = await session(standard!, launchOptions);
+    expectLargeAddress(environmentOf(stdout), laa, force);
+  }, 120_000);
 });
