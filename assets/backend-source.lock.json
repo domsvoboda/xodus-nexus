@@ -1,11 +1,11 @@
 {
   "schema": 2,
   "repository": "https://github.com/domsvoboda/nexus-backend.git",
-  "commit": "e44f4ebe0732aa0c6e514aaaa64cde9ab5f151c5",
+  "commit": "bcb80132d632058372038587bf99a3c6bde1d78c",
   "version": "0.2.15",
   "minimumVersion": "0.2.14",
   "rust": "1.99.0",
-  "cargoLockSha256": "5bb0002af6fca499ca230869e5053341ca06bf8dad869f0e3bc77325eda60825",
-  "buildConfigSha256": "9e17178e2f57a455d666a453d93ae54f872dcd4af5ae44c37fd9b7b6c27e2f3e",
+  "cargoLockSha256": "c0fc4c3de2f0f42af45489c769b25c62410e3599bed560cafd802e192b7bebff",
+  "buildConfigSha256": "b304a54e4071ee51e5f1062af74948a4bc38778e4b3cb9e868712ddd801f3e07",
   "compatibility": "linux-run-v25"
 }

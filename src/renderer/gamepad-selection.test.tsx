@@ -44,7 +44,7 @@ it('includes explicit library header actions without automatic activation', () =
 });
 
 it.each([false, true])('Store card focus only selects, activation opens details and installation stays guarded (disabled=%s)', disabled => {
-  const html = renderToStaticMarkup(<StoreProductCard product={queuedProduct} selected disabled={disabled} label={disabled ? 'In Install Queue' : 'Install'} select={() => {}} install={() => {}} />);
+  const html = renderToStaticMarkup(<StoreProductCard licensed product={queuedProduct} selected disabled={disabled} label={disabled ? 'In Install Queue' : 'Install'} select={() => {}} install={() => {}} />);
   expect(html).toContain('class="catalog-card selected" data-gamepad-card');
   expect(html).toMatch(/<button[^>]*data-gamepad-auto-select="focus"[^>]*data-gamepad-detail-target/);
   expect(html).not.toContain('data-gamepad-card-activate');

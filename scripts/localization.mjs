@@ -76,7 +76,7 @@ export async function exportCatalogs(destination, folder = directory) {
 
 export async function checkUiKeys(catalog, sourceRoot = path.join(root, 'src')) {
   const errors = [];
-  const unchanged = new Set(['X', 'B', 'G', 'R1', 'L1', 'A', 'Microsoft Store', 'XODUS NEXUS', 'Git', 'Cargo', 'Rust 1.99', 'protoc', 'MiB']);
+  const unchanged = new Set(['X', 'B', 'G', 'R1', 'L1', 'A', 'Microsoft Store', 'NEXUS LAUNCHER', 'Git', 'Cargo', 'Rust 1.99', 'protoc', 'MiB']);
   const visible = new Set(['label', 'title', 'placeholder', 'aria-label', 'alt', 'action']);
   const needsTranslation = text => /[a-zA-Z]{2}/.test(text.trim()) && !unchanged.has(text.trim()) && text.trim() !== '· Microsoft Store' && !text.includes('%command%');
   async function walk(folder) {

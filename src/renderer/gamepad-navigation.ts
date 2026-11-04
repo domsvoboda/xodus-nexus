@@ -91,7 +91,7 @@ export function gridNavigationTarget<T>(from: Rect, targets: readonly { value: T
 
 type Options = { mode: (active: boolean) => void; back: () => void; page: (delta: number) => void; social?: () => void; search?: () => void; keyboard?: (field: SteamKeyboardRequest) => Promise<unknown> };
 const controls = 'button,a[href],input:not([type="hidden"]),select,textarea,summary,[tabindex]';
-const layers = '[role="dialog"][aria-modal="true"],[data-game-menu],[data-gamepad-layer]';
+const layers = '[role="dialog"][aria-modal="true"],[data-game-menu],[data-gamepad-menu],[data-gamepad-layer]';
 const regions = '[data-gamepad-grid],[data-gamepad-filters],[data-gamepad-library-header],[data-gamepad-library-footer],[data-gamepad-detail],.settings-page,.page-scroll,.topbar,.sidebar';
 type FocusMemory = { element: HTMLElement; key?: string; page?: string; region?: HTMLElement; rect: Rect };
 
@@ -373,7 +373,13 @@ export function installGamepadNavigation(win: Window, options: Options): () => v
   const back = () => {
     if (picker) { closePicker(true); return; }
     if (scope instanceof HTMLElement) {
-      if (scope.hasAttribute('data-game-menu')) {
+      if (scope.hasAttribute('data-gamepad-menu')) {
+        // Local menus own Escape. Dispatch on the menu so React's handler
+        // closes only this layer and restores its own trigger.
+        escapeFromPad = true;
+        try { scope.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true })); }
+        finally { escapeFromPad = false; }
+      } else if (scope.hasAttribute('data-game-menu')) {
         escapeFromPad = true;
         try { win.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true })); }
         finally { escapeFromPad = false; }
@@ -510,6 +516,18 @@ export function installGamepadNavigation(win: Window, options: Options): () => v
     // leaving a game detail must not reselect/reset its Library page.
     focus(target);
   };
+  /** Up crosses a nested region to higher page controls before global search.
+   * Only the true page edge reaches search, without leaving a modal scope.
+   * The existing topbar Down exit restores this page's remembered field. */
+  const toTopbar = (element: HTMLElement, direction: Direction) => {
+    if (scope !== doc || direction !== 'up' || !element.closest('.page-scroll')) return;
+    const content = element.closest<HTMLElement>('.page-scroll')!;
+    const above = gridNavigationTarget(focusBox(element).getBoundingClientRect(), candidates(content).filter(target => target !== element)
+      .map(target => ({ value: target, rect: focusBox(target).getBoundingClientRect() })), direction);
+    if (above) return above;
+    const search = doc.querySelector<HTMLElement>('.topbar .search-box input');
+    return search && focusable(search) ? search : undefined;
+  };
   /** Explicit exits first, then the beam, then region fallbacks in priority order. */
   const move = (element: HTMLElement, direction: Direction) => {
     const exit = fromTopbar(element, direction) ?? fromSidebar(element, direction);
@@ -518,6 +536,7 @@ export function installGamepadNavigation(win: Window, options: Options): () => v
     const target = beam.choose(beam.region)
       ?? crossStoreRegions(element, direction, beam)
       ?? crossLibraryRows(element, direction, beam)
+      ?? toTopbar(element, direction)
       ?? toSocialToggle(element, direction);
     if (target) focus(target, true);
     else toSidebar(element, direction);
@@ -538,7 +557,8 @@ export function installGamepadNavigation(win: Window, options: Options): () => v
     }
     else if (value === 'options') {
       const origin = detailReturn && focused()?.closest('[data-gamepad-detail]')?.getAttribute('data-gamepad-detail') === detailReturn.id ? detailReturn.origin : focused();
-      const trigger = origin?.closest('.library-card-wrap')?.querySelector<HTMLElement>('[data-game-menu-trigger]');
+      const trigger = origin?.closest('.social-person-row')?.querySelector<HTMLElement>('[data-gamepad-menu-trigger]')
+        ?? origin?.closest('.library-card-wrap')?.querySelector<HTMLElement>('[data-game-menu-trigger]');
       if (trigger && scope.contains(trigger) && enabled(trigger)) trigger.click();
     } else if (scope instanceof HTMLElement && scope.hasAttribute('data-gamepad-gallery')) {
       // Shoulder buttons change only the active gallery, never the page behind it.

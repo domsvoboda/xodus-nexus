@@ -27,12 +27,14 @@ const search = {
 const catalog = {
   Products: [{
     ProductId: '9GAME123',
+    ProductType: 'Game',
     DisplaySkuAvailabilities: [{ Sku: { Properties: { Packages: [{
       PackageFormat: 'MSIXVC',
       PlatformDependencies: [{ PlatformName: 'Windows.Desktop' }],
     }] } } }],
   }, {
     ProductId: '9BUNDLE1',
+    ProductType: 'Game',
     DisplaySkuAvailabilities: [{ Sku: { Properties: { Packages: [] } } }],
   }],
 };
@@ -208,4 +210,187 @@ describe('CatalogService', () => {
     ] }] }] }))) as typeof fetch;
     expect((await new CatalogService(logo).artwork(['9GAME123'], 'US')).size).toBe(0);
   });
+});
+
+describe('Public Store landing collections', () => {
+  const paidSku = (price: number) => ({ Sku: { SkuType: 'full', Properties: {} }, Availabilities: [{ OrderManagementData: { Price: { MSRP: price, ListPrice: price } } }] });
+  const freeSku = () => ({ Sku: { SkuType: 'full', Properties: {} }, Availabilities: [{ OrderManagementData: { Price: { MSRP: 0, ListPrice: 0 } } }] });
+  const trialSku = () => ({ Sku: { SkuType: 'trial', Properties: { IsTrial: true } }, Availabilities: [{ OrderManagementData: { Price: { MSRP: 0, ListPrice: 0 } } }] });
+  const row = (productId: string, title: string, price: number) => ({ productId, title, isGame: true, priceInfo: { msrp: price, price, displayPrice: price > 0 ? `$${price}` : 'Free' } });
+  const game = (productId: string, skus: unknown[]) => ({ ProductId: productId, ProductType: 'Game', DisplaySkuAvailabilities: skus });
+  const landingFetcher = (collections: Record<string, unknown[]>, details: Record<string, unknown>, requests: string[]) => (async (input: URL | RequestInfo) => {
+    const url = new URL(String(input));
+    if (url.pathname.includes('GetComputedProductsList')) {
+      const name = url.searchParams.get('listName') ?? '', page = Number(url.searchParams.get('pgNo') ?? '1');
+      requests.push(`${name}:${page}`);
+      const payload = collections[name]?.[page - 1];
+      return payload ? new Response(JSON.stringify(payload), { status: 200 }) : new Response('{}', { status: 404 });
+    }
+    if (url.pathname.includes('/v7.0/products')) {
+      const ids = (url.searchParams.get('bigIds') ?? '').split(',').map(id => id.toUpperCase());
+      requests.push(`details:${ids.length}`);
+      return new Response(JSON.stringify({ Products: ids.flatMap(id => details[id] ? [details[id]] : []) }), { status: 200 });
+    }
+    return new Response('{}', { status: 404 });
+  }) as typeof fetch;
+
+  it('fills the landing page from trending plus top paid games inside a bounded request budget', async () => {
+    const requests: string[] = [];
+    const collections = {
+      TopTrending: [
+        { title: 'Trending games', hasMorePages: true, nextPageNumber: 2, productsList: [row('9FREETREND01', 'Free Trending', 0), row('9SHARED00001', 'Shared Paid Game', 19.99), row('9TRENDPAID01', 'Trending Paid', 9.99)] },
+        { title: 'Trending games', hasMorePages: true, nextPageNumber: 3, productsList: [] },
+      ],
+      TopPaid: [
+        { title: 'Top paid games', hasMorePages: true, nextPageNumber: 2, productsList: [row('9SHARED00001', 'Shared Paid Game', 19.99), row('9PAIDONE0001', 'Paid One', 29.99)] },
+        { title: 'Top paid games', hasMorePages: true, nextPageNumber: 3, productsList: [row('9PAIDTWO0001', 'Paid Two', 39.99)] },
+        { title: 'Top paid games', hasMorePages: false, productsList: [row('9PAIDTHREE01', 'Paid Three', 49.99)] },
+      ],
+    };
+    const details = {
+      '9FREETREND01': game('9FREETREND01', [freeSku()]),
+      '9SHARED00001': game('9SHARED00001', [paidSku(19.99)]),
+      '9TRENDPAID01': game('9TRENDPAID01', [paidSku(9.99)]),
+      '9PAIDONE0001': game('9PAIDONE0001', [paidSku(29.99)]),
+      '9PAIDTWO0001': game('9PAIDTWO0001', [paidSku(39.99)]),
+      '9PAIDTHREE01': game('9PAIDTHREE01', [paidSku(49.99)]),
+    };
+    const result = await new CatalogService(landingFetcher(collections, details, requests)).featured('US');
+    expect(result.products.map(product => product.title)).toEqual(['Shared Paid Game', 'Trending Paid', 'Paid One', 'Paid Two', 'Paid Three']);
+    expect(result.products.filter(product => product.productId === '9SHARED00001')).toHaveLength(1);
+    expect(requests.filter(request => request.startsWith('TopTrending'))).toEqual(['TopTrending:1']);
+    expect(requests.filter(request => request.startsWith('TopPaid'))).toEqual(['TopPaid:1', 'TopPaid:2', 'TopPaid:3']);
+    expect(requests.filter(request => request.startsWith('details:')).every(request => Number(request.split(':')[1]) <= 25)).toBe(true);
+    expect(result.query).toBe('Trending games');
+  });
+
+  it('keeps the surviving Store collection when the other one fails', async () => {
+    const trendingOnly = (async (input: URL | RequestInfo) => {
+      const url = new URL(String(input));
+      if (url.pathname.includes('GetComputedProductsList')) {
+        if (url.searchParams.get('listName') === 'TopPaid') return new Response('{}', { status: 503 });
+        return new Response(JSON.stringify({ title: 'Trending games', productsList: [row('9TRENDING01', 'Trending Paid', 9.99)] }), { status: 200 });
+      }
+      return new Response(JSON.stringify({ Products: [game('9TRENDING01', [paidSku(9.99)])] }), { status: 200 });
+    }) as typeof fetch;
+    expect((await new CatalogService(trendingOnly).featured('US')).products.map(product => product.title)).toEqual(['Trending Paid']);
+
+    const paidOnly = (async (input: URL | RequestInfo) => {
+      const url = new URL(String(input));
+      if (url.pathname.includes('GetComputedProductsList')) {
+        if (url.searchParams.get('listName') === 'TopTrending') return new Response('{}', { status: 503 });
+        const page = Number(url.searchParams.get('pgNo') ?? '1');
+        return new Response(JSON.stringify({ title: 'Top paid games', hasMorePages: page < 2, productsList: page === 1 ? [row('9PAIDONLY01', 'Paid Only', 14.99)] : [] }), { status: 200 });
+      }
+      return new Response(JSON.stringify({ Products: [game('9PAIDONLY01', [paidSku(14.99)])] }), { status: 200 });
+    }) as typeof fetch;
+    expect((await new CatalogService(paidOnly).featured('US')).products.map(product => product.title)).toEqual(['Paid Only']);
+  });
+
+  it('fails honestly when every Store collection is unavailable', async () => {
+    const offline = (async () => new Response('{}', { status: 503 })) as typeof fetch;
+    await expect(new CatalogService(offline).featured('US')).rejects.toThrow('TopTrending');
+  });
+
+  it.each([
+    ['string', '2'],
+    ['fractional', 2.5],
+    ['huge jump', 1_000_000],
+    ['repeated current page', 1],
+    ['backward', 0],
+    ['negative sentinel', -1],
+    ['boolean', true],
+    ['missing', undefined],
+  ])('stops pagination on a %s nextPageNumber and keeps the page one results', async (_label, nextPageNumber) => {
+    const requests: string[] = [];
+    const collections = {
+      TopTrending: [{ title: 'Trending games', hasMorePages: false, productsList: [] }],
+      TopPaid: [
+        { title: 'Top paid games', hasMorePages: true, nextPageNumber, productsList: [row('9PAIDPAGE001', 'Paid Page One', 19.99)] },
+        { title: 'Top paid games', hasMorePages: true, nextPageNumber: 2, productsList: [row('9PAIDPAGE002', 'Paid Page Two', 29.99)] },
+        { title: 'Top paid games', hasMorePages: false, productsList: [row('9PAIDPAGE003', 'Paid Page Three', 39.99)] },
+      ],
+    };
+    const details = {
+      '9PAIDPAGE001': game('9PAIDPAGE001', [paidSku(19.99)]),
+      '9PAIDPAGE002': game('9PAIDPAGE002', [paidSku(29.99)]),
+      '9PAIDPAGE003': game('9PAIDPAGE003', [paidSku(39.99)]),
+    };
+    const result = await new CatalogService(landingFetcher(collections, details, requests)).featured('US');
+    expect(result.products.map(product => product.title)).toEqual(['Paid Page One']);
+    expect(requests.filter(request => request.startsWith('TopPaid'))).toEqual(['TopPaid:1']);
+    expect(requests.filter(request => request.startsWith('details:'))).toHaveLength(1);
+  });
+
+  it('never exceeds the paid page budget even when the feed offers further sequential pages', async () => {
+    const requests: string[] = [];
+    const page = (index: number) => ({
+      title: 'Top paid games',
+      hasMorePages: true,
+      nextPageNumber: index + 1,
+      productsList: [row(`9BUDGETPAGE0${index}`, `Budget Page ${index}`, 9.99 + index)],
+    });
+    const collections = {
+      TopTrending: [{ title: 'Trending games', hasMorePages: false, productsList: [] }],
+      TopPaid: [page(1), page(2), page(3), page(4), page(5)],
+    };
+    const details = Object.fromEntries([1, 2, 3, 4, 5].map(index => [`9BUDGETPAGE0${index}`, game(`9BUDGETPAGE0${index}`, [paidSku(9.99 + index)])]));
+    const result = await new CatalogService(landingFetcher(collections, details, requests)).featured('US');
+    expect(requests.filter(request => request.startsWith('TopPaid'))).toEqual(['TopPaid:1', 'TopPaid:2', 'TopPaid:3']);
+    expect(result.products.map(product => product.title)).toEqual(['Budget Page 1', 'Budget Page 2', 'Budget Page 3']);
+  });
+
+  it('excludes trial and demo offers that appear in the top paid collection', async () => {
+    const collections = {
+      TopTrending: [{ title: 'Trending games', hasMorePages: false, productsList: [] }],
+      TopPaid: [{ title: 'Top paid games', hasMorePages: false, productsList: [row('9TRIALONLY01', 'Trial Only', 29.99), row('9PAIDWITHDEMO', 'Paid With Demo', 39.99)] }],
+    };
+    const details = {
+      '9TRIALONLY01': game('9TRIALONLY01', [trialSku()]),
+      '9PAIDWITHDEMO': game('9PAIDWITHDEMO', [trialSku(), paidSku(39.99)]),
+    };
+    const result = await new CatalogService(landingFetcher(collections, details, [])).featured('US');
+    expect(result.products.map(product => product.title)).toEqual(['Paid With Demo']);
+  });
+});
+
+describe('Store-only offer policy',()=>{
+ const sku=(price:number,props:Record<string,unknown>={},type='full')=>({Sku:{SkuType:type,Properties:props},Availabilities:[{OrderManagementData:{Price:{MSRP:price,ListPrice:price}}}]});
+ const parse=(skus:unknown[],extra={},policy:'store'|'library'='store')=>parseCatalogProducts({productsList:[{productId:'9AAAAAAAAAAA',title:'Free Spirit',isGame:true,...extra}]},{Products:[{ProductId:'9AAAAAAAAAAA',ProductType:'Game',DisplaySkuAvailabilities:skus}]},policy);
+ it('excludes structured free, trial and demo but retains paid and missing/malformed prices',()=>{
+  expect(parse([sku(0)])).toEqual([]);
+  expect(parse([sku(0,{IsTrial:true})])).toEqual([]);
+  expect(parse([sku(0,{},'demo')])).toEqual([]);
+  expect(parse([sku(10,{IsDemo:true})])).toEqual([]);
+  expect(parse([null,{},sku(0,{IsTrial:true})])).toEqual([]);
+  expect(parse([sku(25,{IsTrial:false})],{plaintextPassName:'PC Game Pass'})).toHaveLength(1);
+  expect(parse([])).toHaveLength(1);
+  expect(parse([],{priceInfo:{displayPrice:'Free',price:null}})).toHaveLength(1);
+  expect(parse([],{priceInfo:{price:'0',isFree:'true'}})).toHaveLength(1);
+  expect(parse([],{priceInfo:{price:0}})).toEqual([]);
+ });
+ it('uses retail SKU metadata without mistaking an optional trial for the full edition',()=>{
+  expect(parse([sku(0,{IsTrial:true}),sku(40,{IsTrial:false})])).toHaveLength(1);
+  expect(parse([sku(40,{IsTrial:false}),sku(0,{IsTrial:true})])).toHaveLength(1);
+  expect(parse([sku(0,{IsTrial:true})],{},'library')).toHaveLength(1);
+  expect(parse([sku(0)],{},'library')).toHaveLength(1);
+  expect(parse([sku(0),{Sku:{Properties:{IsTrial:false}}}])).toHaveLength(1);
+  expect(parse([{Sku:{Properties:{IsTrial:false}},Availabilities:[{OrderManagementData:{Price:{MSRP:'malformed',ListPrice:0}}}]}])).toHaveLength(1);
+ });
+ it('never resolves package support or bundle children from explicit trial/preorder SKUs',()=>{
+  const pkg={Packages:[{PackageFormat:'MSIXVC',PlatformDependencies:[{PlatformName:'Windows.Desktop'}]}]};
+  expect(parse([sku(0,{...pkg,IsTrial:true}),sku(30,{IsTrial:false})])[0].installability).not.toBe('supported');
+  expect(parse([sku(30,{...pkg,IsPreOrder:true}),sku(30,{IsTrial:false})])[0].installability).not.toBe('supported');
+ });
+ it('handles malformed rows without treating absent prices as free',()=>{
+  expect(parseCatalogProducts({productsList:[null,{},false,{productId:'9AAAAAAAAAAA',title:'Valid'}]}, {Products:[null,{ProductId:'9AAAAAAAAAAA',ProductType:'Game'}]},'store')).toHaveLength(1);
+ });
+ it('applies the same policy to actual search and featured service paths while preserving licensed games',async()=>{
+  const id='9AAAAAAAAAAA';
+  const fetcher=async(input:unknown)=>new Response(JSON.stringify(String(input).includes('displaycatalog')?{Products:[{ProductId:id,ProductType:'Game',LocalizedProperties:[{ProductTitle:'Owned free game'}],DisplaySkuAvailabilities:[sku(0)]}]}:{productsList:[{productId:id,title:'Free game',isGame:true}]}),{status:200});
+  const service=new CatalogService(fetcher as typeof fetch);
+  expect((await service.search('Free game','US')).products).toEqual([]);
+  expect((await service.featured('US')).products).toEqual([]);
+  expect(await service.licensedProducts([id],'US')).toHaveLength(1);
+ });
 });

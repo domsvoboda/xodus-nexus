@@ -5,9 +5,12 @@ const games=demoSnapshot().games;
 it('keeps installed identities separate from a read-only catalog target',()=>{
  expect(gameDetailsTarget(games[0].id,games)).toEqual({game:games[0],productId:games[0].storeId});
  expect(gameDetailsTarget({productId:'9AAAAAAAAAAA'},games)).toEqual({productId:'9AAAAAAAAAAA'});
+ expect(gameDetailsTarget({productId:'9AAAAAAAAAAA',scope:'public-store'},games)).toEqual({productId:'9AAAAAAAAAAA',scope:'public-store'});
  expect(()=>gameDetailsTarget('9AAAAAAAAAAA',games)).toThrow('Game not found');
 });
-it.each([null,[],{},123,{productId:'bad'},{productId:'9aaaaaaaaaaa'},{productId:'9AAAAAAAAAAA',path:'/tmp/game'},{productId:'9AAAAAAAAAAA',titleId:'123'},{productId:['9AAAAAAAAAAA']}])('rejects malformed catalog targets without accepting a path or caller title ID: %j',value=>{
+it.each([null,[],{},123,{productId:'bad'},{productId:'9aaaaaaaaaaa'},{productId:'9AAAAAAAAAAA',path:'/tmp/game'},{productId:'9AAAAAAAAAAA',titleId:'123'},{productId:['9AAAAAAAAAAA']},
+ {productId:'9AAAAAAAAAAA',scope:'account'},{productId:'9AAAAAAAAAAA',scope:'PUBLIC-STORE'},{productId:'9AAAAAAAAAAA',scope:'publicStore'},{productId:'9AAAAAAAAAAA',scope:null},{productId:'9AAAAAAAAAAA',scope:true},{productId:'9AAAAAAAAAAA',scope:42},
+ {productId:'9AAAAAAAAAAA',scope:'public-store',path:'/tmp/game'},{productId:'9AAAAAAAAAAA',scope:'public-store',titleId:'123'},{scope:'public-store',productId:'bad'},{scope:'public-store'}])('rejects malformed catalog targets without accepting a path, caller title ID or unknown scope: %j',value=>{
  expect(()=>gameDetailsTarget(value,games)).toThrow();
 });
 it('uses only one exact, validated Display Catalog XboxTitleId mapping',()=>{

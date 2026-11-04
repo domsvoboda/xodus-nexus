@@ -246,6 +246,167 @@ it('handles case-insensitive SRC metadata with a wildcard root layout and safe r
   expect(await fs.readFile(path.join(f.directory, 'MicrosoftGame.config'), 'utf8')).toBe(childXml());
 });
 
+async function destinationConfigFixture() {
+  const f = await installFixture();
+  await fs.mkdir(path.join(f.directory, 'Assets'));
+  await fs.rename(path.join(f.directory, 'logo.PNG'), path.join(f.directory, 'Assets', 'logo.PNG'));
+  await fs.mkdir(path.join(f.directory, 'SRC'));
+  await fs.rename(path.join(f.directory, 'MicrosoftGame.Config'), path.join(f.directory, 'SRC', 'MicrosoftGame.config'));
+  await fs.writeFile(path.join(f.directory, `layout_${GUID}.xml`), '<Package><Chunk><FileGroup DestinationPath="\\SRC" SourcePath="." Include="*.*"/><FileGroup DestinationPath="\\Assets" SourcePath=".\\Assets" Include="*.*"/></Chunk></Package>');
+  return f;
+}
+async function snapshotTree(directory: string): Promise<string[]> {
+  const paths = (await fs.readdir(directory, { recursive: true }) as string[]).sort(), rows: string[] = [];
+  for (const relative of paths) {
+    const file = path.join(directory, relative), stat = await fs.lstat(file);
+    rows.push(`${relative}|${stat.isDirectory() ? 'd' : stat.isSymbolicLink() ? 'l' : await fs.readFile(file, 'utf8')}`);
+  }
+  return rows;
+}
+it('installs the actual destination-coordinate SRC layout and preserves the exact declared config (#383)', async () => {
+  const f = await destinationConfigFixture();
+  await f.manager.complete(f.game, f.selected);
+  expect(await fs.readFile(path.join(f.directory, 'MicrosoftGame.config'), 'utf8')).toBe(childXml());
+  expect(await fs.readFile(path.join(f.directory, 'SRC', 'MicrosoftGame.config'), 'utf8')).toBe(childXml());
+  expect(await f.manager.roots(f.game)).toEqual([f.directory]);
+  await f.manager.complete(f.game, f.selected);
+  expect(await f.manager.roots(f.game)).toEqual([f.directory]);
+  await fs.writeFile(path.join(f.directory, 'SRC', 'MicrosoftGame.config'), childXml(PAID));
+  expect(await f.manager.roots(f.game)).toEqual([]);
+});
+it('accepts case-insensitive destination metadata without rewriting the declared layout (#383)', async () => {
+  const f = await destinationConfigFixture();
+  await fs.rename(path.join(f.directory, 'SRC'), path.join(f.directory, 'src'));
+  await fs.rename(path.join(f.directory, 'src', 'MicrosoftGame.config'), path.join(f.directory, 'src', 'MICROSOFTGAME.CONFIG'));
+  await fs.writeFile(path.join(f.directory, `layout_${GUID}.xml`), '<Package><Chunk><FileGroup DestinationPath="\\sRc" SourcePath="." Include="*"/><FileGroup DestinationPath="\\Assets" SourcePath=".\\Assets" Include="*.*"/></Chunk></Package>');
+  await f.manager.complete(f.game, f.selected);
+  expect(await fs.readFile(path.join(f.directory, 'MicrosoftGame.config'), 'utf8')).toBe(childXml());
+  expect(await fs.readFile(path.join(f.directory, 'src', 'MICROSOFTGAME.CONFIG'), 'utf8')).toBe(childXml());
+  expect(await f.manager.roots(f.game)).toEqual([f.directory]);
+});
+it('rejects ambiguous, excluded or unsafe destination layouts without mutating content (#383)', async () => {
+  const layout = (body: string) => `<Package><Chunk>${body}</Chunk></Package>`;
+  const assets = '<FileGroup DestinationPath="\\Assets" SourcePath=".\\Assets" Include="*.*"/>';
+  const reasons: Record<string, string> = {
+    'ambiguous-mapping': 'unambiguously mapped', exclude: 'unambiguously mapped', identity: 'does not match', dependency: 'does not match',
+    conflict: 'Conflicting root and SRC', 'source-traversal': 'Unsupported content layout path', 'destination-traversal': 'Unsupported content layout path',
+    drive: 'Unsupported content layout path', unc: 'Unsupported content layout path', control: 'Unsupported content layout path',
+    symlink: 'Invalid content payload directory', payload: 'declared by the content layout is missing', 'payload-ambiguous': 'Missing or ambiguous content payload directory',
+  };
+  for (const [failure, reason] of Object.entries(reasons)) {
+    const f = await destinationConfigFixture();
+    if (failure === 'ambiguous-mapping') await fs.writeFile(path.join(f.directory, `layout_${GUID}.xml`), layout('<FileGroup DestinationPath="\\SRC" SourcePath="." Include="*.*"/><FileGroup DestinationPath="." SourcePath="SRC" Include="MicrosoftGame.config"/>' + assets));
+    if (failure === 'exclude') await fs.writeFile(path.join(f.directory, `layout_${GUID}.xml`), layout('<FileGroup DestinationPath="\\SRC" SourcePath="." Include="*.*" Exclude="MicrosoftGame.config"/>' + assets));
+    if (failure === 'identity') await fs.writeFile(path.join(f.directory, 'SRC', 'MicrosoftGame.config'), childXml(PAID));
+    if (failure === 'dependency') await fs.writeFile(path.join(f.directory, 'appxmanifest.xml'), appxXml.replace('Example.Base', 'Example.Other'));
+    if (failure === 'conflict') await fs.writeFile(path.join(f.directory, 'MicrosoftGame.config'), childXml(PAID));
+    if (failure === 'source-traversal') await fs.writeFile(path.join(f.directory, `layout_${GUID}.xml`), layout('<FileGroup DestinationPath="\\SRC" SourcePath="..\\outside" Include="*.*"/>' + assets));
+    if (failure === 'destination-traversal') await fs.writeFile(path.join(f.directory, `layout_${GUID}.xml`), layout('<FileGroup DestinationPath="\\..\\outside" SourcePath="." Include="*.*"/>' + assets));
+    if (failure === 'drive') await fs.writeFile(path.join(f.directory, `layout_${GUID}.xml`), layout('<FileGroup DestinationPath="C:\\SRC" SourcePath="." Include="*.*"/>' + assets));
+    if (failure === 'unc') await fs.writeFile(path.join(f.directory, `layout_${GUID}.xml`), layout('<FileGroup DestinationPath="\\\\server\\share" SourcePath="." Include="*.*"/>' + assets));
+    if (failure === 'control') await fs.writeFile(path.join(f.directory, `layout_${GUID}.xml`), layout('<FileGroup DestinationPath="\\S&#x1;RC" SourcePath="." Include="*.*"/>' + assets));
+    if (failure === 'symlink') {
+      await fs.rename(path.join(f.directory, 'Assets'), path.join(f.root, 'outside-assets'));
+      await fs.symlink(path.join(f.root, 'outside-assets'), path.join(f.directory, 'Assets'));
+    }
+    if (failure === 'payload') await fs.unlink(path.join(f.directory, 'Assets', 'logo.PNG'));
+    if (failure === 'payload-ambiguous') {
+      await fs.mkdir(path.join(f.directory, 'assets'));
+      await fs.writeFile(path.join(f.directory, 'assets', 'logo.PNG'), 'conflicting payload');
+    }
+    const before = await snapshotTree(f.directory);
+    await expect(f.manager.complete(f.game, f.selected)).rejects.toThrow(reason);
+    expect(await snapshotTree(f.directory)).toEqual(before);
+    expect(await f.manager.roots(f.game)).toEqual([]);
+  }
+});
+
+
+// A package can be built from a staging tree whose source coordinate is a build
+// path while the package root is the declared destination. Such a tree is
+// already deployed when the metadata and payloads sit at the root.
+async function rootDestinationFixture() {
+  const f = await installFixture();
+  await fs.mkdir(path.join(f.directory, 'Assets'));
+  await fs.rename(path.join(f.directory, 'logo.PNG'), path.join(f.directory, 'Assets', 'logo.PNG'));
+  await fs.writeFile(path.join(f.directory, `layout_${GUID}.xml`), '<Package><Chunk><FileGroup SourcePath="build" DestinationPath="\\" Include="MicrosoftGame.config"/><FileGroup SourcePath="build\\Assets" DestinationPath="\\Assets" Include="*.*"/></Chunk></Package>');
+  return f;
+}
+// The metadata group is coordinate-neutral because its source path equals the
+// deployed root; only the payload groups carry coordinate evidence.
+async function neutralMetadataRootFixture() {
+  const f = await installFixture();
+  await fs.mkdir(path.join(f.directory, 'Assets'));
+  await fs.rename(path.join(f.directory, 'logo.PNG'), path.join(f.directory, 'Assets', 'logo.PNG'));
+  await fs.writeFile(path.join(f.directory, `layout_${GUID}.xml`), '<Package><Chunk><FileGroup SourcePath="." DestinationPath="\\" Include="MicrosoftGame.config"/><FileGroup SourcePath="build\\Assets" DestinationPath="\\Assets" Include="*.*"/></Chunk></Package>');
+  return f;
+}
+it('accepts an already-deployed root tree whose declared source coordinate is a build path', async () => {
+  const f = await rootDestinationFixture();
+  const configBytes = await fs.readFile(path.join(f.directory, 'MicrosoftGame.Config'));
+  await f.manager.complete(f.game, f.selected);
+  expect((await fs.readFile(path.join(f.directory, 'MicrosoftGame.Config'))).equals(configBytes)).toBe(true);
+  expect(await f.manager.roots(f.game)).toEqual([f.directory]);
+  await f.manager.complete(f.game, f.selected);
+  expect(await f.manager.roots(f.game)).toEqual([f.directory]);
+});
+it('accepts case-insensitive root destination metadata and payload without rewriting them', async () => {
+  const f = await rootDestinationFixture();
+  await fs.rename(path.join(f.directory, 'Assets'), path.join(f.directory, 'assets'));
+  await fs.rename(path.join(f.directory, 'MicrosoftGame.Config'), path.join(f.directory, 'MICROSOFTGAME.CONFIG'));
+  const configBytes = await fs.readFile(path.join(f.directory, 'MICROSOFTGAME.CONFIG'));
+  await f.manager.complete(f.game, f.selected);
+  expect((await fs.readFile(path.join(f.directory, 'MICROSOFTGAME.CONFIG'))).equals(configBytes)).toBe(true);
+  expect(await f.manager.roots(f.game)).toEqual([f.directory]);
+});
+it('resolves a root tree by whole-layout evidence when the metadata group is coordinate-neutral', async () => {
+  const f = await neutralMetadataRootFixture();
+  await f.manager.complete(f.game, f.selected);
+  expect(await f.manager.roots(f.game)).toEqual([f.directory]);
+});
+it('rejects a root tree that resolves under both layout coordinates and never mixes groups', async () => {
+  const f = await neutralMetadataRootFixture();
+  await fs.mkdir(path.join(f.directory, 'build', 'Assets'), { recursive: true });
+  await fs.writeFile(path.join(f.directory, 'build', 'Assets', 'logo.PNG'), 'conflicting payload');
+  const before = await snapshotTree(f.directory);
+  await expect(f.manager.complete(f.game, f.selected)).rejects.toThrow('matches both layout coordinates');
+  expect(await snapshotTree(f.directory)).toEqual(before);
+  expect(await f.manager.roots(f.game)).toEqual([]);
+});
+it('rejects a root tree whose groups only resolve under different coordinates', async () => {
+  const f = await installFixture();
+  await fs.mkdir(path.join(f.directory, 'payload'));
+  await fs.rename(path.join(f.directory, 'logo.PNG'), path.join(f.directory, 'payload', 'logo.PNG'));
+  await fs.mkdir(path.join(f.directory, 'extra'));
+  await fs.writeFile(path.join(f.directory, 'extra', 'value.dat'), 'source payload');
+  await fs.writeFile(path.join(f.directory, `layout_${GUID}.xml`), '<Package><Chunk><FileGroup SourcePath="." DestinationPath="\\" Include="MicrosoftGame.config"/><FileGroup SourcePath="build\\only" DestinationPath="\\payload" Include="*.png"/><FileGroup SourcePath="extra" DestinationPath="\\out" Include="*.dat"/></Chunk></Package>');
+  const before = await snapshotTree(f.directory);
+  await expect(f.manager.complete(f.game, f.selected)).rejects.toThrow('declared by the content layout is missing');
+  expect(await snapshotTree(f.directory)).toEqual(before);
+  expect(await f.manager.roots(f.game)).toEqual([]);
+});
+it('rejects a root destination tree with missing or ambiguous payload paths', async () => {
+  for (const [failure, reason] of [['missing', 'declared by the content layout is missing'], ['ambiguous', 'Missing or ambiguous content payload directory.']] as const) {
+    const f = await rootDestinationFixture();
+    if (failure === 'missing') await fs.unlink(path.join(f.directory, 'Assets', 'logo.PNG'));
+    if (failure === 'ambiguous') {
+      await fs.mkdir(path.join(f.directory, 'assets'));
+      await fs.writeFile(path.join(f.directory, 'assets', 'logo.PNG'), 'conflicting payload');
+    }
+    const before = await snapshotTree(f.directory);
+    await expect(f.manager.complete(f.game, f.selected)).rejects.toThrow(reason);
+    expect(await snapshotTree(f.directory)).toEqual(before);
+    expect(await f.manager.roots(f.game)).toEqual([]);
+  }
+});
+it('rejects a root tree whose declared metadata group is excluded from the layout', async () => {
+  const f = await rootDestinationFixture();
+  await fs.writeFile(path.join(f.directory, `layout_${GUID}.xml`), '<Package><Chunk><FileGroup SourcePath="build" DestinationPath="\\" Include="MicrosoftGame.config" Exclude="MicrosoftGame.Config"/><FileGroup SourcePath="build\\Assets" DestinationPath="\\Assets" Include="*.*"/></Chunk></Package>');
+  const before = await snapshotTree(f.directory);
+  await expect(f.manager.complete(f.game, f.selected)).rejects.toThrow('unambiguously mapped');
+  expect(await snapshotTree(f.directory)).toEqual(before);
+  expect(await f.manager.roots(f.game)).toEqual([]);
+});
 
 async function installedWithoutDeclaredContent() {
   const f = await installFixture();

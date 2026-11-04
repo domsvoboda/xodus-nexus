@@ -1,7 +1,7 @@
-.account-header { display: flex; align-items: center; gap: 2px; position: relative; }
-.account-header .account-summary { flex: 1; min-width: 0; grid-template-columns: 36px minmax(0,1fr); gap: 8px; }
-.notifications { flex: 0 0 36px; }
-.notification-bell { width: 36px; height: 38px; border: 0; border-radius: 4px; background: transparent; cursor: pointer; position: relative; display: grid; place-items: center; }
+.account-header { display: flex; align-items: center; gap: 4px; position: relative; margin-bottom: 13px; }
+.account-header .account-summary { flex: 1; min-width: 0; margin-bottom: 0; grid-template-columns: 36px minmax(0,1fr); gap: 8px; }
+.notifications { flex: 0 0 44px; }
+.notification-bell { width: 44px; height: 44px; border: 0; border-radius: 4px; background: transparent; cursor: pointer; position: relative; display: grid; place-items: center; }
 .notification-bell:hover, .notification-bell[aria-expanded="true"] { background: #3a3e44; }
 .notification-bell > svg { width: 19px; height: 19px; }
 .notification-badge { position: absolute; top: 1px; right: 0; min-width: 15px; padding: 1px 3px; border-radius: 4px; background: #378a39; border: 1px solid #272a30; color: white; font-size: 10px; font-weight: 700; line-height: 13px; }
@@ -23,3 +23,11 @@
 .notification-panel strong { font-size: 13px; overflow-wrap: anywhere; }
 .notification-panel small { font-size: 11px; color: #bac0c7; }
 .notification-panel i { width: 6px; height: 6px; border-radius: 50%; background: #83cc6b; flex: 0 0 6px; }
+
+/* Keep both profile and notifications at the top of the compact sidebar,
+   with separate touch targets instead of shrinking the avatar underneath the bell. */
+@media (max-width: 1100px) {
+  .account-header { flex-direction: column; gap: 4px; }
+  .account-header .account-summary { flex: 0 0 44px; width: 44px; height: 44px; min-width: 44px; padding: 4px; grid-template-columns: 1fr; justify-items: center; }
+  .account-header .notifications { flex: 0 0 44px; }
+}

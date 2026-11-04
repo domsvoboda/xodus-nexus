@@ -32,7 +32,23 @@ jobs:
           node-version: '22'
           cache: npm
       - run: npm ci
+      - name: Resolve source check mode
+        id: source_mode
+        env:
+          NEXUS_EVENT_NAME: ${{ github.event_name }}
+          NEXUS_EVENT_PATH: ${{ github.event_path }}
+        run: node scripts/ci/source-check-plan.mjs resolve-mode
+      - name: Validate source check mode
+        env:
+          NEXUS_SOURCE_CHECK_MODE: ${{ steps.source_mode.outputs.mode }}
+        run: node scripts/ci/source-check-plan.mjs validate-mode
+      - name: Report source-only omissions
+        if: steps.source_mode.outputs.mode == 'source-only'
+        env:
+          NEXUS_SOURCE_CHECK_MODE: ${{ steps.source_mode.outputs.mode }}
+        run: node scripts/ci/source-check-plan.mjs report
       - name: Install account-free runtime fixture toolchain
+        if: steps.source_mode.outputs.mode == 'full'
         timeout-minutes: 15
         run: |
           sudo "$(command -v node)" scripts/ci/ubuntu-mirror.mjs
@@ -44,7 +60,14 @@ jobs:
       - name: Build and check the main candidate once
         if: github.ref == 'refs/heads/main' && !contains(github.event.head_commit.message, '[source-only]')
         run: npm run build
-      - run: npm run test:runtime-tools
+      - name: Run full runtime tool tests
+        if: steps.source_mode.outputs.mode == 'full'
+        run: npm run test:runtime-tools
+      - name: Run noncompiling runtime tool tests
+        if: steps.source_mode.outputs.mode == 'source-only'
+        env:
+          NEXUS_SOURCE_CHECK_MODE: ${{ steps.source_mode.outputs.mode }}
+        run: node scripts/ci/source-check-plan.mjs run-runtime-tools
       - run: npm run test:ci-tools
       - name: Build launcher candidate (never publish)
         if: github.ref == 'refs/heads/main' && !contains(github.event.head_commit.message, '[source-only]')

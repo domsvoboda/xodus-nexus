@@ -3,8 +3,10 @@ import { BACKEND_ARCH_SUFFIX, currentArch, type NexusArch } from './arch.js';
 
 export const BACKEND_REPOSITORY = 'domsvoboda/nexus-backend';
 export const LEGACY_BACKEND_REPOSITORY = 'domsvoboda/xodus-nexus';
+export const RENAMED_LEGACY_BACKEND_REPOSITORY = 'domsvoboda/nexus-launcher';
+export const LEGACY_BACKEND_REPOSITORIES = [LEGACY_BACKEND_REPOSITORY, RENAMED_LEGACY_BACKEND_REPOSITORY] as const;
 export const BACKEND_REPOSITORIES = [BACKEND_REPOSITORY, LEGACY_BACKEND_REPOSITORY] as const;
-export type BackendRepository = typeof BACKEND_REPOSITORIES[number];
+export type BackendRepository = typeof BACKEND_REPOSITORIES[number] | typeof RENAMED_LEGACY_BACKEND_REPOSITORY;
 export const backendLock = JSON.parse(readFileSync(new URL('../../assets/backend-source.lock.json', import.meta.url), 'utf8')) as {
   schema: 2; version: string; minimumVersion: string; repository: string; commit: string; rust: string;
   cargoLockSha256: string; buildConfigSha256: string; compatibility: string;
@@ -32,7 +34,7 @@ export interface BackendPackageManifest {
 export function validateBackendManifest(value: unknown, arch: NexusArch = currentArch(), repository?: BackendRepository): BackendPackageManifest {
   const item = value as BackendPackageManifest | undefined;
   if (!item || ![1, 2].includes(item.schema) ||
-      (item.schema === 1 && (item.sourceRepository !== undefined || (repository && repository !== LEGACY_BACKEND_REPOSITORY))) ||
+      (item.schema === 1 && (item.sourceRepository !== undefined || (repository && !LEGACY_BACKEND_REPOSITORIES.some(repo => repo === repository)))) ||
       (item.schema === 2 && (item.sourceRepository !== BACKEND_REPOSITORY || (repository && repository !== BACKEND_REPOSITORY))) || item.authUi !== 'electron' || !/^\d+\.\d+\.\d+$/.test(item.version ?? '') ||
       compareVersions(item.version, minimumBackendVersion) < 0 ||
       !/^[a-f0-9]{40}$/.test(item.commit ?? '') || !/^[a-f0-9]{64}$/.test(item.recipeSha256 ?? '') ||
@@ -47,7 +49,7 @@ export function validateBackendManifest(value: unknown, arch: NexusArch = curren
 }
 
 export function backendAssetUrl(tag: string, name: string, url: unknown, repository: BackendRepository = BACKEND_REPOSITORY): string {
-  if (!BACKEND_REPOSITORIES.includes(repository)) throw new Error('Unexpected backend repository.');
+  if (![...BACKEND_REPOSITORIES, RENAMED_LEGACY_BACKEND_REPOSITORY].includes(repository)) throw new Error('Unexpected backend repository.');
   const expected = `https://github.com/${repository}/releases/download/${encodeURIComponent(tag)}/${name}`;
   if (url !== expected) throw new Error('Unexpected backend release asset URL.');
   return expected;

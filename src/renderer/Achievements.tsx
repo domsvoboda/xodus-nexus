@@ -95,7 +95,7 @@ export function Achievements({ gameId, target=gameId, title, data }: { gameId: s
     void window.launcher.getGameAchievements(target, refresh).then(value => { if (request.current === id) setValue(value); })
       .catch(() => { if (request.current === id) setValue({ status: 'error' }); })
       .finally(() => { if (request.current === id) setLoading(false); });
-  }, [target, data.auth.username, data.auth.stored, data.auth.running, data.backend.binaryPath, data.backend.capabilities.achievements, data.settings.market]);
+  }, [target, data.auth.username, data.auth.player, data.auth.stored, data.auth.running, data.backend.binaryPath, data.backend.capabilities.achievements, data.settings.market]);
   useEffect(() => { setValue(undefined); load(); return () => { request.current++; }; }, [load]);
   return <AchievementsContent title={title} value={value} loading={loading} refresh={() => load(true)} />;
 }

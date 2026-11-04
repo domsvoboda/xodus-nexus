@@ -15,7 +15,7 @@ export async function ensureOverlayDesktopEntry(appImage:string,dataRoot=process
  await fs.mkdir(directory,{recursive:true});const temporary=await fs.mkdtemp(path.join(directory,'.nexus-guide-'));
  try{
   const entry=path.join(temporary,'entry.desktop');
-  await fs.writeFile(entry,`[Desktop Entry]\nType=Application\nName=Xodus Nexus\nExec="${quoted}" %U\nNoDisplay=true\nStartupWMClass=org.xodusgaming.nexus\nX-Nexus-Managed=true\n`,{mode:0o600,flag:'wx'});await fs.rename(entry,file);
+  await fs.writeFile(entry,`[Desktop Entry]\nType=Application\nName=Nexus Launcher\nExec="${quoted}" %U\nNoDisplay=true\nStartupWMClass=org.xodusgaming.nexus\nX-Nexus-Managed=true\n`,{mode:0o600,flag:'wx'});await fs.rename(entry,file);
  }finally{await fs.rm(temporary,{recursive:true,force:true});}
 }
 export class XboxOverlayShortcut {
