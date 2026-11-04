@@ -30,33 +30,44 @@ its original loader, wineserver, the runtime compatibility helpers, both Windows
 ABIs of XGameRuntime, WinHTTP and nghttp2, and the default prefix template.
 A receipt is an installer contract, not a substitute for native candidate gates.
 
-## Prefix and session rules
+## Family and prefix rules
 
-Selecting a managed family requires an explicit separate-prefix choice and a
-server-captured per-game build approval (`buildId`, `manifestSha256`, and
-`sourceCommit`). Approval requires a fresh transient action plus an expected
-build precondition matching the once-resolved verified descriptor. Expected
-renderer hashes are compared for staleness, never persisted as authority.
-Ordinary title or locale Save preserves the existing approval without rebinding.
-Opening Game settings refreshes only the local verified-family listing, without
-changing the default Wine path or refreshing an account.
+A selected managed family follows its latest successfully installed verified
+build. Every new launch resolves the current family receipt and uses it
+directly. The existing prefix and local saves are reused in place. No migration,
+copy, transfer or prefix initialization occurs when saving the selection.
 
-This model resolves the current family receipt only. If the installed family
-pointer changes, the prior game's approval fails closed before any new prefix is
-created. Old build files, prefixes and saves remain intact. Game settings offer
-explicit same-family approval for the current build; fresh consent resets when
-that displayed build changes. Automatic updates never authorize empty prefixes
-for an already configured game.
+Selecting a family for the first time requires an explicit separate-prefix
+choice; changing family is a separate explicit choice. New family prefixes live
+under `runtime-prefixes/<family>/prefixes/<gameId>/`. Pre-0.5 build-bound
+prefixes remain under `runtime-prefixes/<family>/<buildId>/<gameId>/` and are
+preserved by their recorded build origin as prefix anchors, not as runtime
+selections. The default family keeps `compatdata/<gameId>` and
+`prefixes/<gameId>`. Unknown or mismatched prefix bindings fail closed, and a
+nonempty unbound prefix is never adopted.
 
-Each approved build uses its own prefix. That prefix lives under `runtime-prefixes/<family>/<buildId>/<gameId>/`, separately
-from default `compatdata/<gameId>` and `prefixes/<gameId>`. Existing local saves
-stay in their old prefix. No copying, transfer or prefix initialization occurs
-when saving the selection. Unknown or mismatched prefix bindings fail closed.
+## Session rules
 
 Play and VC++ preparation capture one verified runtime and prefix before use.
 Stop retains the generated runner and wineserver for that session. Later
 selection or pointer changes cannot redirect it. Removal or cleanup must retain
 runtime releases referenced by active sessions or retained prefixes.
+
+## Retained builds and rollback
+
+Installers call `retainRuntimeFamilyBuild` before replacing the current receipt.
+It verifies the current build, writes an exact retained receipt under
+`variants/<family>/receipts/<buildId>.json`, and revalidates that current did not
+change before publishing. Reads never synthesize receipts or adopt arbitrary
+release directories.
+
+`resolveRuntimeFamily` uses the current receipt for discovery and every new
+family launch. `resolveRuntimeFamilyBuild` is an exact retained-build lookup for
+rollback and lifetime tooling, not a per-game launch selection. Old build files,
+prefixes and saves remain in place while a running session, a retained prefix or
+a rollback needs them.
+
+## Verification
 
 Verification streams and hashes the full payload on first resolution or after
 invalidation. A bounded in-memory cache compares complete inventory and file
