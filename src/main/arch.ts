@@ -15,7 +15,7 @@ export function nexusArch(arch: string = process.arch): NexusArch | undefined {
 /** The architecture this launcher process runs as; its downloads must match it. */
 export function currentArch(arch: string = process.arch): NexusArch {
   const supported = nexusArch(arch);
-  if (!supported) throw new Error(`Xodus Nexus does not support ${arch} hosts.`);
+  if (!supported) throw new Error(`Nexus Launcher does not support ${arch} hosts.`);
   return supported;
 }
 

@@ -44,7 +44,7 @@ describe('private auth transport', () => {
       else expect((await tracked.result).code).toBe(0);
     } finally { await fs.rm(root, { recursive: true, force: true }); }
   });
-  it.each(['success', 'invalid', 'no-handshake', 'cancel', 'load-failure', 'credential-failure', 'unknown-credential'])('handles %s without exposing protocol output', async mode => {
+  it.each([false, true].flatMap(player => ['success', 'invalid', 'no-handshake', 'cancel', 'load-failure', 'credential-failure', 'unknown-credential'].map(mode => ({player, mode}))))('handles $mode, player=$player without exposing protocol output', async ({mode, player}) => {
     const root = await fs.mkdtemp(path.join(os.tmpdir(), 'nexus-auth-fixture-'));
     let disposed = false, opens = 0, closes = 0;
     try {
@@ -54,7 +54,8 @@ describe('private auth transport', () => {
         async open(frame) { opens++; if (mode === 'cancel') cancel(frame.session); else if (mode === 'load-failure') throw Error('synthetic-secret'); else send(frame.session, '{"synthetic":"not-a-real-token"}'); },
         close() { closes++; }, async context() {}, async dispose() { disposed = true; },
       });
-      const tracked = startAuthTransport(binary, factory, { ...process.env, FIXTURE_MODE: mode }, 3000);
+      const tracked = startAuthTransport(binary, factory, { ...process.env, FIXTURE_MODE: mode }, 3000, player);
+      expect(tracked.child.spawnargs).toEqual([binary, '--external-webview-stdio', 'login', ...(player ? ['--player'] : [])]);
       if (mode === 'credential-failure') { await expect(tracked.result).rejects.toThrow('keyring did not return the credentials just saved'); expect(opens).toBe(0); }
       else if (mode === 'invalid' || mode === 'no-handshake' || mode === 'load-failure' || mode === 'unknown-credential') await expect(tracked.result).rejects.toThrow(/sign-in/i);
       else { const result = await tracked.result; expect(result.code).toBe(mode === 'cancel' ? 1 : 0); expect(result.output).toBe(''); }

@@ -12,5 +12,5 @@ it('prepares sign-in quietly without a backend progress card and blocks it until
 it('offers an explicit backend retry after failure without forcing sign-in or wizard completion',()=>{
  const data=demoSnapshot();data.backend.available=false;data.backend.updating=false;data.backend.checking=false;data.backend.blockReason='Backend download failed.';
  const html=renderToStaticMarkup(<FirstRunWizard data={data} toast={()=>{}} />);
- expect(html).toContain('Retry setup');expect(html).toContain('Backend download failed.');expect(html).toContain('Start using Xodus Nexus');
+ expect(html).toContain('Retry setup');expect(html).toContain('Backend download failed.');expect(html).toContain('Start using Nexus Launcher');
 });

@@ -20,7 +20,7 @@ function fixture(code = 0) {
     backend: { current: { capabilities: { externalAuth: true } } },
     prepareSystemWallet: vi.fn(async () => {}), fallbackAuthViewFactory: vi.fn(() => ({})),
     authViewFactory: vi.fn(), browserAuthViewFactory: vi.fn(), mainWindow: undefined,
-    shutdownStarted: false, accountProfile: { select: vi.fn(async () => {}) },
+    shutdownStarted: false, licenseProfile: undefined, nativeText: (text: string) => text, process: { env: {} }, accountProfile: { select: vi.fn(async () => {}) },
     startAuthTransport: vi.fn(() => tracked), spawnTracked: vi.fn(() => tracked),
     emitLog: vi.fn(), operations: new Map(), refreshAccount: vi.fn(async () => {}), authJob: undefined,
     revokeOffline: vi.fn(async () => {}),
@@ -53,7 +53,7 @@ describe('explicit account actions', () => {
     await expect(runInContext("requestAuth('logout')", context)).rejects.toThrow(`exited with code ${code}`);
     expect(context.spawnTracked).toHaveBeenCalledOnce();
     expect(context.spawnTracked).toHaveBeenCalledWith('/synthetic/backend', ['logout', '--device'], expect.any(Object));
-    expect(context.refreshAccount).not.toHaveBeenCalled();
+    expect(context.refreshAccount).toHaveBeenCalledWith(false, true);
     // A failed device reset still drops offline licenses: the user asked to sign out.
     expect(context.revokeOffline).toHaveBeenCalledOnce(); expect(context.revokeOffline).toHaveBeenCalledWith('sign-out');
     expect(context.authState).toMatchObject({ running: false, lastResult: 'failed' });
@@ -98,4 +98,20 @@ describe('explicit account actions', () => {
     finish(); await first;
     expect(context.spawnTracked).toHaveBeenCalledOnce();
   });
+});
+
+it('signs out only the player without resetting Store device or offline licensing', async () => {
+ const context=fixture();context.backend.current.capabilities.playerAccount=true;
+ await runInContext("requestAuth('logout',true)",context);
+ expect(context.spawnTracked).toHaveBeenCalledWith('/synthetic/backend',['logout','--player'],expect.any(Object));
+ expect(context.revokeOffline).not.toHaveBeenCalled();
+ expect(context.refreshAccount).toHaveBeenCalledWith(false,true);
+});
+it('reconciles stored identities after a cancelled player transport', async () => {
+ const context=fixture();context.backend.current.capabilities.playerAccount=true;
+ context.startAuthTransport.mockImplementation(()=>({child:{},result:Promise.reject(Error('cancelled'))}));
+ await expect(runInContext("requestAuth('login',true)",context)).rejects.toThrow('cancelled');
+ expect(context.refreshAccount).toHaveBeenCalledWith(false,true);
+ expect(context.authState.running).toBe(false);expect(context.authJob).toBeUndefined();
+ expect(context.revokeOffline).not.toHaveBeenCalled();
 });

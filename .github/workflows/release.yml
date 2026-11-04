@@ -5,7 +5,7 @@ on:
     inputs:
       kind:
         type: choice
-        options: [launcher, runtime, backend]
+        options: [launcher, runtime]
         required: true
       candidate_run:
         description: 'Successful main build run ID; exact artifact must have a recorded human approval'

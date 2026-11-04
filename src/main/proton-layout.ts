@@ -30,7 +30,7 @@ export function protonRootOf(winePath: string): string {
 export function runtimeArchiveArch(arch: string = process.arch): 'x86_64' | 'aarch64' {
   if (arch === 'x64') return 'x86_64';
   if (arch === 'arm64') return 'aarch64';
-  throw new Error(`Xodus Nexus runtimes are not built for ${arch} hosts.`);
+  throw new Error(`Nexus Launcher runtimes are not built for ${arch} hosts.`);
 }
 
 /**

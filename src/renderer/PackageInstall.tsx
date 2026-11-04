@@ -8,18 +8,19 @@ export function catalogInstallRequest(product: Pick<CatalogProduct, 'productId' 
   return { productId: product.productId, title: product.title, destination };
 }
 
-type Install = (request: InstallRequest) => Promise<string | undefined>;
+type Install = (request: InstallRequest, eligible?: () => boolean) => Promise<string | undefined>;
 const InstallContext = createContext<Install>(async () => { throw Error("Installation dialog is unavailable."); });
 export const usePackageInstall = () => useContext(InstallContext);
 
 export async function confirmedPackageInstall(request: InstallRequest,
   api: Pick<Window['launcher'], 'getInstallPlan' | 'startInstall'>,
-  confirm: (plan: InstallPlan) => Promise<string | undefined>, mounted: () => boolean): Promise<string | undefined> {
+  confirm: (plan: InstallPlan) => Promise<string | undefined>, mounted: () => boolean, eligible: () => boolean = () => true): Promise<string | undefined> {
+  if (!mounted() || !eligible()) return;
   const result = await api.getInstallPlan(request.productId, request.destination);
-  if (!mounted()) return;
+  if (!mounted() || !eligible()) return;
   if (result.status === 'unavailable') throw Error("No supported Windows.Desktop MSIXVC package was found for this Store offer.");
   const selected = await confirm(result);
-  if (!selected || !mounted()) return;
+  if (!selected || !mounted() || !eligible()) return;
   return api.startInstall({ ...request, selectedContentId: selected, selectionMarket: result.market });
 }
 
@@ -55,13 +56,13 @@ export function PackageInstallProvider({ children }: { children: ReactNode }) {
   const mounted = useRef(true);
   useEffect(() => { mounted.current = true; return () => { mounted.current = false; pending.current?.(); }; }, []);
   function choose(id?: string) { pending.current?.(id); pending.current = undefined; setDialog(undefined); }
-  const install: Install = async request => {
+  const install: Install = async (request, eligible) => {
     if (busy.current) throw Error("Finish the current package selection first.");
     busy.current = true;
     try {
       return await confirmedPackageInstall(request, window.launcher,
         result => new Promise<string | undefined>(resolve => { pending.current = resolve; setDialog({plan: result, destination: request.destination}); }),
-        () => mounted.current);
+        () => mounted.current, eligible);
     } finally { busy.current = false; }
   };
   return <InstallContext.Provider value={install}>{children}{dialog ? <PackageDialog plan={dialog.plan} destination={dialog.destination} choose={choose} /> : null}</InstallContext.Provider>;

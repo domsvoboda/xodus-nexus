@@ -27,6 +27,7 @@ const h = vi.hoisted(() => ({
 vi.mock('./store.js', () => ({ inspectGameDirectory: async (directory: string) => ({ id: 'g', path: directory, title: 'Sample', installState: 'ready', executable: 'Game.exe', ...h.inspected }) }));
 vi.mock('./proton.js', () => ({
   prepareProtonRunner: async () => h.proton,
+  protonOptionalComponentNotices: async () => [] as string[],
   syncPrefixUserLocale: (...args: unknown[]) => h.localeSync(...args as []),
   syncUnrealCultureGameIni: async () => {},
 }));
@@ -337,6 +338,25 @@ describe('GameSession', () => {
     await expect(new GameSession(deps()).launch('g')).rejects.toThrow('without the required service bridge');
     expect(walletCalls).toBe(0);
     expect(h.spawnCalls).toHaveLength(0);
+  });
+
+  it("activates the game's saved Store account first and names the play profile for the offline identity", async () => {
+    const order: string[] = [];
+    const activateLicenseAccount = vi.fn(async () => { order.push('account'); });
+    const player = await new GameSession(deps({ activateLicenseAccount, persistGame: async () => { order.push('inspect'); },
+      account: () => ({ stored: true, username: 'store@example.com', player: 'player@example.com' }) })).launch('g');
+    expect(order).toEqual(['account', 'inspect']);
+    h.finish!({ code: 0, output: '' });
+    await player.finished;
+    const store = await new GameSession(deps({ account: () => ({ stored: true, username: 'store@example.com' }) })).launch('g');
+    h.finish!({ code: 0, output: '' });
+    await store.finished;
+    expect(h.spawnCalls[0].env.XODUS_ACCOUNT_HASH).toMatch(/^[0-9a-f]+$/);
+    expect(h.spawnCalls[0].env.XODUS_ACCOUNT_HASH).not.toBe(h.spawnCalls[1].env.XODUS_ACCOUNT_HASH);
+
+    const failed = new GameSession(deps({ activateLicenseAccount: async () => { throw Error('The saved Store account could not be activated. Sign in to it again.'); } }));
+    await expect(failed.launch('g')).rejects.toThrow('saved Store account');
+    expect(h.spawnCalls).toHaveLength(2);
   });
 
   it('blocks play while the game is still downloading', async () => {

@@ -32,7 +32,8 @@ it('renders separate portrait/wide brand layouts in a hidden sandbox, with no re
   for (const [url] of window.loadURL.mock.calls) {
     const html = decodeURIComponent(url.slice('data:text/html;charset=utf-8,'.length));
     expect(html).toContain("default-src 'none'; img-src data:");
-    expect(html).toContain('XODUS NEXUS');
+    expect(html).toContain('<h1>NEXUS</h1>');
+    expect(html).not.toContain('XODUS NEXUS');
     expect(html).not.toMatch(/https?:|<script/);
     expect(html).toContain(Buffer.from('bundled icon').toString('base64'));
   }

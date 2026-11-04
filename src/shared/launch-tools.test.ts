@@ -34,3 +34,18 @@ it('keeps older controller settings intact and validates the optional DualShock 
   expect(normalizeLaunchTools(defaultLaunchTools).dualShock4Compatibility).toBeUndefined();
   expect(()=>normalizeLaunchTools({...defaultLaunchTools,dualShock4Compatibility:'yes'})).toThrow('DualShock 4');
 });
+
+it('places the Proton optional component options before %command% as plain environment assignments', () => {
+  // The exact form a Proton user writes for CachyOS OptiScaler: environment
+  // assignments, %command% as its own word, and nothing after it.
+  expect(parseLaunchOptions('PROTON_USE_OPTISCALER=1 %command%')).toEqual({
+    environment: { PROTON_USE_OPTISCALER: '1' }, prefix: [], gameArgs: [],
+  });
+  // The assignment is only accepted before %command%; a bare argument keeps its
+  // position as a game argument instead of silently becoming an environment entry.
+  expect(parseLaunchOptions('%command% PROTON_USE_OPTISCALER=1')).toEqual({
+    environment: {}, prefix: [], gameArgs: ['PROTON_USE_OPTISCALER=1'],
+  });
+  expect(normalizeLaunchTools({ ...defaultLaunchTools, launchOptions: ' PROTON_USE_OPTISCALER=1 %command% ' }).launchOptions)
+    .toBe('PROTON_USE_OPTISCALER=1 %command%');
+});

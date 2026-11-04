@@ -2,7 +2,7 @@ import { constants, createWriteStream, promises as fs } from 'node:fs';
 import path from 'node:path';
 import type { BackendStatus, ConnectivityStatus, DownloadTask, Game, GameOperation, RuntimeStatus } from '../shared/types.js';
 import { inspectGameDirectory } from './store.js';
-import { prepareProtonRunner, syncPrefixUserLocale, syncUnrealCultureGameIni } from './proton.js';
+import { prepareProtonRunner, protonOptionalComponentNotices, syncPrefixUserLocale, syncUnrealCultureGameIni } from './proton.js';
 import { accountCacheKey } from './offline-identity.js';
 import { bindOfflineAccess, type OfflineRevocation } from './offline-access.js';
 import { cloudSaveRuntime, gameInviteRuntime, offlineIdentityRuntime, relatedBridgeRuntime, selectedWinePath, storeDiscoveryRuntime, unbridgedCloudSaveRuntime } from './xodus-service.js';
@@ -11,7 +11,9 @@ import { installedVcRuntimeVersion, VC_REDIST_VERSION, versionAtLeast } from './
 import { spawnGameProcess, type GameProcess } from './game-process.js';
 import { gameLocaleEnvironment, installedGameLocales, installedGameTitleId, supportedGameLocale } from './game-locale.js';
 import { antiCheatEnvironment } from './anti-cheat.js';
-import { gameLaunchArguments, preparedGameWine } from './game-launch.js';
+import { gameLaunchArguments, launchEnvironmentForRuntime, preparedGameWine } from './game-launch.js';
+import { parseLaunchOptions } from '../shared/launch-tools.js';
+import { bindRuntimePrefix, resolveGameRuntime } from './runtime-prefix-binding.js';
 import { prepareGameWrapper, type GameWrapper } from './game-wrapper.js';
 import { canonicalInstallPath, installPathsOverlap } from './install-queue.js';
 import { INCOMPLETE_UPDATE_MESSAGE } from './installation-state.js';
@@ -64,7 +66,10 @@ export interface GameSessionDeps {
   /** Base environment for the game. */
   environment(): NodeJS.ProcessEnv;
   connectivity?: { check(): Promise<ConnectivityStatus> };
-  account(): { stored: boolean | null; username?: string };
+  /** `player` is the Xbox profile signed in for play when it differs from the Store account. */
+  account(): { stored: boolean | null; username?: string; player?: string };
+  /** Switches to the saved Store account the game was installed with, if it differs; throws when that fails. */
+  activateLicenseAccount?(game: Game): Promise<void>;
   /** Game Mode wallet readiness. */
   ensureWallet(): Promise<void>;
   /** Holds the display awake while the game runs; returns the release. */
@@ -142,6 +147,7 @@ export class GameSession {
       if (task.gameId === id || installPathsOverlap(target, await canonicalInstallPath(task.destination))) throw Error('Finish or cancel this game\'s installation before playing it.');
     }
     if (await deps.incompleteUpdate?.(game)) throw Error(INCOMPLETE_UPDATE_MESSAGE);
+    await deps.activateLicenseAccount?.(game);
     const inspected = await inspectGameDirectory(game.path);
     await deps.persistGame?.(id, {
       installState: inspected.installState,
@@ -158,7 +164,12 @@ export class GameSession {
     const locale = supportedGameLocale(game.locale ?? '');
     const titleId = await gameTitleId(game).catch(() => undefined);
     const backend = deps.backend();
-    const wine = selectedWinePath(store.settings.winePath, store.settings.runtimeRoot, deps.runtime().winePath);
+    const runtimeContext = await resolveGameRuntime({ runtimeRoot: store.settings.runtimeRoot, dataRoot: path.dirname(store.settings.runtimeRoot), gameId: game.id,
+      selection: game.runtime, separatePrefix: game.runtimeSeparatePrefix, approvedBuild: game.runtimeBuild,
+      prefixAnchor: game.runtime && game.runtime !== 'default' ? game.runtimePrefixes?.[game.runtime] : undefined,
+      defaultWine: selectedWinePath(store.settings.winePath, store.settings.runtimeRoot, deps.runtime().winePath) });
+    const wine = runtimeContext.winePath;
+    await bindRuntimePrefix(runtimeContext);
     if (!wine) throw new Error('Select a Wine / Proton binary in Settings.');
     try { await fs.access(wine, constants.X_OK); }
     catch { throw new Error(`The selected Wine runtime is unavailable: ${wine}. Select or reinstall Xodus Runtime in Settings.`); }
@@ -243,13 +254,24 @@ export class GameSession {
       if (game.launchTools?.dualSenseCompatibility) writeLaunchLog('DualSense compatibility mode enabled for this game (054c:0ce6).');
       if (game.launchTools?.dualShock4Compatibility) writeLaunchLog('DualShock 4 compatibility mode enabled for this game (v1, v2 and wireless adapter).');
       await deps.ensureWallet();
-      const legacyPrefixRoot = path.join(dataRoot, 'prefixes', game.id);
-      const compatibilityDataPath = path.join(dataRoot, 'compatdata', game.id);
+      const legacyPrefixRoot = runtimeContext.legacyPrefixRoot;
+      const compatibilityDataPath = runtimeContext.compatibilityDataPath;
       const steamRoot = path.join(deps.paths.home, '.steam', 'root');
-      launchWrapper = await prepareGameWrapper(wine, game.launchTools, path.join(dataRoot, 'launch-wrappers'), baseEnvironment, game.path);
-      const protonRunner = await prepareProtonRunner(wine, compatibilityDataPath, steamRoot, launchWrapper.command, store.settings.shaderCacheLimitGiB);
+      const protonRunner = await prepareProtonRunner(wine, compatibilityDataPath, steamRoot, store.settings.shaderCacheLimitGiB);
       const wineCommand = protonRunner?.command ?? wine;
-      args[2] = preparedGameWine(protonRunner, launchWrapper.command);
+      // Play goes through the runtime's Proton session when one is available, so
+      // the runtime's own launch options (for example PROTON_USE_OPTISCALER) are
+      // processed. Game tools and launch options wrap that command, exactly like
+      // Steam's %command%.
+      launchWrapper = await prepareGameWrapper(preparedGameWine(protonRunner, wine), game.launchTools, path.join(dataRoot, 'launch-wrappers'), baseEnvironment, game.path);
+      args[2] = launchWrapper.command;
+      if (protonRunner) {
+        // The optional component is selected by the game's launch options, not by
+        // the inherited environment.
+        const launchOptionsEnvironment = parseLaunchOptions(game.launchTools?.launchOptions ?? '').environment;
+        for (const notice of await protonOptionalComponentNotices({ ...baseEnvironment, ...launchOptionsEnvironment },
+          protonRunner.protonRoot, compatibilityDataPath, offlineLaunch)) addGameLog(notice);
+      }
       if (inspected.vcRedistEncrypted) {
         if (!protonRunner) throw new Error('This encrypted VC++ prerequisite requires a Proton prefix. Select Xodus Runtime in Settings.');
         const installed = await installedVcRuntimeVersion(path.join(compatibilityDataPath, 'pfx'));
@@ -258,9 +280,9 @@ export class GameSession {
         }
         addGameLog(`VC++ runtime ${installed} verified; launching the original package executable from a temporary decrypted launch view.`);
       }
-      const environment = antiCheatEnvironment(gameLocaleEnvironment(gameWindowEnvironment(gameLoggingEnvironment(protonRunner
+      const environment = launchEnvironmentForRuntime(antiCheatEnvironment(gameLocaleEnvironment(gameWindowEnvironment(gameLoggingEnvironment(protonRunner
         ? { ...baseEnvironment }
-        : { ...baseEnvironment, WINEPREFIX: legacyPrefixRoot, WINEARCH: 'win64' }, verboseLogs)), locale));
+        : { ...baseEnvironment, WINEPREFIX: legacyPrefixRoot, WINEARCH: 'win64' }, verboseLogs)), locale)), Boolean(protonRunner));
       if (deps.windowIdentity) {
         try {
           const identity = await deps.windowIdentity({ ...game, installState: inspected.installState }, inspected.coverDataUrl ?? game.coverDataUrl);
@@ -343,7 +365,7 @@ export class GameSession {
       }
       // Names the account for the runtime's offline identity cache (an opaque key, never the username).
       const account = deps.account();
-      if (account.stored === true && account.username) environment.XODUS_ACCOUNT_HASH = accountCacheKey(account.username);
+      if (account.stored === true && account.username) environment.XODUS_ACCOUNT_HASH = accountCacheKey(account.player ?? account.username);
       if (protonRunner) addGameLog(`Proton prefix: ${protonRunner.compatibilityDataPath}/pfx`);
       else await fs.mkdir(legacyPrefixRoot, { recursive: true });
       options.signal?.throwIfAborted();

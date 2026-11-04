@@ -9,7 +9,7 @@ import './friends.css';
 
 // Warm only after pointer/keyboard intent, never on startup or while signing in.
 export function preloadFriends(data:AppSnapshot,load:()=>Promise<unknown>=()=>window.launcher.getXboxFriends()):void {
-  if(data.auth.stored!==true||data.auth.running||!data.backend.available||!data.backend.capabilities.commands.includes('social'))return;
+  if((data.auth.stored!==true&&!data.auth.player)||data.auth.running||!data.backend.available||!data.backend.capabilities.commands.includes('social'))return;
   void load().catch(()=>{});
 }
 
@@ -31,7 +31,7 @@ export function Friends({ data, close, docked=false }: { data: AppSnapshot; clos
   const generation=useRef(0),pending=useRef(false),select=useRef('');
   const currentFriend=useRef<XboxFriend>(),lastFriends=useRef(0);
   const dialog=useRef<HTMLElement>(null),onClose=useRef(close);onClose.current=close;
-  const available=data.auth.stored===true&&!data.auth.running&&data.backend.available&&data.backend.capabilities.commands.includes('social');
+  const available=(data.auth.stored===true||Boolean(data.auth.player))&&!data.auth.running&&data.backend.available&&data.backend.capabilities.commands.includes('social');
   useEffect(()=>{
     const origin=document.activeElement instanceof HTMLElement?document.activeElement:undefined;
     dialog.current?.querySelector<HTMLElement>('[data-gamepad-initial]')?.focus({preventScroll:true});
@@ -59,7 +59,7 @@ export function Friends({ data, close, docked=false }: { data: AppSnapshot; clos
         .finally(()=>{if(generation.current===active){setBusy(false);pending.current=false;}});
     }
     return ()=>{generation.current++;void window.launcher.closeXboxSocial().catch(()=>{});};
-  },[available,data.auth.username]);
+  },[available,data.auth.username,data.auth.player]);
 
   function applyConversation(value:XboxConversation){
     setConversation(value);
@@ -101,7 +101,7 @@ export function Friends({ data, close, docked=false }: { data: AppSnapshot; clos
     const visible=()=>{if(document.visibilityState==='visible')polling.wake();};
     document.addEventListener('visibilitychange',visible);
     return()=>{polling.stop();document.removeEventListener('visibilitychange',visible);};
-  },[available,data.auth.username]);
+  },[available,data.auth.username,data.auth.player]);
   function choose(friend:XboxFriend){
     if(pending.current)return;
     setSelected(friend);currentFriend.current=friend;select.current=friend.xuid;setConversation(undefined);setDraft('');setUncertain(false);setAccepted(false);submission.current=undefined;void refresh(friend);
@@ -134,7 +134,7 @@ export function Friends({ data, close, docked=false }: { data: AppSnapshot; clos
         {incoming.map(invite=><article key={invite.id}><div><strong>{invite.game}</strong><small>{ui('friends.invitation_from', { name: invite.sender })}</small></div><button disabled={busy} onClick={()=>void invitationAction(()=>window.launcher.acceptGameInvite(invite.id))}>{ui("ui.accept_89713b9")}</button></article>)}
         {outgoing.map(invite=><article key={invite.id}><div><strong>{invite.game}</strong><small>{invite.phase==='choosing'?ui("ui.choose_a_friend_below_then_send_an_invitation_27e80a3"):invite.phase==='sending'?ui("ui.waiting_for_the_game_to_send_the_invitation_c4d60eb"):invite.phase==='sent'?ui("ui.invitation_sent_b413595"):invite.phase==='failed'?ui("ui.the_game_could_not_confirm_invitation_delivery_d434e95"):ui("ui.invitation_cancelled_134517d")}</small></div>{invite.phase==='choosing'?<><button disabled={busy||!selected} onClick={()=>selected&&void invitationAction(()=>window.launcher.chooseGameInviteRecipient(invite.id,selected.xuid))}>{ui('friends.invite_friend', { name: selected?.gamertag ?? ui('friends.friend') })}</button><button disabled={busy} onClick={()=>void invitationAction(()=>window.launcher.cancelGameInvite(invite.id))}>{ui("ui.cancel_19766ed")}</button></>:null}</article>)}
       </section>:null}
-      {!available?<p role="status">{data.auth.stored!==true?ui("ui.sign_in_to_your_microsoft_account_in_settings_fi_187cd60"):ui("ui.this_backend_does_not_support_xbox_friends_and_c_6ed1034")}</p>:<>
+      {!available?<p role="status">{(data.auth.stored!==true&&!data.auth.player)?ui("ui.sign_in_to_your_microsoft_account_in_settings_fi_187cd60"):ui("ui.this_backend_does_not_support_xbox_friends_and_c_6ed1034")}</p>:<>
         {error?<p className="friends-error" role="alert">{uiText(error)}</p>:null}
         <div className="friends-columns">
           <aside aria-label={ui("ui.friends_list_e79cc91")}>
