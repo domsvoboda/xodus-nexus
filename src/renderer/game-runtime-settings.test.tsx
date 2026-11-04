@@ -10,7 +10,7 @@ const family='nexus-cachyos';
 const a={buildId:'a'.repeat(64),manifestSha256:'b'.repeat(64),sourceCommit:'c'.repeat(40)};
 const b={buildId:'d'.repeat(64),manifestSha256:'e'.repeat(64),sourceCommit:'f'.repeat(40)};
 const c={buildId:'1'.repeat(64),manifestSha256:'2'.repeat(64),sourceCommit:'3'.repeat(40)};
-const installed=(build:typeof a):InstalledRuntimeFamily=>({id:family,label:'Nexus Runtime (CachyOS, experimental)',...build});
+const installed=(build:typeof a):InstalledRuntimeFamily=>({id:family,label:'CachyOS',...build});
 const render=async()=>{await act(async()=>root.render(<LibraryPage data={data} toast={()=>{}}/>));};
 const click=async(element:Element)=>{await act(async()=>(element as HTMLElement).click());};
 async function openSettings() {

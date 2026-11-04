@@ -1,5 +1,6 @@
-import {ComponentUpdates} from './ComponentUpdates';
+import {useComponentUpdates} from './ComponentUpdates';
 import {ManagedRuntimeSettings} from './ManagedRuntimeSettings';
+import {StatusDot} from './StatusDot';
 import {useGameRuntimeReady} from './useGameRuntimeReady';
 import {useStoreAccess} from './store-access';
 import {GameRuntimeFields} from './GameRuntimeFields';
@@ -20,7 +21,7 @@ import {reconcileSettingsDraft} from './settings-draft';
 import {xboxOverlaySettings} from '../shared/xbox-overlay-settings';
 import './xbox-desktop-social.css';
 import { estimateTimeRemaining } from '../shared/utils';
-import { nexusRuntimeUpdateAvailable, runtimeDisplay } from '../shared/runtime-display';
+import { nexusRuntimeUpdateAvailable, runtimeDisplay, activeRuntimeIsCachyos } from '../shared/runtime-display';
 import { subscriptionBadge } from '../shared/subscription';
 import { defaultLaunchTools, normalizeLaunchTools } from '../shared/launch-tools';
 import { DEFAULT_SHADER_CACHE_GIB, shaderCacheLimits } from '../shared/shader-cache';
@@ -87,10 +88,6 @@ function focusDetailEntry(root: HTMLElement | null) {
 function errorMessage(error: unknown): string {
   const raw = error instanceof Error ? error.message : String(error);
   return raw.replace(/^Error invoking remote method '[^']+': Error:\s*/, '');
-}
-
-function StatusDot({ tone = 'green' }: { tone?: 'green' | 'amber' | 'red' }) {
-  return <span className={`status-dot ${tone}`} />;
 }
 
 export function GameTitle({ title }: { title: string }) {
@@ -942,6 +939,13 @@ export function SettingsPage({ data, toast }: { data: AppSnapshot; toast: (value
   const [accountManagement, setAccountManagement] = useState(data.settings.multiAccountEnabled === true);
   useEffect(() => setAccountManagement(data.settings.multiAccountEnabled === true), [data.settings.multiAccountEnabled]);
   const managingAccounts = accountManagement && data.auth.savedAccountsEnabled === true;
+  const componentUpdatesDisabled = Boolean(busy)||data.auth.running||data.backend.updating||data.runtime.updating||Boolean(data.launcherUpdate?.updating)||Boolean(data.gameOperation&&['preparing','running','stopping'].includes(data.gameOperation.status))||data.downloads.some(task=>['queued','running','paused'].includes(task.status))||data.componentUpdates?.running===true;
+  const componentUpdates = useComponentUpdates({
+    data,
+    disabled: componentUpdatesDisabled,
+    onBusyChange: value=>setBusy(value?'component-updates':undefined),
+    confirm,
+  });
   async function showAccountManagement(enabled: boolean) {
     await window.launcher.updateSettings({ multiAccountEnabled: enabled });
     setAccountManagement(enabled);
@@ -977,6 +981,7 @@ export function SettingsPage({ data, toast }: { data: AppSnapshot; toast: (value
   let cacheLimitValid = true;
   try { shaderCacheLimits(form.shaderCacheLimitGiB ?? DEFAULT_SHADER_CACHE_GIB); } catch { cacheLimitValid = false; }
   const runtimeInfo = runtimeDisplay(data.runtime);
+  const activeCachyos = activeRuntimeIsCachyos(data.runtime);
   const overlay=xboxOverlaySettings(form);
   const savedOverlay=xboxOverlaySettings(data.settings);
   const overlayDirty=overlay.overlayEnabled!==savedOverlay.overlayEnabled||overlay.overlaySide!==savedOverlay.overlaySide||(form.overlayShortcut??savedOverlay.overlayShortcut)!==savedOverlay.overlayShortcut;
@@ -997,8 +1002,6 @@ export function SettingsPage({ data, toast }: { data: AppSnapshot; toast: (value
       <CheckField className="tray-toggle" role="switch" label={ui('settings.close_to_tray')} description={ui('settings.close_to_tray_help')} checked={form.closeToTray===true} disabled={Boolean(busy)} onChange={event=>{const closeToTray=event.target.checked;setForm({...form,closeToTray});void invoke('close-to-tray',()=>window.launcher.updateSettings({closeToTray}),ui('settings.tray_saved'));}}/>
     </section>
 
-    <ComponentUpdates data={data} disabled={Boolean(busy)||data.auth.running||data.backend.updating||data.runtime.updating||Boolean(data.launcherUpdate?.updating)||Boolean(data.gameOperation&&['preparing','running','stopping'].includes(data.gameOperation.status))||data.downloads.some(task=>['queued','running','paused'].includes(task.status))} onBusyChange={value=>setBusy(value?'component-updates':undefined)}/>
-
     <section className="settings-card compact launcher-card">
       {data.launcherUpdate?.phase ? <p>{uiText(data.launcherUpdate.phase)}</p> : null}
       {data.launcherUpdate?.updating ? <div className="progress-track"><i style={{ width: `${data.launcherUpdate.progress ?? 0}%` }} /></div> : null}
@@ -1009,9 +1012,23 @@ export function SettingsPage({ data, toast }: { data: AppSnapshot; toast: (value
         {data.launcherUpdate?.releaseUrl && !data.launcherUpdate.canInstall ? <a className="primary" href={data.launcherUpdate.releaseUrl} target="_blank" rel="noreferrer"><ArrowDownToLine />{ui("ui.download_update_4f494b2")}</a> : null}
         {data.launcherUpdate?.restartRequired ? <button className="primary" disabled={Boolean(busy)||data.componentUpdates?.running} onClick={() => invoke('launcher-restart', () => window.launcher.restartLauncher())}><RefreshCw />{ui("ui.restart_launcher_b076da9")}</button> : null}
         {data.launcherUpdate?.canRollback ? <button className="secondary" disabled={data.launcherUpdate.updating || Boolean(busy)} onClick={async () => { if (await confirm({ title: ui("ui.restore_previous_launcher_ab5c227"), message: ui("ui.your_settings_and_games_will_not_change_3e99619"), confirmLabel: ui("ui.restore_launcher_a0520ac") })) void invoke('launcher-rollback', () => window.launcher.rollbackLauncherUpdate()); }}>{ui("ui.restore_previous_launcher_9b5f101")}</button> : null}
-        <button className="secondary" disabled={data.launcherUpdate?.checking || data.launcherUpdate?.updating || data.launcherUpdate?.restartRequired} onClick={() => invoke('update-check', () => window.launcher.checkLauncherUpdate(), ui("ui.update_check_finished_3f30d8a"))}>{data.launcherUpdate?.checking ? <LoaderCircle className="spin" /> : <RefreshCw />}{ui("ui.check_for_updates_f26f327")}</button>
+        <button className="secondary" disabled={componentUpdatesDisabled || data.launcherUpdate?.checking || data.launcherUpdate?.updating || data.launcherUpdate?.restartRequired} onClick={async () => {
+          // The component plan already runs the launcher release discovery. A
+          // blocked or stale discovery is not a failure and must not start a
+          // second launcher-only check. Fall back once only when the real plan
+          // failed or its launcher row is not covered.
+          const discovery=await componentUpdates.discover();
+          if(discovery.status==='blocked'||discovery.status==='stale')return;
+          if(discovery.status==='plan'&&discovery.plan.items.some(item=>item.component==='launcher'&&(item.state==='ready'||item.state==='unchanged'))){
+            toast({kind:'success',message:ui("ui.update_check_finished_3f30d8a")});
+            return;
+          }
+          await invoke('update-check', () => window.launcher.checkLauncherUpdate(), ui("ui.update_check_finished_3f30d8a"));
+        }}>{data.launcherUpdate?.checking ? <LoaderCircle className="spin" /> : <RefreshCw />}{ui("ui.check_for_updates_f26f327")}</button>
+        {componentUpdates.action}
         <button className="secondary" disabled={Boolean(busy)} title={ui("ui.add_nexus_with_artwork_including_while_steam_is_f7d03b8")} onClick={() => invoke('steam-launcher', () => window.launcher.addToSteam(), ui("ui.nexus_added_to_steam_2f6a699"))}><Plus />{ui("ui.add_nexus_to_steam_790c35e")}</button>
       </div>
+      {componentUpdates.details}
     </section>
 
     <section className="settings-card account-card">
@@ -1020,7 +1037,7 @@ export function SettingsPage({ data, toast }: { data: AppSnapshot; toast: (value
       <KeyringSetup compact disabled={data.auth.running} />
       <div className="button-row"><button className="primary" disabled={!caps.login || data.auth.running} onClick={() => invoke('login', () => window.launcher.login(), ui("ui.xodus_sign_in_completed_8240737"))}>{data.auth.running ? <LoaderCircle className="spin" /> : <LogIn />}{data.auth.stored ? ui("ui.sign_in_again_51fbe1d") : ui("ui.sign_in_with_xodus_252572f")}</button><button className="secondary" disabled={!caps.logout || data.auth.running || (data.auth.stored === false && !data.auth.player)} title={data.auth.savedAccountsEnabled === true ? ui("auth.sign_out_active_help") : caps.savedAccounts && data.auth.savedAccountsEnabled === undefined ? ui("auth.sign_out_unknown_help") : ui("ui.remove_saved_sign_in_credentials_and_local_devic_6485324")} onClick={() => invoke('logout', () => window.launcher.logout(), data.auth.savedAccountsEnabled === true ? ui("auth.active_signed_out") : caps.savedAccounts && data.auth.savedAccountsEnabled === undefined ? ui("auth.active_signed_out_unknown") : ui("ui.saved_sign_in_credentials_and_local_device_regis_c9738bd"))}>{data.auth.player ? ui("auth.sign_out_all") : ui("ui.sign_out_48f0d3d")}</button><button className="secondary" disabled={!caps.account || data.auth.running} onClick={() => invoke('account', () => window.launcher.refreshAccount())}><RefreshCw />{ui("ui.refresh_status_442c4b8")}</button></div>
       {!managingAccounts && data.auth.player ? <p className="fine-print account-player-summary">{ui("auth.active_player", { name: data.auth.player })}</p> : null}
-      {managingAccounts || caps.savedAccounts ? <div className="button-row"><button className="secondary" aria-expanded={managingAccounts} disabled={Boolean(busy) || data.auth.running} onClick={() => invoke('account-management', () => showAccountManagement(!managingAccounts))}>{managingAccounts ? ui("auth.hide_management") : ui("auth.manage_multiple")}</button></div> : null}
+      {managingAccounts || caps.savedAccounts ? <div className="button-row account-management-row"><button className="secondary" aria-expanded={managingAccounts} disabled={Boolean(busy) || data.auth.running} onClick={() => invoke('account-management', () => showAccountManagement(!managingAccounts))}>{managingAccounts ? ui("auth.hide_management") : ui("auth.manage_multiple")}</button></div> : null}
       {managingAccounts && (data.auth.saved?.length ?? 0) > 0 && caps.savedAccounts ? <div className="saved-accounts" role="list" aria-label={ui("ui.saved_store_accounts_a1c4e72")}>
       <span className="overline">{ui("ui.saved_store_accounts_a1c4e72")}</span>
       {data.auth.saved!.map(name => <div key={name} className="button-row" role="listitem">
@@ -1056,10 +1073,10 @@ export function SettingsPage({ data, toast }: { data: AppSnapshot; toast: (value
       <div className="settings-heading"><div className="settings-icon"><Gamepad2 /></div><div><h2>{ui("runtime.default_title")}</h2><p>{data.runtime.installed ? ui("ui.active_ae2c40a", { runtime: runtimeInfo.title, version: runtimeInfo.version }) : ui("ui.no_runtime_selected_b8e7445")}</p></div><span className={`status-label ${data.runtime.installed && runtimeInfo.source === 'Nexus runtime' ? 'ready' : 'unknown'}`}><StatusDot tone={data.runtime.installed && runtimeInfo.source === 'Nexus runtime' ? 'green' : 'amber'} />{!data.runtime.installed ? ui("ui.missing_8af1d32") : runtimeInfo.source === 'Nexus runtime' ? ui("ui.ready_c2e3ac4") : ui("ui.other_runtime_ce6adfb")}</span></div>
       {data.runtime.nexusError ? <div className="alert amber"><CircleAlert /><span>{data.runtime.nexusError}</span></div> : null}
       {data.runtime.error ? <div className="alert amber"><CircleAlert /><span>{uiText(data.runtime.error)}</span></div> : null}{data.runtime.phase ? <div className="runtime-phase"><LoaderCircle className={data.runtime.updating ? 'spin' : ''} /><span>{uiText(data.runtime.phase)}</span></div> : null}
-      <div className="button-row end">
+      {activeCachyos ? null : <div className="button-row end">
         <button className="secondary" disabled={Boolean(busy) || data.runtime.nexusChecking} onClick={() => invoke('runtime-check', () => window.launcher.checkNexusRuntime())}>{busy === 'runtime-check' || data.runtime.nexusChecking ? <LoaderCircle className="spin" /> : <RefreshCw />}{ui("ui.check_for_updates_f26f327")}</button>
         {nexusRuntimeUpdateAvailable(data.runtime) ? <button className="primary" disabled={Boolean(busy) || data.runtime.updating} onClick={() => invoke('runtime-install-nexus', () => window.launcher.installNexusRuntime(), ui("ui.nexus_runtime_was_verified_installed_and_selecte_51b0ff1"))}>{busy === 'runtime-install-nexus' || data.runtime.updating ? <LoaderCircle className="spin" /> : <ArrowDownToLine />}{ui("ui.install_nexus_runtime_2cf3608")}{data.runtime.nexusVersion ? ` ${data.runtime.nexusVersion.replace(/^runtime-/, '')}` : ''}</button> : null}
-      </div>
+      </div>}
       {data.runtime.updating || runtimeLogs.length > 0 ? <pre className="build-log">{runtimeLogs.join('\n') || ui("ui.waiting_for_output_f05fefe")}</pre> : null}
     </section>
 

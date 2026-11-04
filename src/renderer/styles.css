@@ -456,6 +456,7 @@ button.primary svg, button.secondary svg { width: 17px; height: 17px; }
 .diagnostic-path { overflow-wrap: anywhere; color: var(--muted); font-size: 10px; }
 .launcher-card { display: flex; align-items: center; justify-content: space-between; gap: 15px; flex-wrap: wrap; }
 .launcher-card .settings-heading { margin: 0; }
+.launcher-card .component-update-details { flex: 1 1 100%; min-width: 0; }
 .button-row a.primary { display: inline-flex; align-items: center; gap: 8px; padding: 0 17px; min-height: 39px; border-radius: 3px; background: #388e35; color: #fff; border: 1px solid transparent; font-size: 12px; font-weight: 650; text-decoration: none; }
 .button-row a.primary:hover { background: var(--green-hover); }
 .button-row a.primary svg { width: 17px; height: 17px; }
@@ -498,6 +499,7 @@ button.primary svg, button.secondary svg { width: 17px; height: 17px; }
 .account-note { display: flex; gap: 8px; padding: 12px; margin-bottom: 15px; background: #292c30; color: #c8cbd0; font-size: 9px; line-height: 1.5; }
 .account-note svg { width: 16px; flex: 0 0 auto; color: #d6ad56; }
 .account-card .fine-print { margin: 14px 0 0; max-width: 920px; }
+.account-card .account-management-row { margin-top: 12px; }
 .meta-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 1px; background: var(--line); border: 1px solid var(--line); }
 .meta-grid div { min-width: 0; padding: 11px 13px; background: #1b1d20; display: grid; gap: 5px; }
 .meta-grid span { color: var(--faint); font-size: 8px; }
@@ -667,15 +669,12 @@ button.primary, button.secondary { border-radius: 5px; min-height: 40px; font-si
 .cloud-save-warning > button { flex-shrink: 0; }
 @media (max-width: 800px) { .cloud-save-warning { margin: 8px 12px 0; flex-wrap: wrap; } .cloud-save-warning > div { flex-basis: 100%; } }
 
-.managed-runtime-family { margin-top: 20px; min-width: 0; }
-.managed-runtime-family + .managed-runtime-family { padding-top: 20px; border-top: 1px solid var(--line); }
-.managed-runtime-family p { overflow-wrap: anywhere; }
-.managed-runtime-settings > button { margin-top: 16px; }
+.managed-runtime-settings p { overflow-wrap: anywhere; }
 
-.component-update-results { list-style: none; padding: 0; margin: 20px 0 0; }
+.component-update-results { list-style: none; padding: 0; margin: 8px 0 0; }
 .component-update-results li { display: flex; align-items: center; justify-content: space-between; gap: 16px; padding: 14px 0; border-top: 1px solid var(--line); }
 .component-update-results li > div { display: grid; gap: 4px; min-width: 0; overflow-wrap: anywhere; }
 .component-update-results li small { color: var(--muted); }
 .component-update-results li > button { flex-shrink: 0; }
 @media (max-width: 900px) { .component-update-results li { flex-wrap: wrap; } }
-.component-updates button, .managed-runtime-settings button { min-height: 44px; }
+.component-update-details button, .managed-runtime-settings button { min-height: 44px; }

@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { demoSnapshot } from './demo-data';
-import { nexusRuntimeUpdateAvailable, runtimeDisplay } from './runtime-display';
+import { activeRuntimeIsCachyos, nexusRuntimeUpdateAvailable, runtimeDisplay } from './runtime-display';
 
 describe('runtimeDisplay', () => {
   it('uses the same available archive comparison for the top notice and Settings', () => {
@@ -32,5 +32,20 @@ describe('runtimeDisplay', () => {
   });
   it('does not show the update version as installed when no runtime is installed', () => {
     expect(runtimeDisplay({ ...demoSnapshot().runtime, installed: false }).version).toBe('Not installed');
+  });
+  it('never advertises the Standard release while a CachyOS runtime is the active default', () => {
+    const runtime = { ...demoSnapshot().runtime, installed: true,
+      name: 'nexus-runtime-cachyos-11.0-experimental-ge36f73cb-local',
+      nexusAvailable: true, nexusVersion: 'runtime-11.0-new', nexusName: 'nexus-runtime-11.0-new-x86_64.tar.xz' };
+    expect(nexusRuntimeUpdateAvailable(runtime)).toBe(false);
+    expect(nexusRuntimeUpdateAvailable({ ...runtime, name: 'nexus-runtime-11.0-experimental-g5910703e-local' })).toBe(true);
+    expect(nexusRuntimeUpdateAvailable({ ...runtime, name: 'nexus-runtime-cachyos-local', installed: false })).toBe(true);
+  });
+  it('recognizes an active CachyOS family runtime only from the verified installed record', () => {
+    const base = { ...demoSnapshot().runtime, installed: true, name: 'nexus-runtime-cachyos-11.0-experimental-ge36f73cb-local' };
+    expect(activeRuntimeIsCachyos(base)).toBe(true);
+    expect(activeRuntimeIsCachyos({ ...base, installed: false })).toBe(false);
+    expect(activeRuntimeIsCachyos({ ...base, name: 'nexus-runtime-11.0-experimental-g5910703e-local' })).toBe(false);
+    expect(activeRuntimeIsCachyos({ ...base, name: 'my-wine-build' })).toBe(false);
   });
 });

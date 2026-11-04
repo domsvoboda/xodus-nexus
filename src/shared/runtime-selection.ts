@@ -8,7 +8,7 @@ export function gameRuntimeSelection(value: unknown): GameRuntimeSelection {
   throw Error('Unknown managed runtime selection. Choose the default or an installed Nexus runtime.');
 }
 export const runtimeFamilyLabels: Record<RuntimeFamily, string> = {
-  nexus: 'Nexus Runtime', 'nexus-cachyos': 'Nexus Runtime (CachyOS, experimental)',
+  nexus: 'Standard', 'nexus-cachyos': 'CachyOS',
 };
 export interface RuntimeBuildApproval {
   buildId:string; manifestSha256:string; sourceCommit:string;
