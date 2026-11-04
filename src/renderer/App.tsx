@@ -34,7 +34,7 @@ import { requestTextKeyboard } from './touch-keyboard';
 import { ConfirmationProvider, useConfirmation } from './Confirmation';
 import { GameRemovalContents } from './GameRemovalContents';
 import { GameDetails } from './GameDetails';
-import {CatalogGameDetails,catalogGameInstalled} from './CatalogGameDetails';
+import {CatalogGameDetails,catalogGameInstalled,publicStorePrice} from './CatalogGameDetails';
 import { GameLanguage } from './GameLanguage';
 import { DownloadCancelDialog } from './DownloadCancelDialog';
 import { OfflinePermissionsCard } from './OfflinePermissions';
@@ -276,12 +276,13 @@ export function StoreProductCard({ product, selected, disabled, label, select, i
   product: CatalogProduct; selected: boolean; disabled: boolean; label: string; licensed?: boolean;
   select: (product: CatalogProduct,openDetails?:boolean) => void; install: (product: CatalogProduct) => void;
 }) {
+  const price=publicStorePrice(product);
   return <article className={`catalog-card ${selected ? 'selected' : ''}`} data-gamepad-card>
     <button className="catalog-card-main" data-gamepad-auto-select="focus" data-gamepad-detail-target={product.productId}
       onFocus={() => select(product,false)} onClick={() => select(product,true)}>
       {product.posterUrl ? <img src={product.posterUrl} alt={ui("ui.cover_47bbe4b", { game: product.title })} /> : <div className="catalog-cover-placeholder"><Gamepad2 /></div>}
       <CatalogSupportBadge product={product} />
-      <div><GameTitle title={product.title} /><small>{product.publisher ?? product.productId}</small><span>{product.purchasePrice ?? ui("ui.price_unavailable_6a9e657")}{product.includedWith ? ` · ${product.includedWith}` : ''}</span></div>
+      <div><GameTitle title={product.title} /><small>{product.publisher ?? product.productId}</small><span title={price ? ui('store.us_price_context') : undefined}>{product.purchasePrice ?? ui("ui.price_unavailable_6a9e657")}{price ? ` · ${ui('store.us_price_short')}` : ''}{product.includedWith ? ` · ${product.includedWith}` : ''}</span></div>
     </button>
     {licensed ? <button className="catalog-card-install" data-gamepad-skip data-gamepad-card-action disabled={disabled} onClick={() => install(product)}>
       {label === 'Preparing…' ? <LoaderCircle className="spin" /> : label === 'Installed' ? <Check /> : <Download />}{label}
@@ -369,8 +370,12 @@ export function StorePage({ data, toast, go, initialQuery }: { data: AppSnapshot
       select={selectProduct} install={install} />;
   })}</div>;
   if(detailOpen&&selected)return <main ref={pageRef} className="page store-page library-detail-open"><CatalogGameDetails key={`${selected.productId}:${data.auth.username}:${data.auth.player}:${data.auth.stored}:${data.auth.running}:${data.backend.binaryPath}:${data.settings.market}`} product={selected} data={data} storeMode storeAccess={access} back={()=>setDetailOpen(false)} backLabel={ui('game.back_to_store')} toast={toast}/></main>;
+  // Only the product grid renders a price. The first three featured tiles are
+  // artwork-only, and all catalog results render in the price-bearing grid.
+  const priceGrid=catalog?catalog.products:featured?.products.slice(3)??[];
+  const publicPriceShown=priceGrid.some(product=>Boolean(publicStorePrice(product)));
   return <main ref={pageRef} className="page store-page">
-    <header className="page-header"><div><h1>{ui("ui.store_ee7da93")}</h1></div><span className="catalog-source"><StatusDot />Microsoft Store</span></header>
+    <header className="page-header"><div><h1>{ui("ui.store_ee7da93")}</h1>{publicPriceShown?<p>{ui('store.us_price_context')}</p>:null}</div><span className="catalog-source"><StatusDot />Microsoft Store</span></header>
     {!catalog ? <section className="featured-catalog"><SectionTitle title={ui("ui.featured_c533caf")} />{featuredLoading ? <div className="catalog-loading"><LoaderCircle className="spin" /><span>{ui("ui.loading_live_store_collection_20763b0")}</span></div> : featured?.products.length ? <><div className="featured-rail">{featured.products.slice(0, 3).map((product) => <button className="featured-tile" key={product.productId} data-gamepad-detail-target={product.productId} onClick={() => selectProduct(product)}>{product.heroUrl || product.posterUrl ? <img src={product.heroUrl ?? product.posterUrl} alt="" /> : <div className="featured-tile-placeholder"><Gamepad2 /></div>}<span className="featured-tile-copy"><GameTitle title={product.title} /><small>{product.publisher ?? 'Microsoft Store'} · {product.installability === 'supported' ? ui('store.verified_pc') : ui("ui.check_package_support_79592da")}</small></span></button>)}</div><SectionTitle title={ui("ui.top_paid_games_8040f77")} />{productGrid(featured.products.slice(3))}</> : <div className="catalog-empty"><Store /><h2>{ui("ui.featured_games_are_temporarily_unavailable_3901a69")}</h2><p>{featuredError ?? ui("ui.search_still_works_with_live_microsoft_store_dat_b3eeb72")}</p></div>}</section> : null}
 
     {catalog ? <><SectionTitle title={ui("ui.results_for_343a212", { query: catalog.query })} />{productGrid(catalog.products)}{catalog.products.length === 0 ? <div className="empty-state compact"><div><Search /></div><h2>{ui("ui.no_games_found_6da4c04")}</h2><p>{ui("ui.try_a_different_title_or_a_microsoft_store_produ_326af8c")}</p></div> : null}{catalog.hasMore ? <div className="load-more" data-gamepad-library-footer><button className="secondary" aria-disabled={loadingMore} aria-busy={loadingMore} onClick={() => { if (!loadingMore) void loadMore(); }}>{loadingMore ? <LoaderCircle className="spin" /> : <Plus />}{ui("ui.load_more_results_e03f1e4")}</button></div> : null}</> : null}

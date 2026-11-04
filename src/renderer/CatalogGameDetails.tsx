@@ -13,6 +13,16 @@ export function catalogGameInstalled(product:CatalogProduct,data:AppSnapshot){
 export function catalogGameQueued(product:CatalogProduct,data:AppSnapshot){
  return data.downloads.some(task=>['running','queued','paused'].includes(task.status)&&[product.productId,product.installProductId].includes(task.productId.toUpperCase()));
 }
+/** The public Store producer formats US prices as a dollar amount, for
+ * example "$29.99". Marker text such as "Included" or "Free for 30 days"
+ * never gets a currency claim, and an unrecognised or bare amount is left
+ * unlabelled instead of being relabelled as USD. */
+const PUBLIC_STORE_AMOUNT=/^\$\s?\d{1,3}(?:,\d{3})*(?:\.\d{1,2})?$/;
+const PUBLIC_STORE_MARKER=/^(?:free|included)\b/i;
+export function publicStorePrice(product:Pick<CatalogProduct,'purchasePrice'>):string|undefined{
+ const value=product.purchasePrice?.trim();
+ return value&&!PUBLIC_STORE_MARKER.test(value)&&PUBLIC_STORE_AMOUNT.test(value)?value:undefined;
+}
 
 export function CatalogGameDetails({product,data,back,backLabel,toast,storeAccess,storeMode=false}:{product:CatalogProduct;storeMode?:boolean;storeAccess?:ReturnType<typeof useStoreAccess>;data:AppSnapshot;back:()=>void;backLabel?:string;toast:(value:{kind:'success'|'error';message:string})=>void}){
  const startInstall=usePackageInstall();
@@ -48,7 +58,7 @@ export function CatalogGameDetails({product,data,back,backLabel,toast,storeAcces
  return <GameDetails key={installed?.id??product.productId} game={installed??{id:'catalog:'+product.productId,title:product.title,publisher:product.publisher,heroUrl:product.heroUrl,coverUrl:product.posterUrl}}
   detailId={product.productId} catalogProductId={installed?undefined:product.productId} publicMetadataProductId={storeMode?product.productId:undefined} data={data} back={back} backLabel={backLabel} play={<>{button}<button className="secondary" onClick={()=>window.open(product.storeUrl??`https://www.xbox.com/games/store/p/${product.productId}`,'_blank')}>{ui('ui.store_page_9c667df')}</button></>}
   notices={!installed?<section className="gd-install-options">{licensed?<p className={product.installability==='supported'?'supported':'unsupported'}>{uiText(product.supportNote)}</p>:null}
-   {product.purchasePrice||product.includedWith?<div className="catalog-badges">{product.purchasePrice?<span>{product.purchasePrice}</span>:null}{product.includedWith?<span className="pass">{ui('store.available_with',{plan:product.includedWith})}</span>:null}</div>:null}
+   {product.purchasePrice||product.includedWith?<div className="catalog-price-summary"><div className="catalog-badges">{product.purchasePrice?<span>{product.purchasePrice}</span>:null}{product.includedWith?<span className="pass">{ui('store.available_with',{plan:product.includedWith})}</span>:null}</div>{storeMode&&publicStorePrice(product)?<p className="catalog-price-note">{ui('store.us_price_context')}</p>:null}</div>:null}
    {licensed?<label>{ui('ui.install_location_af47896')}<div className="input-action"><input value={destination} disabled={busy||queued} onChange={event=>setDestination(event.target.value)}/><button type="button" disabled={busy||queued} aria-label={ui('ui.choose_folder_3db7410')} onClick={async()=>{const value=await window.launcher.chooseDirectory(destination);if(value&&identity.current===scope)setDestination(value);}}><FolderOpen/></button></div></label>:null}
   </section>:undefined}/>
 }

@@ -230,6 +230,8 @@ button.primary svg, button.secondary svg { width: 17px; height: 17px; }
 .catalog-selection-copy h2 { max-width: 720px; margin: 9px 0 8px; font-size: 34px; line-height: 1.04; letter-spacing: -.04em; }
 .catalog-selection-copy > p { max-width: 690px; margin: 12px 0 9px; color: #c5c8cc; font-size: 11px; line-height: 1.55; display: -webkit-box; -webkit-line-clamp: 4; -webkit-box-orient: vertical; overflow: hidden; }
 .catalog-selection-copy > small { color: #9ca1a7; font-size: 9px; }
+.catalog-price-summary { display: grid; gap: 6px; }
+.catalog-price-note { margin: 0; color: var(--muted); font-size: 11px; line-height: 1.5; }
 .catalog-badges { display: flex; flex-wrap: wrap; gap: 5px; }
 .catalog-badges span { padding: 5px 7px; border: 1px solid rgba(255,255,255,.18); background: rgba(20,22,24,.72); color: #d6d8db; font-size: 8px; font-weight: 700; text-transform: uppercase; }
 .catalog-badges .pass { color: #b6d5a5; border-color: rgba(101,169,69,.32); }
