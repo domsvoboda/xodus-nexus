@@ -45,6 +45,7 @@ import { layoutOfWine } from './proton-layout.js';
 import { accountCacheKey } from './offline-identity.js';
 import { applyOfflinePermissions, assertOfflineAccessReady, bindOfflineAccess, licenseCacheDirectory, offlineAccessRevoked, revokeOfflineAccess, type OfflineRevocation } from './offline-access.js';
 import { CatalogService } from './catalog.js';
+import {catalogDetailMarket, publicStoreMarket} from './public-store-market.js';
 import {assertStoreOfferAccess} from './catalog-access.js';
 import { cloudSaveRuntime, gameInviteRuntime, offlineIdentityRuntime, selectedWinePath, startXodusService, storeContentRuntime, storeDiscoveryRuntime, unbridgedCloudSaveRuntime, type XodusServiceSession } from './xodus-service.js';
 import { GameLogReducer, gameLoggingEnvironment, gameWindowEnvironment } from './game-log.js';
@@ -1761,8 +1762,8 @@ function registerDemoIpc(catalogMarket: () => string): void {
   ipcMain.handle('forget-account', () => {});
   ipcMain.handle('offline-permissions', () => ({ enabled: false, requestSuccess: true, remainingToggles: 2, maxToggles: 3, periodDays: 365, checkedAt: new Date().toISOString() }));
   ipcMain.handle('set-offline-permissions', (_event, enabled: boolean) => ({ enabled: Boolean(enabled), requestSuccess: true, remainingToggles: 1, maxToggles: 3, periodDays: 365, checkedAt: new Date().toISOString() }));
-  ipcMain.handle('catalog-search', (_event, query: string, cursor?: string) => catalog.search(query, catalogMarket(), cursor));
-  ipcMain.handle('catalog-featured', () => catalog.featured(catalogMarket()));
+  ipcMain.handle('catalog-search', (_event, query: string, cursor?: string) => catalog.search(query, publicStoreMarket(), cursor));
+  ipcMain.handle('catalog-featured', () => catalog.featured(publicStoreMarket()));
   ipcMain.handle('store-access', () => ({configuredMarket:snapshot().settings.market,account:snapshot().auth.username??'demo',backend:snapshot().backend.binaryPath??'',market:catalogMarket(),checkedAt:new Date().toISOString(),expiresAt:new Date(Date.now()+60_000).toISOString(),accessByProductId:{}}));
   ipcMain.handle('account-library', (_event, kind: 'all' | 'owned' | 'gamepass') => demoAccountLibrary(kind, demoArtwork));
   ipcMain.handle('stop-game-update-check', () => {});
@@ -1787,7 +1788,7 @@ function registerDemoIpc(catalogMarket: () => string): void {
   ipcMain.handle('game-details', async (_event, id: unknown) => {
     const game = demoGames.find(game => game.id === id);
     const target=typeof id==='object'?gameDetailsTarget(id,[]):game?gameDetailsTarget(id,demoGames):undefined;
-    return target?.productId ? catalog.gameDetails(target.productId, catalogMarket()) : undefined;
+    return target?.productId ? catalog.gameDetails(target.productId, catalogDetailMarket(target.scope, catalogMarket())) : undefined;
   });
   ipcMain.handle('game-activity', () => ({ status: 'unavailable' }));
   ipcMain.handle('game-achievements', () => ({ status: 'unavailable' }));
@@ -2040,7 +2041,7 @@ function registerIpc(): void {
     } finally { offlinePermissionChanging = false; }
   });
   ipcMain.handle('catalog-search', (_event, query: string, cursor?: string) => {
-    return catalog.search(query, catalogMarket(), cursor);
+    return catalog.search(query, publicStoreMarket(), cursor);
   });
   ipcMain.handle('store-access', () => storeAccess());
   ipcMain.handle('account-library', (_event, kind: 'all' | 'owned' | 'gamepass' | 'other', cursor?: string, refresh = false, sort?: 'recent-gamepass') => {
@@ -2058,7 +2059,7 @@ function registerIpc(): void {
     });
   });
   ipcMain.handle('save-diagnostic-report', (_event, content: unknown) => saveReviewedReport(content));
-  ipcMain.handle('catalog-featured', () => catalog.featured(catalogMarket()));
+  ipcMain.handle('catalog-featured', () => catalog.featured(publicStoreMarket()));
   ipcMain.handle('start-install', (_event, request: InstallRequest) => startInstall(request));
   ipcMain.handle('install-plan', async (_event, raw: string, destination?: string) => {
     const binary = requireBackend('streaming');
@@ -2174,9 +2175,12 @@ function registerIpc(): void {
   ipcMain.handle('game-details', async (_event, id: unknown) => {
     const target=gameDetailsTarget(id,store.games);
     if (!target.productId) return undefined;
-    const market = currentMarket();
+    // Only an explicit public Store presentation scope selects public browsing
+    // metadata. A saved game ID and an unscoped Library product keep the real
+    // account market.
+    const market=catalogDetailMarket(target.scope,currentMarket());
     const details = await catalog.gameDetails(target.productId, market);
-    if (market !== currentMarket()) throw Error('Store market changed. Try again.');
+    if (market !== catalogDetailMarket(target.scope,currentMarket())) throw Error('Store market changed. Try again.');
     return details;
   });
   ipcMain.handle('game-activity', async (_event, id: unknown, refresh = false) => {

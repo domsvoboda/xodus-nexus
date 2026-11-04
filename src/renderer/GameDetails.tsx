@@ -1,7 +1,7 @@
 import { ui } from './i18n';
 import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
 import { ArrowLeft, Check, ChevronLeft, ChevronRight, Clock3, Download, Gamepad2, Images, LoaderCircle, MoreHorizontal, RefreshCw, X } from 'lucide-react';
-import type { AppSnapshot, Game, GameActivity, GameStoreDetails } from '../shared/types';
+import type { AppSnapshot, Game, GameActivity, GameDetailsTarget, GameStoreDetails } from '../shared/types';
 import './game-details.css';
 import { Achievements } from './Achievements';
 
@@ -59,6 +59,9 @@ export function Gallery({ title, images, initial, close }: { title: string; imag
 interface PageProps {
   game: Pick<Game,'id'|'title'|'publisher'|'coverUrl'|'heroUrl'> & {installState?:Game['installState']};
   catalogProductId?: string;
+  /** Read-only public Store metadata identity. It never changes activity,
+   * achievements, Play or any account/install decision. */
+  publicMetadataProductId?: string;
   detailId?: string;
   back: () => void;
   backLabel?: string;
@@ -154,6 +157,9 @@ export function GameDetailsContent({ game, detailId,back, backLabel, play, manag
 export function GameDetails(props: PageProps & { data: AppSnapshot }) {
   const { game, data } = props;
   const target=useMemo(()=>props.catalogProductId?{productId:props.catalogProductId}:game.id,[game.id,props.catalogProductId]);
+  // Descriptive metadata may come from public Store browsing; the identity target
+  // above still drives Play, activity and achievements on the account market.
+  const metadataTarget=useMemo<GameDetailsTarget>(()=>props.publicMetadataProductId?{productId:props.publicMetadataProductId,scope:'public-store'}:target,[props.publicMetadataProductId,target]);
   const [details, setDetails] = useState<GameStoreDetails>();
   const [metadataLoading, setMetadataLoading] = useState(true);
   const [metadataError, setMetadataError] = useState(false);
@@ -162,9 +168,9 @@ export function GameDetails(props: PageProps & { data: AppSnapshot }) {
   const request = useRef(0);
   useEffect(() => {
     let live = true; setDetails(undefined); setMetadataLoading(true); setMetadataError(false);
-    window.launcher.getGameDetails(target).then(value => { if (live) setDetails(value); }).catch(() => { if (live) setMetadataError(true); }).finally(() => { if (live) setMetadataLoading(false); });
+    window.launcher.getGameDetails(metadataTarget).then(value => { if (live) setDetails(value); }).catch(() => { if (live) setMetadataError(true); }).finally(() => { if (live) setMetadataLoading(false); });
     return () => { live = false; };
-  }, [target, data.settings.market]);
+  }, [metadataTarget, data.settings.market]);
   const loadActivity = useCallback((refresh = false) => {
     const id = ++request.current; setActivityLoading(true);
     void window.launcher.getGameActivity(target, refresh).then(value => { if (request.current === id) setActivity(value); }).catch(() => { if (request.current === id) setActivity({ status: 'error' }); }).finally(() => { if (request.current === id) setActivityLoading(false); });

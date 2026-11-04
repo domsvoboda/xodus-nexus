@@ -401,8 +401,15 @@ export interface CatalogProduct {
   supportNote: string;
 }
 
-/** A saved installation ID, or an explicit read-only Store catalog identity. */
-export type GameDetailsTarget = string | {productId:string};
+/** Public Store browsing is the only non-account catalog presentation scope.
+ * It selects read-only metadata from the neutral public Store market only; it
+ * never proves ownership or grants install access, and account activity,
+ * achievements and licensing keep their configured market. */
+export type GameDetailsScope = 'public-store';
+/** A saved installation ID, or an explicit read-only Store catalog identity.
+ * An unscoped identity keeps the configured/effective account market; only an
+ * explicit `public-store` scope selects public browsing metadata. */
+export type GameDetailsTarget = string | {productId:string; scope?:GameDetailsScope};
 
 /** Public catalog data only, never an ownership/installation decision. */
 export interface GameStoreDetails {
