@@ -1410,8 +1410,9 @@ async function prepareGameLaunch(id: string, steam?: SteamGameContext): Promise<
       const launchOptionsEnvironment = parseLaunchOptions(game.launchTools?.launchOptions ?? '').environment;
       for (const notice of await protonOptionalComponentNotices({ ...launchEnvironment, ...launchOptionsEnvironment },
         protonRunner.protonRoot, compatibilityDataPath, offlineLaunch)) addGameLog(notice);
-      // Options that need a Steam game id or the runtime's umu/Steam helper are
-      // reported as inactive instead of being simulated with an invented id.
+      // Options that depend on context this launch does not provide are
+      // reported with their specific bound reason. No missing identity is
+      // invented and no global active/inactive state is claimed.
       for (const notice of await protonLaunchFeatureNotices({ ...launchEnvironment, ...launchOptionsEnvironment },
         protonRunner.protonRoot, protonRunner.compatibilityLocation)) addGameLog(notice);
     }
