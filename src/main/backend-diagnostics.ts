@@ -9,7 +9,7 @@ import { transferDiagnostic, transferStages } from '../shared/transfer-failure.j
 import { keyringSteps, keyringFailures, keyringBusErrors, type KeyringDiagnostic } from './keyring-diagnostic.js';
 import { backendPrerequisiteFailure } from './backend-prerequisites.js';
 
-const operations = new Set(['keyring', 'account', 'profile', 'achievements', 'library', 'login', 'logout', 'streaming', 'download', 'license', 'run', 'resolve-package', 'service', 'probe', 'social', 'update']);
+const operations = new Set(['keyring', 'account', 'profile', 'achievements', 'library', 'login', 'logout', 'streaming', 'download', 'license', 'run', 'resolve-package', 'service', 'probe', 'social', 'update', 'component-update']);
 // Fixed installer phases and failure codes. They are never derived from
 // messages, paths, URLs or child output.
 const updateStages = new Set([
@@ -19,6 +19,10 @@ const updateStages = new Set([
   'update-file-mismatch', 'update-binary', 'update-permission', 'update-validate',
   'update-commit', 'update-discovery', 'update-check-failed', 'update-cleanup', 'update-notify',
 ]);
+// Fixed component-update orchestration failures. They describe the plan/apply
+// entry, never an installer step, and never carry free-form text.
+const componentUpdateStages = new Set(['plan-blocked', 'plan-discovery', 'apply-blocked']);
+const componentUpdateComponents = new Set(['backend', 'runtime', 'launcher']);
 const socialHttpStages = new Set(['friends-http','conversation-http','send-http',
   'chat-policy-http','chat-device-http','chat-context-http','chat-xsts-http','chat-privacy-http']);
 const socialStages = new Set([...socialHttpStages,'conversation-response','friends-response',
@@ -38,6 +42,7 @@ const stages = new Set([
   ...contentLicenseStages,
   ...transferStages,
   ...updateStages,
+  ...componentUpdateStages,
   'keyring-unavailable', 'keyring-invalid-data', 'keyring-missing-data', 'keyring-write-verification', 'credential-io', 'device-authentication',
   'stored-account', 'account-changed', 'stored-device', 'device-token', 'stored-user', 'user-token', 'http-client',
   'store-ticket', 'store-ticket-refused', 'store-ticket-type', 'store-ticket-format', 'market', 'account-check',
@@ -51,7 +56,7 @@ const stages = new Set([
 type Event = 'start' | 'exit' | 'spawn-error' | 'diagnostic' | 'validation' | 'failure';
 type Context = { launcher?: string; backend?: string; source?: string };
 type SocialReceiptDiagnostic = {hasMessageId:boolean;hasConversationId:boolean;nudge:'absent'|'false'|'true'|'invalid';hasError:boolean};
-type RecordData = { operation: string; event: Event; stage?: string; status?: number; skipped?: number; code?: number; serviceCode?: string; signal?: string; elapsedMs?: number; committed?: boolean; keyring?: KeyringDiagnostic; socialReceipt?:SocialReceiptDiagnostic };
+type RecordData = { operation: string; event: Event; stage?: string; component?: 'backend' | 'runtime' | 'launcher'; status?: number; skipped?: number; code?: number; serviceCode?: string; signal?: string; elapsedMs?: number; committed?: boolean; keyring?: KeyringDiagnostic; socialReceipt?:SocialReceiptDiagnostic };
 const version = (value?: string) => value && /^\d{1,4}\.\d{1,4}\.\d{1,4}$/.test(value) ? value : 'unknown';
 
 /** Allowlisted metadata only. Never persists child output, argv, auth frames or identifiers. */
@@ -94,7 +99,10 @@ export class BackendDiagnostics {
   }
   record(data: RecordData): void {
     if (!operations.has(data.operation) || !['start', 'exit', 'spawn-error', 'diagnostic', 'validation', 'failure'].includes(data.event)
-      || (data.event === 'failure' && data.operation !== 'update') || this.pending >= 256) return;
+      || (data.event === 'failure' && data.operation !== 'update' && data.operation !== 'component-update') || this.pending >= 256) return;
+    // Orchestration visibility is failure-only; it never duplicates a component
+    // operation's own start, progress or exit records.
+    if (data.operation === 'component-update' && data.event !== 'failure') return;
     let context: Context;
     try { context = this.context(); } catch { context = {}; }
     const entry: Record<string, unknown> = {
@@ -102,13 +110,20 @@ export class BackendDiagnostics {
       launcher: version(context.launcher), backend: version(context.backend),
       source: ['managed', 'external'].includes(context.source ?? '') ? context.source : 'unknown',
     };
-    // Installer stages are a separate fixed vocabulary and never mix with
-    // backend child-process stages for other operations.
+    // Installer and orchestration stages are separate fixed vocabularies and
+    // never mix with backend child-process stages for other operations.
     if (data.stage && updateStages.has(data.stage) && data.operation !== 'update') return;
-    const stageAllowed = Boolean(data.stage && stages.has(data.stage) && (data.operation === 'update') === updateStages.has(data.stage!));
-    // An installer record without a fixed stage carries no useful information.
-    if (data.operation === 'update' && ['diagnostic', 'failure'].includes(data.event) && !stageAllowed) return;
+    if (data.stage && componentUpdateStages.has(data.stage) && data.operation !== 'component-update') return;
+    const stageAllowed = Boolean(data.stage && stages.has(data.stage) && (data.operation === 'update') === updateStages.has(data.stage!)
+      && (data.operation === 'component-update') === componentUpdateStages.has(data.stage!));
+    // A record without its fixed stage carries no useful information.
+    if (['update', 'component-update'].includes(data.operation) && ['diagnostic', 'failure'].includes(data.event) && !stageAllowed) return;
+    const componentAllowed = data.component !== undefined && componentUpdateComponents.has(data.component);
+    // A discovery failure must name the component it belongs to, or it could be
+    // mistaken for a different component's install.
+    if (data.operation === 'component-update' && data.stage === 'plan-discovery' && !componentAllowed) return;
     if (data.stage && stageAllowed) entry.stage = data.stage;
+    if (data.operation === 'component-update' && componentAllowed) entry.component = data.component;
     if (Number.isInteger(data.status) && data.status! >= 100 && data.status! <= 599) entry.status = data.status;
     if (Number.isInteger(data.skipped) && data.skipped! >= 0 && data.skipped! <= 200_000) entry.skipped = data.skipped;
     if (Number.isInteger(data.code) && data.code! >= -1 && data.code! <= 255) entry.code = data.code;

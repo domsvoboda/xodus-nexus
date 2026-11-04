@@ -35,6 +35,7 @@ import {XboxGuideParty} from './xbox-guide-party.js';
 import {XboxOverlayShortcut,ensureOverlayDesktopEntry} from './xbox-overlay-shortcut.js';
 import {xboxOverlaySettings,xboxOverlayPatch} from '../shared/xbox-overlay-settings.js';
 import { BackendManager } from './backend.js';
+import { backendHttpStatus } from './backend-releases.js';
 import { run, spawnTracked } from './process.js';
 import { inspectGameDirectory, StateStore } from './store.js';
 import { inspectStartupLibrary } from './startup-library.js';
@@ -534,8 +535,18 @@ function componentActivityRunning(): boolean {
         store.downloads.some(task => task.status === 'queued' || task.status === 'running');
 }
 
+async function discoverComponent<T>(component: 'backend' | 'runtime' | 'launcher', prepare: () => Promise<T>): Promise<T> {
+    try { return await prepare(); }
+    catch (error) {
+        // Read-only plan discovery failed before any installer entry point. Record
+        // the phase and component once, then let the original error reach the UI.
+        backendDiagnostic({ operation: 'component-update', event: 'failure', stage: 'plan-discovery', component, status: backendHttpStatus(error) });
+        throw error;
+    }
+}
+
 async function prepareComponentUpdates(): Promise<PreparedComponentUpdate[]> {
-    const backendPlan = await backend.prepareComponentUpdate(emitSnapshot);
+    const backendPlan = await discoverComponent('backend', () => backend.prepareComponentUpdate(emitSnapshot));
     const backendApply = backendPlan.apply, backendReconcile = backendPlan.reconcile;
     backendPlan.apply = async (owner) => {
         const result = await backendApply(owner);
@@ -550,9 +561,10 @@ async function prepareComponentUpdates(): Promise<PreparedComponentUpdate[]> {
     };
     if (backendReconcile)
         backendPlan.reconcile = async (owner) => { const result = await backendReconcile(owner); await refreshAccount(false); emitSnapshot(); return result; };
-    return [backendPlan, ...await prepareManagedComponentUpdates(runtime, emitSnapshot),
-        await prepareLegacyComponentUpdate(runtime, { configuredWine: () => store.settings.winePath, persistSelection: async (winePath) => { await store.setSettings({ winePath }); }, refreshAccount: async () => { await refreshAccount(false); } }, emitSnapshot),
-        await launcherUpdater.prepareComponentUpdate()];
+    return [backendPlan,
+        ...await discoverComponent('runtime', () => prepareManagedComponentUpdates(runtime, emitSnapshot)),
+        await discoverComponent('runtime', () => prepareLegacyComponentUpdate(runtime, { configuredWine: () => store.settings.winePath, persistSelection: async (winePath) => { await store.setSettings({ winePath }); }, refreshAccount: async () => { await refreshAccount(false); } }, emitSnapshot)),
+        await discoverComponent('launcher', () => launcherUpdater.prepareComponentUpdate())];
 }
 
 async function syncManagedWinePath(): Promise<void> {

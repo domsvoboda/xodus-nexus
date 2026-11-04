@@ -81,6 +81,16 @@ failure record carries `committed`, so a failure before `current.json`
 publication is distinguishable from an activation that needs attention. These
 records never contain messages, paths, URLs, tokens, accounts or child output.
 
+Component update orchestration (`Update all components`) uses operation
+`component-update` in the same private log. Only failures are recorded:
+`plan-blocked` (the check was requested while another update batch holds the
+launcher), `plan-discovery` (a component's read-only release discovery failed;
+`component` is `backend`, `runtime` or `launcher`, and `status` is present only
+when the failure carried an HTTP status) and `apply-blocked` (the update start
+was rejected by the activity gate or another running batch). These records never
+contain messages, paths, URLs, tokens or accounts, and they never replace the
+installer's own `update` failure, start or exit records.
+
 ## Package selection
 
 `resolve-package PRODUCT --json --market US` reads public Store metadata without
