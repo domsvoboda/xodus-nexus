@@ -4,11 +4,14 @@ import { createRoot, type Root } from 'react-dom/client';
 import { afterEach, beforeEach, expect, it, vi } from 'vitest';
 import App from './App';
 import { demoAccountLibrary, demoLaunchOptions, demoSnapshot } from '../shared/demo-data';
+import type { AppSnapshot } from '../shared/types';
 import { gamepadHarness } from './gamepad-test-harness';
 import { createDemoSocial } from '../shared/demo-social';
 
 let root: Root;
 let harness: ReturnType<typeof gamepadHarness>;
+let snapshot: AppSnapshot;
+let snapshotListener: ((value: AppSnapshot) => void) | undefined;
 const get = (selector: string) => {
   const element = document.querySelector<HTMLElement>(selector);
   if (!element) throw Error(`Missing control: ${selector}`);
@@ -23,6 +26,44 @@ const typeSearch = async (query: string) => {
     input.dispatchEvent(new Event('input', { bubbles: true }));
   });
 };
+const idleSettingsSnapshot = (data: AppSnapshot) => {
+  data.downloads = [];
+  data.auth.running = false;
+  data.backend.updating = false;
+  data.runtime.updating = false;
+  if (data.launcherUpdate) data.launcherUpdate.updating = false;
+  data.gameOperation = undefined;
+  data.componentUpdates = undefined;
+};
+// Feed a per-test snapshot through the same onSnapshot channel the real main
+// process uses, without changing the demo fixture for every test.
+const emitSnapshot = async (change: (data: AppSnapshot) => void) => {
+  const next = structuredClone(snapshot);
+  change(next);
+  snapshot = next;
+  await act(async () => { snapshotListener?.(next); });
+  await act(async () => { harness.step(); });
+};
+const layoutSettingsColumns = () => {
+  // Match the staggered rows in Settings: language left/save right, then a
+  // small checkbox left, launcher buttons right, and account actions below.
+  document.querySelectorAll<HTMLElement>('.settings-page button,.settings-page input,.settings-page select,.settings-page summary').forEach((element, index) => {
+    element.dataset.testRect = `400,${2000 + index * 100},100,40`;
+  });
+  document.querySelectorAll<HTMLElement>('.settings-page .check-field').forEach(field => {
+    const input = field.querySelector<HTMLElement>('input');
+    if (input?.dataset.testRect) field.dataset.testRect = input.dataset.testRect;
+  });
+  const language = get('.settings-language select'), save = get('.settings-language button');
+  const tray = get('.tray-toggle input');
+  const [updates, steam] = [...document.querySelectorAll<HTMLButtonElement>('.launcher-card .button-row button')];
+  const signIn = get('.account-card .button-row button');
+  language.dataset.testRect = '430,270,330,56'; save.dataset.testRect = '1720,269,164,56';
+  tray.closest<HTMLElement>('.check-field')!.dataset.testRect = '427,400,1457,48';
+  tray.dataset.testRect = '427,413,22,22'; updates.dataset.testRect = '1400,551,227,56';
+  steam.dataset.testRect = '1639,551,244,56'; signIn.dataset.testRect = '427,987,186,56';
+  return { language, save, tray, updates, steam };
+};
 beforeEach(async () => {
   vi.stubGlobal('IS_REACT_ACT_ENVIRONMENT', true);
   // Node 25+ has its own storage global. Keep these browser tests on jsdom's
@@ -30,14 +71,15 @@ beforeEach(async () => {
   vi.stubGlobal('localStorage', (globalThis as unknown as { jsdom: { window: Window } }).jsdom.window.localStorage);
   localStorage.clear(); window.location.hash = '';
   harness = gamepadHarness();
-  const data = demoSnapshot();
+  snapshot = demoSnapshot();
   // No live account or API calls; exercise the actual App and page components.
-  data.auth.stored = true;
+  snapshot.auth.stored = true;
   const unsubscribe = () => () => {};
   const demo = createDemoSocial();
   let profileListener: ((request: { id: string; xuid: string }) => void) | undefined;
   window.launcher = {
-    getSnapshot: vi.fn(async () => data), onSnapshot: unsubscribe,
+    getSnapshot: vi.fn(async () => snapshot),
+    onSnapshot: (callback: (value: AppSnapshot) => void) => { snapshotListener = callback; return () => { snapshotListener = undefined; }; },
     onOpenFriends: unsubscribe, onLauncherPage: unsubscribe, onOperationLog: unsubscribe,
     onXboxDesktopProfile: (callback: typeof profileListener) => { profileListener = callback; return () => { profileListener = undefined; }; }, getXboxDesktopProfile: vi.fn(async () => undefined),
     isDemoTour: () => false,
@@ -49,6 +91,7 @@ beforeEach(async () => {
     getGameAchievements: vi.fn(async () => ({ status: 'unsupported' })),
     searchCatalog: vi.fn(async (query: string) => ({ query, products: [], hasMore: false })),
     getFeaturedCatalog: vi.fn(async () => ({ query: '', products: [], hasMore: false })),
+    checkLauncherUpdate: vi.fn(async () => undefined),
     ...demo.voice,
     getXboxChatReads: vi.fn(async () => undefined), onXboxChatReads: unsubscribe, viewedXboxChat: vi.fn(async () => {}),
     nativeSocial: { ...demo.social, openXboxPlayerProfile: vi.fn(async (xuid: string) => { profileListener?.({ id: 'demo-full-profile', xuid }); }) },
@@ -313,20 +356,10 @@ it('renders and operates the demo party invitation, connected controls and leave
 });
 
 it('follows Settings rows across columns instead of skipping the tray and launcher controls', async () => {
+  await emitSnapshot(idleSettingsSnapshot);
   await click('.sidebar-bottom .nav-item');
-  // Match the staggered rows in Settings: language left/save right, then a
-  // small checkbox left, launcher buttons right, and account actions below.
-  document.querySelectorAll<HTMLElement>('.settings-page button,.settings-page input,.settings-page select,.settings-page summary').forEach((element, index) => {
-    element.dataset.testRect = `400,${2000 + index * 100},100,40`;
-  });
-  const language = get('.settings-language select'), save = get('.settings-language button');
-  const tray = get('.tray-toggle input');
-  const [updates, steam] = [...document.querySelectorAll<HTMLElement>('.launcher-card .button-row button')];
-  const signIn = get('.account-card .button-row button');
-  language.dataset.testRect = '430,270,330,56'; save.dataset.testRect = '1720,269,164,56';
-  tray.closest<HTMLElement>('.check-field')!.dataset.testRect = '427,400,1457,48';
-  tray.dataset.testRect = '427,413,22,22'; updates.dataset.testRect = '1400,551,227,56';
-  steam.dataset.testRect = '1639,551,244,56'; signIn.dataset.testRect = '427,987,186,56';
+  const { language, save, tray, updates, steam } = layoutSettingsColumns();
+  expect(updates.disabled).toBe(false);
   language.focus(); await press(2);
   await press(15); expect(document.activeElement).toBe(save);
   await press(14); expect(document.activeElement).toBe(language);
@@ -336,4 +369,27 @@ it('follows Settings rows across columns instead of skipping the tray and launch
   await press(14); expect(document.activeElement).toBe(updates);
   await press(12); expect(document.activeElement).toBe(tray);
   await press(12); expect(document.activeElement).toBe(language);
+});
+
+it.each(['running', 'queued', 'paused'] as const)('keeps the busy %s download guard and skips the disabled update button to Steam', async status => {
+  await emitSnapshot(data => {
+    const task = structuredClone(data.downloads[0]);
+    task.status = status;
+    data.downloads = [task];
+  });
+  await click('.sidebar-bottom .nav-item');
+  const { language, save, tray, updates, steam } = layoutSettingsColumns();
+  expect(updates.disabled).toBe(true);
+  language.focus(); await press(2);
+  await press(15); expect(document.activeElement).toBe(save);
+  await press(14); expect(document.activeElement).toBe(language);
+  await press(15); await press(13); expect(document.activeElement).toBe(tray);
+  await press(13); expect(document.activeElement).toBe(steam);
+  expect(document.activeElement).not.toBe(updates);
+  updates.click();
+  expect(window.launcher.checkLauncherUpdate).not.toHaveBeenCalled();
+  await press(12); expect(document.activeElement).toBe(tray);
+  await press(12); expect(document.activeElement).toBe(language);
+  await press(12); expect(document.activeElement).toBe(get('.search-box input'));
+  await press(13); expect(document.activeElement).toBe(language);
 });
