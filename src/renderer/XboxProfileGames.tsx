@@ -12,6 +12,14 @@ export function xboxGameProgress(game:XboxProfileGame):{achievements?:string;gam
  return result;
 }
 
+export function XboxProfileGameArt({game}:{game:XboxProfileGame}){
+ const [failed,setFailed]=useState(false);
+ useEffect(()=>{setFailed(false);},[game.imageUrl]);
+ return game.imageUrl&&!failed
+  ?<img src={game.imageUrl} alt="" loading="lazy" decoding="async" referrerPolicy="no-referrer" onError={()=>setFailed(true)}/>
+  :<div className="social-profile-game-placeholder" role="img" aria-label={ui('ui.artwork_unavailable_f4d58d3')}><Gamepad2 aria-hidden="true"/></div>;
+}
+
 export function XboxProfileGames({api,xuid}:{api:XboxSocialApi;xuid:string}){
  const [games,setGames]=useState<ProfileGames>(),[problem,setProblem]=useState<string>(),[revision,setRevision]=useState(0);
  useEffect(()=>{
@@ -23,7 +31,7 @@ export function XboxProfileGames({api,xuid}:{api:XboxSocialApi;xuid:string}){
   <h3>{ui("social.games_d9dae7")}</h3>
   {games?<>
    {games.items.length?<div className="social-profile-game-list">{games.items.map(game=>{const progress=xboxGameProgress(game);return <article key={game.titleId} className="social-profile-game">
-    {game.imageUrl?<img src={game.imageUrl} alt="" loading="lazy" referrerPolicy="no-referrer"/>:<div className="social-profile-game-placeholder"><Gamepad2/></div>}
+    <XboxProfileGameArt game={game}/>
     <div><h4>{game.name}</h4>{game.lastPlayed?<p>{ui("ui.last_played_63abe4e")} {new Date(game.lastPlayed).toLocaleDateString()}</p>:null}
      {progress.achievements?<p>{progress.achievements}</p>:null}
      {progress.gamerscore?<p><b className="social-score-icon" aria-hidden="true">G</b> {progress.gamerscore}</p>:null}

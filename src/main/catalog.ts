@@ -60,6 +60,36 @@ const STORE_HOSTS = new Set(['www.xbox.com', 'xbox.com', 'apps.microsoft.com']);
 const CACHE_TTL_MS = 10 * 60 * 1000;
 const SEARCH_CACHE_LIMIT = 100;
 const SEARCH_REQUEST_LIMIT = 32;
+// Social title history identifies games by Xbox title ID, not by Store product
+// ID. The documented Display Catalog alternate-ID lookup is the only stable
+// mapping we use; it is anonymous public metadata and never carries account
+// tokens, headers or per-player state into the cached image URL.
+const TITLE_ARTWORK_TTL_MS = 10 * 60 * 1000;
+const TITLE_ARTWORK_NEGATIVE_TTL_MS = 2 * 60 * 1000;
+const TITLE_ARTWORK_CACHE_LIMIT = 500;
+const TITLE_ARTWORK_LOOKUPS_PER_CALL = 24;
+const TITLE_ARTWORK_CONCURRENCY = 4;
+const TITLE_ARTWORK_REQUESTS_LIMIT = 8;
+// A slow catalog must not hold the whole game history open. Workers stop
+// starting lookups after this deadline and keep the existing placeholders.
+const TITLE_ARTWORK_DEADLINE_MS = 8_000;
+const TITLE_ARTWORK_REQUEST_TIMEOUT_MS = 6_000;
+const TITLE_ARTWORK_EXPIRED = Symbol('title-artwork-expired');
+
+/** Race one awaited lookup against the current caller's budget. The shared
+ * request keeps running for other callers and for the cache; only this caller
+ * stops waiting. The listener is removed as soon as either side settles. */
+function raceCallerDeadline<T>(promise: Promise<T>, signal: AbortSignal): Promise<T | typeof TITLE_ARTWORK_EXPIRED> {
+  return new Promise((resolve, reject) => {
+    if (signal.aborted) { resolve(TITLE_ARTWORK_EXPIRED); return; }
+    const expired = () => resolve(TITLE_ARTWORK_EXPIRED);
+    signal.addEventListener('abort', expired, {once: true});
+    promise.then(
+      value => { signal.removeEventListener('abort', expired); resolve(value); },
+      error => { signal.removeEventListener('abort', expired); reject(error); },
+    );
+  });
+}
 // The Store's games recommendation feeds return about ten products per page.
 // Trending games are dominated by free-to-play titles that the public browsing
 // policy has to hide, so the top paid collection supplies real breadth. Both
@@ -364,6 +394,8 @@ export class CatalogService {
   private readonly gameRequests = new Map<string,Promise<GameStoreDetails|undefined>>();
   private readonly cache = new Map<string, { expires: number; value: CatalogSearchResult }>();
   private readonly requests = new Map<string, Promise<CatalogSearchResult>>();
+  private readonly titleArtworkCache = new Map<string,{until:number;value?:string}>();
+  private readonly titleArtworkRequests = new Map<string,Promise<string|undefined>>();
 
   constructor(private readonly fetcher: Fetcher = fetch) {}
 
@@ -689,5 +721,88 @@ export class CatalogService {
       }
     }
     return artwork;
+  }
+
+  /**
+   * Map missing social-profile artwork from an Xbox title ID to the public
+   * Store cover. A returned product is used only when its AlternateIds contain
+   * exactly the requested title ID, so a similar name can never substitute a
+   * guessed cover. Lookups are deduplicated, coalesced, cached and bounded;
+   * callers keep their existing placeholder when a title has no Store product.
+   */
+  async artworkForXboxTitleIds(titleIds: string[], rawMarket: string): Promise<Map<string,string>> {
+    const market = normalizeMarket(rawMarket);
+    const unique = titleIds
+      .map(value => value.trim())
+      .filter(value => /^\d{1,10}$/.test(value) && Number(value) > 0 && Number(value) <= 0xffffffff)
+      .filter((value, index, values) => values.indexOf(value) === index)
+      .slice(0, TITLE_ARTWORK_LOOKUPS_PER_CALL);
+    const artwork = new Map<string,string>();
+    if (!unique.length) return artwork;
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), TITLE_ARTWORK_DEADLINE_MS);
+    timer.unref?.();
+    const budget = controller.signal;
+    const queue = [...unique];
+    try {
+      const worker = async () => {
+        while (queue.length && !budget.aborted) {
+          const titleId = queue.shift()!;
+          const key = `${market}\u0000${titleId}`;
+          const cached = this.titleArtworkCache.get(key);
+          if (cached && cached.until > Date.now()) {
+            if (cached.value) artwork.set(titleId, cached.value);
+            continue;
+          }
+          if (cached) this.titleArtworkCache.delete(key);
+          let request = this.titleArtworkRequests.get(key);
+          if (!request) {
+            if (budget.aborted || this.titleArtworkRequests.size >= TITLE_ARTWORK_REQUESTS_LIMIT) continue;
+            request = this.fetchTitleArtwork(titleId, market)
+              .then(value => {
+                while (this.titleArtworkCache.size >= TITLE_ARTWORK_CACHE_LIMIT) this.titleArtworkCache.delete(this.titleArtworkCache.keys().next().value!);
+                this.titleArtworkCache.set(key, {until: Date.now() + (value ? TITLE_ARTWORK_TTL_MS : TITLE_ARTWORK_NEGATIVE_TTL_MS), value});
+                return value;
+              })
+              .finally(() => { this.titleArtworkRequests.delete(key); });
+            this.titleArtworkRequests.set(key, request);
+          }
+          // Artwork is optional: a failed lookup never fails the profile, and
+          // an expired caller stops waiting without cancelling shared work.
+          try {
+            const value = await raceCallerDeadline(request, budget);
+            if (value !== TITLE_ARTWORK_EXPIRED && value) artwork.set(titleId, value);
+          } catch {}
+        }
+      };
+      await Promise.all(Array.from({length: Math.min(TITLE_ARTWORK_CONCURRENCY, unique.length)}, worker));
+      return artwork;
+    } finally {
+      clearTimeout(timer);
+    }
+  }
+
+  private async fetchTitleArtwork(titleId: string, market: string): Promise<string | undefined> {
+    const url = new URL('https://displaycatalog.mp.microsoft.com/v7.0/products/lookup');
+    url.searchParams.set('alternateId', 'XboxTitleID');
+    url.searchParams.set('value', titleId);
+    url.searchParams.set('market', market);
+    url.searchParams.set('languages', 'en-us,neutral');
+    url.searchParams.set('fieldsTemplate', 'Details');
+    const response = await this.fetcher(url, { headers: { Accept: 'application/json' }, signal: AbortSignal.timeout(TITLE_ARTWORK_REQUEST_TIMEOUT_MS) });
+    if (!response.ok) return undefined;
+    const catalog = await response.json() as DisplayCatalogResponse;
+    const products = Array.isArray(catalog?.Products) ? catalog.Products : [];
+    if (products.length > 25) return undefined;
+    for (const entry of products) {
+      const product = object(entry);
+      if (!product || product.ProductType !== 'Game') continue;
+      if (catalogXboxTitleId(product.AlternateIds) !== titleId) continue;
+      const localized = Array.isArray(product.LocalizedProperties) ? object(product.LocalizedProperties[0]) : undefined;
+      const images = Array.isArray(localized?.Images) ? localized.Images as DisplayCatalogImage[] : [];
+      const cover = displayImage(images.filter(image => object(image)), POSTER_PURPOSES);
+      if (cover) return cover;
+    }
+    return undefined;
   }
 }

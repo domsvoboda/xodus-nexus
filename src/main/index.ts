@@ -8,7 +8,7 @@ import {resolveGameRuntime,bindRuntimePrefix} from './runtime-prefix-binding.js'
 import {desktopTrayAvailable} from './launcher-tray-desktop.js';
 import {LauncherTray} from './launcher-tray.js';
 import {SteamKeyboard} from './steam-keyboard.js';
-import type {XboxProfileRequest} from '../shared/types.js';
+import type {XboxProfileGames,XboxProfileRequest} from '../shared/types.js';
 import {XboxSocial as NativeXboxSocial} from './xbox-native-social.js';
 import {resetSocialTransport} from './xbox-social-transport.js';
 import { app, BrowserWindow, clipboard, dialog, globalShortcut, ipcMain, nativeImage, net, Notification, powerSaveBlocker, screen, shell, Tray, Menu } from 'electron';
@@ -46,6 +46,7 @@ import { layoutOfWine } from './proton-layout.js';
 import { accountCacheKey } from './offline-identity.js';
 import { applyOfflinePermissions, assertOfflineAccessReady, bindOfflineAccess, licenseCacheDirectory, offlineAccessRevoked, revokeOfflineAccess, type OfflineRevocation } from './offline-access.js';
 import { CatalogService } from './catalog.js';
+import {readXboxProfileGames} from './xbox-profile-games.js';
 import {catalogDetailMarket, publicStoreMarket} from './public-store-market.js';
 import {assertStoreOfferAccess} from './catalog-access.js';
 import { cloudSaveRuntime, gameInviteRuntime, offlineIdentityRuntime, selectedWinePath, startXodusService, storeContentRuntime, storeDiscoveryRuntime, unbridgedCloudSaveRuntime, type XodusServiceSession } from './xodus-service.js';
@@ -1700,6 +1701,14 @@ function currentMarket(): string {
   return configured.toLowerCase() === 'neutral' ? app.getLocaleCountryCode() || 'US' : configured;
 }
 
+// Title history artwork is optional: the native service omits an image when
+// the Xbox URL it received is not accepted. Fill only missing covers from the
+// verified public Store title-ID mapping; never replace service artwork and
+// never fail the player's history when Store metadata is unavailable.
+async function xboxProfileGames(xuid:string):Promise<XboxProfileGames>{
+  return readXboxProfileGames(xboxNativeSocial,xuid,titleIds=>catalog.artworkForXboxTitleIds(titleIds,currentMarket()));
+}
+
 // Fetch real covers and wide art even when an installation has a small logo.
 async function enrichDownloadCovers(tasks: readonly DownloadTask[], market: string): Promise<void> {
   const missing = tasks.filter(task => !task.coverUrl && ['queued', 'running', 'paused'].includes(task.status));
@@ -1901,7 +1910,7 @@ function registerIpc(): void {
   chatReads.viewed(account,binary,peer,ids);
  });
   ipcMain.handle('xbox-player-details',(event,xuid:string)=>{socialSender(event);return xboxNativeSocial.details(xuid);});
-  ipcMain.handle('xbox-player-games',(event,xuid:string)=>{socialSender(event);return xboxNativeSocial.games(xuid);});
+  ipcMain.handle('xbox-player-games',(event,xuid:string)=>{socialSender(event);return xboxProfileGames(xuid);});
   ipcMain.handle('xbox-social-people',(event,list:Parameters<NativeXboxSocial['people']>[0],query?:string)=>{socialSender(event);return xboxNativeSocial.people(list,query);});
   ipcMain.handle('xbox-social-relationship',(event,xuid:string)=>{socialSender(event);return xboxNativeSocial.relationship(xuid);});
   ipcMain.handle('xbox-social-relationship-change',(event,account:string,xuid:string,action:Parameters<NativeXboxSocial['changeRelationship']>[2])=>{socialSender(event);return xboxNativeSocial.changeRelationship(account,xuid,action);});
@@ -2745,7 +2754,7 @@ app.whenReady().then(async () => {
     const text=(index:number)=>{const value=args[index];if(typeof value!=='string')throw Error('Invalid Guide request.');return value;};
     switch(method){
      case 'getXboxPlayerDetails':return xboxNativeSocial.details(text(0));
-     case 'getXboxPlayerGames':return xboxNativeSocial.games(text(0));
+     case 'getXboxPlayerGames':return xboxProfileGames(text(0));
      case 'getXboxPeople':return xboxNativeSocial.people(text(0) as Parameters<NativeXboxSocial['people']>[0],args[1]===undefined||args[1]===null?undefined:text(1));
      case 'getXboxRelationship':return xboxNativeSocial.relationship(text(0));
      case 'changeXboxRelationship':if(text(0)!=='current')throw Error('Xbox account changed.');return xboxNativeSocial.changeRelationship(nativeSocialConnection()!.account,text(1),text(2) as Parameters<NativeXboxSocial['changeRelationship']>[2]);

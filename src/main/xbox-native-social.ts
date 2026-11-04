@@ -4,6 +4,10 @@ import type { XboxConversation, XboxFriend, XboxMessage,XboxMessageReceipt,XboxP
 
 type Connection = { binary: string; account: string };
 type Reader = (binary: string, args: string[], input: string | undefined, signal: AbortSignal) => Promise<string>;
+/** One exact social identity binding. `revision` advances whenever the
+ * launcher clears social state, so a reconnect of the same account or a Store
+ * and player role change can never inherit an older pending read. */
+export interface XboxSocialContext { account: string; binary: string; revision: number }
 const id = (value: unknown): value is string => typeof value === 'string' && /^[1-9][0-9]{0,19}$/.test(value) && BigInt(value) <= 18446744073709551615n;
 const string = (value: unknown, max: number): value is string => typeof value === 'string' && value.length <= max && !/[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]/.test(value);
 const object = (value: unknown): value is Record<string, unknown> => Boolean(value && typeof value === 'object' && !Array.isArray(value));
@@ -57,14 +61,20 @@ function cleanDetails(value:unknown):XboxPlayerDetails{
   }
   return result;
 }
+function gameImage(value:unknown):string|undefined{
+  if(typeof value!=='string'||value.length>8192)return;
+  try{
+    const url=new URL(value);
+    if(url.protocol!=='https:'||url.username||url.password||url.port)return;
+    return ['store-images.s-microsoft.com','store-images.microsoft.com','images-eds-ssl.xboxlive.com','images-eds.xboxlive.com','images-assets-ssl.xboxlive.com'].includes(url.hostname)?url.href:undefined;
+  }catch{return;}
+}
 function cleanGame(value:unknown):XboxProfileGame{
   if(!object(value)||!id(value.titleId)||BigInt(value.titleId)>4294967295n||!string(value.name,512)||!value.name)throw Error('Xbox returned an invalid game.');
   const game:XboxProfileGame={titleId:value.titleId,name:value.name};
-  if(value.imageUrl!==undefined){
-    if(typeof value.imageUrl!=='string'||value.imageUrl.length>8192)throw Error('Xbox returned an invalid game image.');
-    const url=new URL(value.imageUrl);
-    if(url.protocol!=='https:'||url.username||url.password||url.port||!['store-images.s-microsoft.com','images-eds-ssl.xboxlive.com','images-assets-ssl.xboxlive.com'].includes(url.hostname))throw Error('Xbox returned an invalid game image.');game.imageUrl=url.href;
-  }
+  // Artwork is optional. An unexpected image must not hide a valid title,
+  // timestamp or achievement history; the renderer shows a placeholder.
+  const image=gameImage(value.imageUrl);if(image)game.imageUrl=image;
   if(value.lastPlayed!==undefined){if(!string(value.lastPlayed,64)||!Number.isFinite(Date.parse(value.lastPlayed)))throw Error('Xbox returned an invalid game timestamp.');game.lastPlayed=value.lastPlayed;}
   for(const key of ['currentGamerscore','totalGamerscore','achievementsUnlocked','achievementsTotal'] as const){
     const field=value[key];if(field!==undefined){if(typeof field!=='number'||!Number.isSafeInteger(field)||field<0||field>1_000_000_000)throw Error('Xbox returned invalid achievement counts.');game[key]=field;}
@@ -140,12 +150,22 @@ export async function readXboxSocial(binary: string, args: string[], input: stri
 
 /** Backend-only authentication; no remote web page, token IPC, or message history on disk. */
 export class XboxSocial {
+  private revision = 0;
   private readonly controllers = new Set<AbortController>();
   private readonly reads = new Map<string, { connection: Connection; expires: number; promise: Promise<unknown[]> }>();
   private readonly peopleReads = new Map<string,{connection:Connection;expires:number;promise:Promise<unknown>}>();
   private readonly peopleMutations = new Set<string>();
   constructor(private readonly connection: () => Connection | undefined, private readonly reader: Reader = readXboxSocial) {}
+  context(): XboxSocialContext | undefined {
+    const connection=this.connection();
+    return connection?{account:connection.account,binary:connection.binary,revision:this.revision}:undefined;
+  }
+  matches(context: XboxSocialContext | undefined): boolean {
+    const current=this.context();
+    return Boolean(context&&current&&current.account===context.account&&current.binary===context.binary&&current.revision===context.revision);
+  }
   clear(): void {
+    this.revision++;
     for (const controller of this.controllers) controller.abort();
     this.controllers.clear();this.reads.clear();this.peopleReads.clear();
   }
@@ -189,8 +209,9 @@ export class XboxSocial {
     if(xuid!=='me'&&!id(xuid))return Promise.reject(Error('Select an Xbox player.'));
     return this.peopleRequest('profile',{xuid}) as Promise<XboxPlayerDetails>;
   }
-  games(xuid:string):Promise<XboxProfileGames>{
+  games(xuid:string,context?:XboxSocialContext):Promise<XboxProfileGames>{
     if(xuid!=='me'&&!id(xuid))return Promise.reject(Error('Select an Xbox player.'));
+    if(context&&!this.matches(context))return Promise.reject(Error('Xbox account changed. Open Social again.'));
     return this.peopleRequest('games',{xuid}) as Promise<XboxProfileGames>;
   }
   async changeRelationship(account:string,xuid:string,action:XboxRelationshipAction):Promise<void>{
