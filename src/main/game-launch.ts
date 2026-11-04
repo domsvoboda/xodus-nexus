@@ -28,3 +28,20 @@ export function gameLaunchArguments(
   if (offline) args.push('--offline');
   return args;
 }
+
+/**
+ * Proton reads WINEDLLOVERRIDES and WINE_LARGE_ADDRESS_AWARE from the process
+ * environment, so a shell leftover must not replace the runtime's own values.
+ * Only a Proton session takes over these two settings: a standalone Wine keeps the
+ * inherited environment it has always received, and a game's launch options still
+ * set both above the Proton session command.
+ */
+export function launchEnvironmentForRuntime(
+  environment: NodeJS.ProcessEnv,
+  protonSession: boolean,
+): NodeJS.ProcessEnv {
+  if (!protonSession) return environment;
+  delete environment.WINEDLLOVERRIDES;
+  delete environment.WINE_LARGE_ADDRESS_AWARE;
+  return environment;
+}
