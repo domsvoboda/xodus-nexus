@@ -24,6 +24,7 @@ const h = vi.hoisted(() => ({
 vi.mock('./store.js', () => ({ inspectGameDirectory: async (directory: string) => ({ id: 'g', path: directory, title: 'Sample', installState: 'ready', executable: 'Game.exe', ...h.inspected }) }));
 vi.mock('./proton.js', () => ({
   prepareProtonRunner: async () => h.proton,
+  protonOptionalComponentNotices: async () => [],
   syncPrefixUserLocale: (...args: unknown[]) => h.localeSync(...args as []),
   syncUnrealCultureGameIni: async () => {},
 }));
