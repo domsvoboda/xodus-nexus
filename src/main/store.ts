@@ -1,3 +1,4 @@
+import {gameRuntimeSelection,runtimeBuildApproval,runtimePrefixAnchors} from '../shared/runtime-selection.js';
 import { createHash } from 'node:crypto';
 import { promises as fs } from 'node:fs';
 import os from 'node:os';
@@ -21,6 +22,7 @@ interface PersistedState {
 const defaultDataRoot = path.join(os.homedir(), '.local', 'share', 'xodus-nexus');
 const defaultSettings: Settings = {
   closeToTray: false,
+  multiAccountEnabled: false,
   interfaceLanguage: 'system',
   installRoot: path.join(os.homedir(), 'Games', 'Xodus Nexus'),
   market: 'neutral',
@@ -64,7 +66,7 @@ export class StateStore {
             ...task, status: 'paused' as const, canPause: true, controlPending: false,
             transferRate: undefined, phase: 'Paused — resume to reconnect and restore saved download checkpoints',
           } : task) : [],
-        settings: Object.fromEntries(Object.entries({ ...defaultSettings, ...parsed.settings, ...xboxOverlaySettings(parsed.settings??{}), downloadLimitMiB, shaderCacheLimitGiB, closeToTray: parsed.settings?.closeToTray === true, interfaceLanguage: interfaceLanguagePreference(parsed.settings?.interfaceLanguage) }).filter(([key]) => key !== 'separateGameProcess')) as unknown as Settings,
+        settings: Object.fromEntries(Object.entries({ ...defaultSettings, ...parsed.settings, ...xboxOverlaySettings(parsed.settings??{}), downloadLimitMiB, shaderCacheLimitGiB, closeToTray: parsed.settings?.closeToTray === true, multiAccountEnabled: parsed.settings?.multiAccountEnabled === true, interfaceLanguage: interfaceLanguagePreference(parsed.settings?.interfaceLanguage) }).filter(([key]) => key !== 'separateGameProcess')) as unknown as Settings,
       };
     } catch (error) {
       if ((error as NodeJS.ErrnoException).code !== 'ENOENT') console.warn('State could not be loaded', error);
@@ -88,6 +90,7 @@ export class StateStore {
   }
 
   async setSettings(patch: Partial<Settings>): Promise<Settings> {
+    if (patch.multiAccountEnabled !== undefined && typeof patch.multiAccountEnabled !== 'boolean') throw Error('Invalid account-management setting.');
     if (patch.closeToTray !== undefined && typeof patch.closeToTray !== 'boolean') throw Error('Invalid close-to-tray setting.');
     const overlay=xboxOverlayPatch(patch);patch={...patch,...overlay};
     if (patch.interfaceLanguage !== undefined && interfaceLanguagePreference(patch.interfaceLanguage) !== patch.interfaceLanguage) throw Error('Invalid interface language.');
@@ -109,9 +112,28 @@ export class StateStore {
   async patchGame(id: string, patch: Partial<Game>): Promise<Game> {
     const game = this.state.games.find((entry) => entry.id === id);
     if (!game) throw new Error('Game not found.');
+    if ('runtime' in patch) patch.runtime = gameRuntimeSelection(patch.runtime);
+    if ('runtimeSeparatePrefix' in patch && typeof patch.runtimeSeparatePrefix !== 'boolean') throw Error('Invalid runtime prefix choice.');
+    if ('runtimePrefixes' in patch) patch.runtimePrefixes=runtimePrefixAnchors(patch.runtimePrefixes);
+    if ('runtimeBuild' in patch && patch.runtimeBuild !== undefined) patch.runtimeBuild=runtimeBuildApproval(patch.runtimeBuild);
     Object.assign(game, patch);
     await this.save();
     return game;
+  }
+
+  async patchGames(updates: readonly { id: string; patch: Partial<Game> }[]): Promise<void> {
+    if (!updates.length) return;
+    const games = new Map(this.state.games.map(game => [game.id, game]));
+    // Validate the complete batch before changing any in-memory entry.
+    const targets = updates.map(update => {
+      const game = games.get(update.id);
+      if (!game) throw new Error('Game not found.');
+      return { game, patch: update.patch };
+    });
+    for (const { game, patch } of targets) Object.assign(game, patch);
+    // Keep the same awaited durability/error semantics as patchGame, including
+    // retry after a failed write even if the in-memory values already match.
+    await this.save();
   }
 
   async removeGame(id: string): Promise<void> {

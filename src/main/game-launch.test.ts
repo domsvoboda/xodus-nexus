@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { gameLaunchArguments, preparedGameWine } from './game-launch.js';
+import { gameLaunchArguments, launchEnvironmentForRuntime, preparedGameWine } from './game-launch.js';
 import { LINUX_RUN_PATCH } from './backend.js';
 
 describe('generic package launch', () => {
@@ -42,5 +42,24 @@ describe('generic package launch', () => {
   it('fails closed on an old backend or a missing manifest entry', () => {
     expect(() => gameLaunchArguments({ path: '/package', executable: 'Game.exe' }, '/wine', '', 'old')).toThrow('Update the backend');
     expect(() => gameLaunchArguments({ path: '/package' }, '/wine', '', LINUX_RUN_PATCH)).toThrow('manifest has no launch executable');
+  });
+});
+
+describe('runtime launch environment', () => {
+  it('replaces inherited Proton-only settings for a Proton session and leaves a standalone Wine alone', () => {
+    // A shell leftover must not replace the runtime's own values when Proton runs.
+    expect(launchEnvironmentForRuntime(
+      { WINEDLLOVERRIDES: 'dxgi=b', WINE_LARGE_ADDRESS_AWARE: '0', KEEP: '1' }, true))
+      .toEqual({ KEEP: '1' });
+    // A standalone custom Wine keeps exactly the environment it has always received.
+    const standalone = { WINEDLLOVERRIDES: 'dxgi=b', WINE_LARGE_ADDRESS_AWARE: '0', KEEP: '1' };
+    expect(launchEnvironmentForRuntime(standalone, false)).toBe(standalone);
+    expect(standalone).toEqual({ WINEDLLOVERRIDES: 'dxgi=b', WINE_LARGE_ADDRESS_AWARE: '0', KEEP: '1' });
+  });
+  it('leaves launch-option precedence to the wrapper above the runtime command', () => {
+    // The wrapper applies the game's launch options after this environment, so the
+    // user's WINEDLLOVERRIDES still wins for Play (covered in proton.test.ts).
+    const environment = launchEnvironmentForRuntime({ WINEDLLOVERRIDES: 'dxgi=b' }, true);
+    expect(environment.WINEDLLOVERRIDES).toBeUndefined();
   });
 });

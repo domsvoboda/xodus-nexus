@@ -337,3 +337,13 @@ it('defaults close-to-tray off, persists an explicit choice and rejects invalid 
  await writeFile(path.join(root,'launcher-state.json'),JSON.stringify({settings:{closeToTray:'true'}}));
  const legacy=new StateStore(root);await legacy.load();expect(legacy.settings.closeToTray).toBe(false);
 });
+
+it('defaults account management off and persists only an explicit boolean preference', async () => {
+ const directory=await mkdtemp(path.join(tmpdir(),'nexus-optional-accounts-'));created.push(directory);
+ const store=new StateStore(directory);await store.load();expect(store.settings.multiAccountEnabled).toBe(false);
+ await store.setSettings({multiAccountEnabled:true});const reopened=new StateStore(directory);await reopened.load();expect(reopened.settings.multiAccountEnabled).toBe(true);
+ await reopened.setSettings({multiAccountEnabled:false});const hidden=new StateStore(directory);await hidden.load();expect(hidden.settings.multiAccountEnabled).toBe(false);
+ await expect(hidden.setSettings({multiAccountEnabled:'true' as any})).rejects.toThrow('Invalid account-management');
+ await writeFile(path.join(directory,'launcher-state.json'),JSON.stringify({settings:{multiAccountEnabled:'true'}}));
+ const invalid=new StateStore(directory);await invalid.load();expect(invalid.settings.multiAccountEnabled).toBe(false);
+});

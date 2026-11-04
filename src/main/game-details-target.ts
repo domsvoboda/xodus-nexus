@@ -1,15 +1,24 @@
-import type {Game} from '../shared/types.js';
+import type {Game,GameDetailsScope} from '../shared/types.js';
 
-/** Catalog details are read-only and never insert an installation or accept a path. */
-export function gameDetailsTarget(value:unknown,games:Game[]):{game?:Game;productId?:string} {
+/** A resolved read-only detail request. `scope` is presentation only and never
+ * an ownership, license or installation decision. */
+export interface GameDetailsRequest {game?:Game;productId?:string;scope?:GameDetailsScope}
+
+/** Catalog details are read-only and never insert an installation or accept a path.
+ * A saved game ID stays on the account market. An explicit product identity also
+ * stays on the account market unless it carries the allowlisted public scope. */
+export function gameDetailsTarget(value:unknown,games:Game[]):GameDetailsRequest {
  if(typeof value==='string'){
   const game=games.find(game=>game.id===value);
   if(!game)throw Error('Game not found.');
   return {game,productId:game.storeId&&/^[A-Z0-9]{12}$/.test(game.storeId)?game.storeId:undefined};
  }
- if(!value||typeof value!=='object'||Array.isArray(value)||Object.keys(value).length!==1
-  ||!('productId' in value)||typeof value.productId!=='string'||!/^[A-Z0-9]{12}$/.test(value.productId))throw Error('Invalid game details request.');
- return {productId:value.productId};
+ if(!value||typeof value!=='object'||Array.isArray(value))throw Error('Invalid game details request.');
+ const record=value as Record<string,unknown>,keys=Object.keys(record);
+ if(keys.some(key=>key!=='productId'&&key!=='scope'))throw Error('Invalid game details request.');
+ if(typeof record.productId!=='string'||!/^[A-Z0-9]{12}$/.test(record.productId))throw Error('Invalid game details request.');
+ if('scope' in record&&record.scope!=='public-store')throw Error('Invalid game details scope.');
+ return record.scope==='public-store'?{productId:record.productId,scope:'public-store'}:{productId:record.productId};
 }
 
 /** Display Catalog AlternateIds is authoritative; ambiguity is not a title match. */

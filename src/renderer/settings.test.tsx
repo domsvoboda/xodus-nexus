@@ -95,3 +95,24 @@ it('shows close-to-tray as an optional desktop preference',()=>{
  expect(html).toContain('Close to system tray');expect(html).toContain('Desktop mode only.');
  expect(html).toMatch(/type="checkbox"[^>]*checked=""/);
 });
+
+it('does not offer the Standard runtime installer while the active default runtime is CachyOS', () => {
+  const data = demoSnapshot();
+  data.runtime = { ...data.runtime, installed: true, name: 'nexus-runtime-cachyos-11.0-experimental-ge36f73cb-local', winePath: '/local/cachyos/files/bin/wine', commit: 'runtime-cachyos-local', nexusAvailable: true, nexusName: 'nexus-runtime-99.0-x86_64.tar.xz' };
+  const html = renderToStaticMarkup(<SettingsPage data={data} toast={() => {}} />);
+  expect(html).not.toContain('Install Nexus runtime');
+  expect(html).toContain('CachyOS runtime');
+  data.runtime = { ...data.runtime, name: 'nexus-runtime-11.0-experimental-g5910703e-local' };
+  const standard = renderToStaticMarkup(<SettingsPage data={data} toast={() => {}} />);
+  expect(standard).toContain('Install Nexus runtime');
+});
+
+it('separates the multiple-account toggle from the sign-in action row', () => {
+  const data = demoSnapshot();
+  data.backend.capabilities.savedAccounts = true;
+  data.auth.savedAccountsEnabled = true;
+  data.settings.multiAccountEnabled = true;
+  const html = renderToStaticMarkup(<SettingsPage data={data} toast={() => {}} />);
+  expect(html).toContain('class="button-row account-management-row"');
+  expect(html).toContain('Hide account management');
+});

@@ -49,6 +49,19 @@ it.each([
   }
   expect(html).toContain('Xodus ready');
 });
+it('never advertises the Standard runtime release in the top notice while a CachyOS runtime is active', () => {
+  const data = demoSnapshot();
+  data.runtime = { ...data.runtime, installed: true,
+    name: 'nexus-runtime-cachyos-11.0-experimental-ge36f73cb-local',
+    nexusAvailable: true, nexusVersion: 'runtime-11.0-new', nexusName: 'nexus-runtime-11.0-new-x86_64.tar.xz' };
+  const cachy = renderToStaticMarkup(<TopStatus data={data} go={() => {}} />);
+  expect(cachy).not.toContain('update-notice');
+  expect(cachy).not.toContain('Runtime 11.0-new');
+  data.runtime = { ...data.runtime, name: 'nexus-runtime-11.0-experimental-g5910703e-local' };
+  const standard = renderToStaticMarkup(<TopStatus data={data} go={() => {}} />);
+  expect(standard).toContain('update-notice');
+  expect(standard).toContain('Runtime 11.0-new');
+});
 it('does not advertise failed, incomplete or already installed component releases', () => {
   const data = demoSnapshot();
   data.backend.releaseAvailable = false; data.backend.updateAvailable = true;

@@ -36,6 +36,7 @@ interface StoreSearchResponse {
   productsList?: unknown;
   cursor?: unknown;
   hasMorePages?: unknown;
+  nextPageNumber?: unknown;
 }
 
 interface DisplayCatalogResponse {
@@ -57,6 +58,15 @@ interface BundleReference {
 const IMAGE_HOSTS = new Set(['store-images.s-microsoft.com', 'store-images.microsoft.com']);
 const STORE_HOSTS = new Set(['www.xbox.com', 'xbox.com', 'apps.microsoft.com']);
 const CACHE_TTL_MS = 10 * 60 * 1000;
+const SEARCH_CACHE_LIMIT = 100;
+const SEARCH_REQUEST_LIMIT = 32;
+// The Store's games recommendation feeds return about ten products per page.
+// Trending games are dominated by free-to-play titles that the public browsing
+// policy has to hide, so the top paid collection supplies real breadth. Both
+// feeds are bounded here: one page is cached for ten minutes per market.
+const FEATURED_PAGE_ITEMS = 12;
+const FEATURED_TRENDING_PAGES = 1;
+const FEATURED_PAID_PAGES = 3;
 // Box art is square and carries the game's title branding, matching the
 // square library tiles; promotional square art is the textless fallback.
 const POSTER_PURPOSES = ['BoxArt', 'TitledPoster', 'Poster', 'FeaturePromotionalSquareArt'];
@@ -157,6 +167,7 @@ function directPackageSupport(product: Record<string, unknown> | undefined): Pac
   for (const availability of skus) {
     const sku = object(object(availability)?.Sku);
     const properties = object(sku?.Properties);
+    if(properties?.IsTrial===true||properties?.IsDemo===true||properties?.IsPreOrder===true||['trial','demo'].includes(string(sku?.SkuType)?.toLowerCase()??''))continue;
     const packages = Array.isArray(properties?.Packages) ? properties.Packages : [];
     for (const entry of packages) {
       const pkg = object(entry);
@@ -182,7 +193,9 @@ function bundleReferences(product: Record<string, unknown> | undefined): BundleR
   const references = new Map<string, boolean>();
   const skus = Array.isArray(product?.DisplaySkuAvailabilities) ? product.DisplaySkuAvailabilities : [];
   for (const availability of skus) {
-    const properties = object(object(object(availability)?.Sku)?.Properties);
+    const sku=object(object(availability)?.Sku);
+    const properties = object(sku?.Properties);
+    if(properties?.IsTrial===true||properties?.IsDemo===true||properties?.IsPreOrder===true||['trial','demo'].includes(string(sku?.SkuType)?.toLowerCase()??''))continue;
     const bundled = Array.isArray(properties?.BundledSkus) ? properties.BundledSkus : [];
     for (const entry of bundled) {
       const record = object(entry);
@@ -191,6 +204,21 @@ function bundleReferences(product: Record<string, unknown> | undefined): BundleR
     }
   }
   return [...references].map(([productId, primary]) => ({ productId, primary }));
+}
+
+/** Merge Store collections in priority order, keeping one row per product ID. */
+function mergeCollections(...collections: StoreSearchResponse[]): StoreSearchResponse {
+  const seen = new Set<string>();
+  const productsList: StoreSearchProduct[] = [];
+  for (const collection of collections) {
+    for (const product of Array.isArray(collection.productsList) ? collection.productsList as StoreSearchProduct[] : []) {
+      const productId = string(product?.productId)?.toUpperCase();
+      if (!productId || seen.has(productId)) continue;
+      seen.add(productId);
+      productsList.push(product);
+    }
+  }
+  return { productsList };
 }
 
 function packageSupport(productId: string, details: Map<string, Record<string, unknown>>, visited = new Set<string>(), budget = { remaining: 512 }): PackageSupport {
@@ -242,7 +270,43 @@ function packageSupport(productId: string, details: Map<string, Record<string, u
   };
 }
 
-export function parseCatalogProducts(search: StoreSearchResponse, catalog: DisplayCatalogResponse): CatalogProduct[] {
+/** Public browsing excludes positively identified free/demo/trial offers.
+ * Missing prices remain unknown, and subscription branding is never a price. */
+export function excludedStoreOffer(search: Record<string, unknown>, detail?: Record<string, unknown>): boolean {
+  const props=object(detail?.Properties);
+  if (search.isDemo===true || search.isTrial===true || props?.IsDemo===true || props?.IsTrial===true) return true;
+  const rows=Array.isArray(detail?.DisplaySkuAvailabilities)?detail.DisplaySkuAvailabilities:[];
+  let retail=false, paid=false, free=false, unknownRetail=false, trial=false;
+  for(const entry of rows){
+    const availability=object(entry),sku=object(availability?.Sku),properties=object(sku?.Properties);
+    if(!sku)continue;
+    const kind=string(sku.SkuType)?.toLowerCase();
+    if(properties?.IsTrial===true||properties?.IsDemo===true||kind==='trial'||kind==='demo'){trial=true;continue;}
+    if(properties?.IsPreOrder===true) continue;
+    retail=true;
+    const offers=Array.isArray(availability?.Availabilities)?availability.Availabilities:[];
+    let skuFree=offers.length>0;
+    for(const offer of offers){
+      const price=object(object(object(offer)?.OrderManagementData)?.Price);
+      // MSRP distinguishes a paid title temporarily discounted to zero.
+      const values=[price?.MSRP,price?.ListPrice,price?.BasePrice].filter((v):v is number=>typeof v==='number'&&Number.isFinite(v)&&v>=0);
+      if(values.some(v=>v>0))paid=true;
+      const malformed=[price?.MSRP,price?.ListPrice,price?.BasePrice].some(v=>v!==undefined&&(typeof v!=='number'||!Number.isFinite(v)||v<0));
+      if(!values.length||malformed||values.some(v=>v>0))skuFree=false;
+    }
+    if(skuFree)free=true;else unknownRetail=true;
+  }
+  if(paid||unknownRetail)return false;
+  if(trial&&!retail)return true;
+  const price=object(search.priceInfo);
+  // Only structured booleans/numbers, never localized display strings/title.
+  const values=[price?.msrp,price?.listPrice,price?.price].filter((v):v is number=>typeof v==='number'&&Number.isFinite(v)&&v>=0);
+  if(values.some(v=>v>0))return false;
+  const malformed=[price?.msrp,price?.listPrice,price?.price].some(v=>v!==undefined&&(typeof v!=='number'||!Number.isFinite(v)||v<0));
+  return free || price?.isFree===true || (!malformed&&values.length>0&&values.every(v=>v===0));
+}
+
+export function parseCatalogProducts(search: StoreSearchResponse, catalog: DisplayCatalogResponse, policy: 'library' | 'store' = 'library'): CatalogProduct[] {
   const detailMap = new Map<string, Record<string, unknown>>();
   const details = Array.isArray(catalog.Products) ? catalog.Products : [];
   for (const detail of details) {
@@ -252,9 +316,14 @@ export function parseCatalogProducts(search: StoreSearchResponse, catalog: Displ
   }
   const products = Array.isArray(search.productsList) ? search.productsList as StoreSearchProduct[] : [];
   return products.flatMap((product) => {
+    if(!object(product))return [];
     const productId = string(product.productId)?.toUpperCase();
     const title = string(product.title);
     if (!productId || !title || product.isGame === false) return [];
+    const detail=detailMap.get(productId);
+    // Game includes base games and game bundles. Endpoint mediaType/isGame
+    // alone also admits extras; children cannot change the offer's own type.
+    if(policy==='store' && (detail?.ProductType!=='Game' || excludedStoreOffer(product as Record<string,unknown>,detail)))return [];
     const support = packageSupport(productId, detailMap);
     return [{
       productId,
@@ -278,8 +347,33 @@ export class CatalogService {
   private readonly gameCache = new Map<string, { until: number; value: GameStoreDetails }>();
   private readonly gameRequests = new Map<string,Promise<GameStoreDetails|undefined>>();
   private readonly cache = new Map<string, { expires: number; value: CatalogSearchResult }>();
+  private readonly requests = new Map<string, Promise<CatalogSearchResult>>();
 
   constructor(private readonly fetcher: Fetcher = fetch) {}
+
+  private async cachedResult(key: string, load: () => Promise<CatalogSearchResult>): Promise<CatalogSearchResult> {
+    const now = Date.now();
+    for (const [entryKey, entry] of this.cache) if (entry.expires <= now) this.cache.delete(entryKey);
+    const cached = this.cache.get(key);
+    if (cached) {
+      this.cache.delete(key);
+      this.cache.set(key, cached);
+      return structuredClone(cached.value);
+    }
+    const pending = this.requests.get(key);
+    if (pending) return structuredClone(await pending);
+    if (this.requests.size >= SEARCH_REQUEST_LIMIT) throw new Error('Too many Store requests. Try again.');
+    const request = Promise.resolve().then(load);
+    this.requests.set(key, request);
+    try {
+      const value = await request;
+      while (this.cache.size >= SEARCH_CACHE_LIMIT) this.cache.delete(this.cache.keys().next().value!);
+      this.cache.set(key, { expires: Date.now() + CACHE_TTL_MS, value });
+      return structuredClone(value);
+    } finally {
+      this.requests.delete(key);
+    }
+  }
 
   /** Read descriptive data independently of installation, ownership or package support. */
   async gameDetails(productId: string, rawMarket: string): Promise<GameStoreDetails | undefined> {
@@ -424,13 +518,13 @@ export class CatalogService {
 
   private async result(search: StoreSearchResponse, query: string, market: string, includePaging: boolean): Promise<CatalogSearchResult> {
     const ids = (Array.isArray(search.productsList) ? search.productsList as StoreSearchProduct[] : [])
-      .flatMap((product) => string(product.productId)?.toUpperCase() ?? [])
+      .flatMap((product) => string(object(product)?.productId)?.toUpperCase() ?? [])
       .filter((value, index, values) => values.indexOf(value) === index);
     const catalog = await this.details(ids, market);
     return {
       query,
       market,
-      products: parseCatalogProducts(search, catalog),
+      products: parseCatalogProducts(search, catalog, 'store'),
       cursor: includePaging ? string(search.cursor) : undefined,
       hasMore: includePaging && search.hasMorePages === true && Boolean(string(search.cursor)),
       fetchedAt: new Date().toISOString(),
@@ -445,9 +539,10 @@ export class CatalogService {
     if (cursor && (cursor.length > 4096 || !/^[A-Za-z0-9+/=_-]+$/.test(cursor))) throw new Error('The Store paging cursor is invalid.');
     const market = normalizeMarket(rawMarket);
     const cacheKey = `${market}\u0000${query.toLowerCase()}\u0000${cursor ?? ''}`;
-    const cached = this.cache.get(cacheKey);
-    if (cached && cached.expires > Date.now()) return structuredClone(cached.value);
+    return this.cachedResult(cacheKey, () => this.searchResult(query, market, cursor));
+  }
 
+  private async searchResult(query: string, market: string, cursor?: string): Promise<CatalogSearchResult> {
     const searchUrl = new URL('https://apps.microsoft.com/api/products/search');
     for (const [key, value] of Object.entries({ query, mediaType: 'games', age: 'all', price: 'all', category: 'all', subscription: 'all', gl: market, hl: 'en-us' })) {
       searchUrl.searchParams.set(key, value);
@@ -456,27 +551,66 @@ export class CatalogService {
     const searchResponse = await this.fetcher(searchUrl, { headers: { Accept: 'application/json' }, signal: AbortSignal.timeout(20_000) });
     if (!searchResponse.ok) throw new Error(`Microsoft Store search returned HTTP ${searchResponse.status}.`);
     const search = await searchResponse.json() as StoreSearchResponse;
-    const value = await this.result(search, query, market, true);
-    this.cache.set(cacheKey, { expires: Date.now() + CACHE_TTL_MS, value });
-    return structuredClone(value);
+    return this.result(search, query, market, true);
   }
 
   async featured(rawMarket: string): Promise<CatalogSearchResult> {
     const market = normalizeMarket(rawMarket);
     const cacheKey = `${market}\u0000featured`;
-    const cached = this.cache.get(cacheKey);
-    if (cached && cached.expires > Date.now()) return structuredClone(cached.value);
-    const url = new URL('https://apps.microsoft.com/api/Reco/GetComputedProductsList');
-    for (const [key, value] of Object.entries({
-      listName: 'TopTrending', pgNo: '1', noItems: '12', filteredCategories: 'AllProducts',
-      mediaType: 'Games', gl: market, hl: 'en-us', exp: '0',
-    })) url.searchParams.set(key, value);
-    const response = await this.fetcher(url, { headers: { Accept: 'application/json' }, signal: AbortSignal.timeout(20_000) });
-    if (!response.ok) throw new Error(`Microsoft Store featured collection returned HTTP ${response.status}.`);
-    const search = await response.json() as StoreSearchResponse & { title?: unknown };
-    const value = await this.result(search, string(search.title) ?? 'Trending games', market, false);
-    this.cache.set(cacheKey, { expires: Date.now() + CACHE_TTL_MS, value });
-    return structuredClone(value);
+    return this.cachedResult(cacheKey, () => this.featuredResult(market));
+  }
+
+  /** Read one public Store recommendation feed, bounded to a fixed page count. */
+  private async computedCollection(listName: string, market: string, pages: number): Promise<StoreSearchResponse & { title?: unknown }> {
+    const collected: StoreSearchProduct[] = [];
+    let title: unknown;
+    let page = 1;
+    for (let index = 0; index < pages; index += 1) {
+      const url = new URL('https://apps.microsoft.com/api/Reco/GetComputedProductsList');
+      for (const [key, value] of Object.entries({
+        listName, pgNo: String(page), noItems: String(FEATURED_PAGE_ITEMS), filteredCategories: 'AllProducts',
+        mediaType: 'Games', gl: market, hl: 'en-us', exp: '0',
+      })) url.searchParams.set(key, value);
+      const response = await this.fetcher(url, { headers: { Accept: 'application/json' }, signal: AbortSignal.timeout(20_000) });
+      if (!response.ok) throw new Error(`Microsoft Store ${listName} collection returned HTTP ${response.status}.`);
+      const payload = await response.json() as StoreSearchResponse & { title?: unknown };
+      title = title ?? payload.title;
+      const products = Array.isArray(payload.productsList) ? payload.productsList as StoreSearchProduct[] : [];
+      collected.push(...products);
+      if (payload.hasMorePages !== true || products.length === 0) break;
+      // Captured contract (US pages 1..10, CZ pages 1..3, TopPaid pages 1..3):
+      // a continuation names exactly the next page while hasMorePages is true,
+      // and the end of a feed reports nextPageNumber -1 with hasMorePages
+      // false. Any other value (string, fraction, repeat, jump, sentinel) stops
+      // pagination and keeps the products already collected instead of
+      // following it, so the request budget cannot be redirected.
+      if (payload.nextPageNumber !== page + 1) break;
+      page += 1;
+    }
+    return { productsList: collected, title };
+  }
+
+  private async featuredResult(market: string): Promise<CatalogSearchResult> {
+    // Two honest public collections. Trending games are dominated by
+    // free-to-play offers that the public browsing policy must hide, so the top
+    // paid games collection supplies the real breadth of the landing page.
+    // Each feed is bounded by FEATURED_*_PAGES and served from the ten minute
+    // cache, so a page load never becomes an unbounded request fan-out.
+    const [trending, paid] = await Promise.allSettled([
+      this.computedCollection('TopTrending', market, FEATURED_TRENDING_PAGES),
+      this.computedCollection('TopPaid', market, FEATURED_PAID_PAGES),
+    ]);
+    if (trending.status === 'rejected' && paid.status === 'rejected') {
+      throw trending.reason instanceof Error ? trending.reason : new Error('Microsoft Store featured collections could not be loaded.');
+    }
+    const merged = mergeCollections(
+      ...(trending.status === 'fulfilled' ? [trending.value] : []),
+      ...(paid.status === 'fulfilled' ? [paid.value] : []),
+    );
+    const title = string(trending.status === 'fulfilled' ? trending.value.title : undefined)
+      ?? string(paid.status === 'fulfilled' ? paid.value.title : undefined)
+      ?? 'Featured games';
+    return this.result(merged, title, market, false);
   }
 
   async posters(ids: string[], rawMarket: string): Promise<Map<string, string>> {

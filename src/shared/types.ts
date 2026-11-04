@@ -1,3 +1,4 @@
+import type {RuntimeFamily,GameRuntimeSelection,InstalledRuntimeFamily,RuntimeBuildApproval,RuntimePrefixAnchors} from './runtime-selection.js';
 export type Page = 'home' | 'store' | 'library' | 'downloads' | 'settings' | 'social';
 
 export interface BackendCapabilities {
@@ -22,6 +23,10 @@ export interface BackendCapabilities {
   offlinePc?: boolean;
   /** `run --offline`: skip Microsoft entirely and launch on the stored offline license. */
   offlineLaunch?: boolean;
+  /** `login --player` / `logout --player`: a second, separate Xbox player account. */
+  playerAccount?: boolean;
+  licenseProfile?: boolean;
+  savedAccounts?: boolean;
   streamingControls?: boolean;
   streamingBandwidthLimit?: boolean;
   streamingUpdateRecovery?: boolean;
@@ -35,8 +40,13 @@ export interface AuthStatus {
   running: boolean;
   stored: boolean | null;
   username?: string;
+  /** Separate Xbox player account, when the backend stores one next to the license account. */
+  player?: string;
   gamertag?: string;
   avatarDataUrl?: string;
+  licenseAvatarDataUrl?: string;
+  saved?: string[];
+  savedAccountsEnabled?: boolean;
   subscription?: GamePassSubscription;
   lastResult?: 'success' | 'failed';
   lastAction?: 'login' | 'logout';
@@ -63,6 +73,7 @@ export interface BackendStatus {
   prerequisites: { git: boolean; cargo: boolean; rustc: boolean; protoc: boolean };
   blockReason?: string;
   linuxRunPatch?: string;
+  recipeSha256?: string;
   version?: string;
   delivery?: 'release' | 'local';
   releaseAvailable?: boolean;
@@ -70,7 +81,20 @@ export interface BackendStatus {
   phase?: string;
 }
 
+export interface ManagedRuntimeOptions {allowCachyos:boolean;allowPrerelease:boolean;}
+export interface ManagedFamilyStatus {
+  id:RuntimeFamily;installed?:InstalledRuntimeFamily;version?:string;channel?:'stable'|'prerelease';
+  available?:{version:string;candidateSha256:string;sourceCommit:string;archiveName:string;requiresBackendVersion:string;requiresLauncherVersion:string};
+  checking:boolean;installing:boolean;updateAvailable?:boolean;phase?:string;error?:string;
+}
+export interface ManagedFamilyInstallResult {
+  family:RuntimeFamily;success:boolean;committed:boolean;buildId?:string;
+  durability:'confirmed'|'unknown'|'not-committed';error?:string;
+}
 export interface RuntimeStatus {
+  managedFamilies?:ManagedFamilyStatus[];
+  managedRevision?:number;
+  variants?: InstalledRuntimeFamily[];
   installed: boolean;
   checking: boolean;
   updating: boolean;
@@ -112,8 +136,13 @@ export interface Game {
   publisher?: string;
   installedVersion?: string;
   packageName?: string;
+  licenseAccount?: string; // Store account the game was installed with.
   executable?: string;
-  winePath?: string; // Legacy saved field; ignored for launch. The runtime is global.
+  winePath?: string; // Legacy saved field; ignored for launch.
+  runtime?: GameRuntimeSelection;
+  runtimeSeparatePrefix?: boolean;
+  runtimeBuild?: RuntimeBuildApproval; // Old prefix origin only, never a launch pin.
+  runtimePrefixes?: RuntimePrefixAnchors;
   launchArgs?: string;
   launchTools?: GameLaunchTools;
   locale?: string;
@@ -140,6 +169,7 @@ export interface GameLaunchOptions {
 }
 
 export interface DownloadTask {
+  source?: 'store';
   id: string;
   kind?: 'install' | 'update' | 'content';
   gameId?: string;
@@ -186,6 +216,7 @@ export interface GameOperation {
 
 export interface Settings {
   closeToTray?: boolean;
+  multiAccountEnabled?: boolean;
   interfaceLanguage?: string;
   installRoot: string;
   market: string;
@@ -203,6 +234,27 @@ export interface Settings {
   /** Launcher zoom factor; 0 picks one for the display (larger on handheld Game Mode screens). */
   uiScale?: number;
 }
+
+export type ComponentUpdateOutcome = 'updated' | 'unchanged' | 'skipped' | 'stale' | 'committed-needs-attention' | 'failed-before-commit' | 'not-run' | 'deferred';
+export interface ComponentUpdatePlanItem {
+  id: string;
+  component: 'backend' | 'runtime' | 'launcher';
+  label: string;
+  currentVersion?: string;
+  targetVersion?: string;
+  state: 'ready' | 'unchanged' | 'skipped' | 'deferred';
+  reason?: string;
+}
+export interface ComponentUpdatePlan { id: string; createdAt: string; items: ComponentUpdatePlanItem[] }
+export interface ComponentUpdateItemResult {
+  id: string;
+  outcome: ComponentUpdateOutcome;
+  message?: string;
+  committed: boolean;
+  retryable: boolean;
+}
+export interface ComponentUpdateBatchResult { planId: string; items: ComponentUpdateItemResult[]; restartRequired: boolean }
+export interface ComponentUpdatesStatus { running: boolean; phase?: string; plan?: ComponentUpdatePlan; result?: ComponentUpdateBatchResult }
 
 export interface LauncherUpdate {
   currentVersion: string;
@@ -278,12 +330,14 @@ export interface AppSnapshot {
   settings: Settings;
   auth: AuthStatus;
   launcherUpdate?: LauncherUpdate;
+  componentUpdates?: ComponentUpdatesStatus;
   gameOperation?: GameOperation;
   gameUpdates?: Record<string, GameUpdate>;
   downloadProgressSupported?: boolean;
 }
 
 export interface InstallRequest {
+  source?: 'store';
   productId: string;
   title: string;
   destination: string;
@@ -349,8 +403,15 @@ export interface CatalogProduct {
   supportNote: string;
 }
 
-/** A saved installation ID, or an explicit read-only Store catalog identity. */
-export type GameDetailsTarget = string | {productId:string};
+/** Public Store browsing is the only non-account catalog presentation scope.
+ * It selects read-only metadata from the neutral public Store market only; it
+ * never proves ownership or grants install access, and account activity,
+ * achievements and licensing keep their configured market. */
+export type GameDetailsScope = 'public-store';
+/** A saved installation ID, or an explicit read-only Store catalog identity.
+ * An unscoped identity keeps the configured/effective account market; only an
+ * explicit `public-store` scope selects public browsing metadata. */
+export type GameDetailsTarget = string | {productId:string; scope?:GameDetailsScope};
 
 /** Public catalog data only, never an ownership/installation decision. */
 export interface GameStoreDetails {
@@ -402,6 +463,15 @@ export interface CatalogSearchResult {
 }
 
 export type LibraryAccess = 'owned' | 'gamepass' | 'other';
+export interface StoreAccess {
+  configuredMarket: string;
+  account: string;
+  backend: string;
+  market: string;
+  checkedAt: string;
+  expiresAt: string;
+  accessByProductId: Record<string, LibraryAccess>;
+}
 export interface AccountLibraryPage {
   kind: 'all' | LibraryAccess;
   sort?: 'recent-gamepass';
@@ -560,7 +630,10 @@ export interface LauncherApi {
   updateBackend(): Promise<void>;
   rebuildBackend(): Promise<void>;
   refreshRuntime(): Promise<RuntimeStatus>;
+  getRuntimeFamilies(): Promise<InstalledRuntimeFamily[]>;
   checkRuntimeUpdate(): Promise<RuntimeStatus>;
+  checkManagedRuntime(family:RuntimeFamily,options:ManagedRuntimeOptions):Promise<ManagedFamilyStatus>;
+  installManagedRuntime(family:RuntimeFamily,expectedCandidateSha256:string,options:ManagedRuntimeOptions):Promise<ManagedFamilyInstallResult>;
   checkNexusRuntime(): Promise<RuntimeStatus>;
   installRuntime(): Promise<void>;
   installNexusRuntime(): Promise<void>;
@@ -570,6 +643,10 @@ export interface LauncherApi {
   startKeyring(): Promise<KeyringStatus>;
   createKeyringCollection(): Promise<KeyringStatus>;
   onKeyringStatus(callback: (status: KeyringStatus) => void): () => void;
+  planComponentUpdates(): Promise<ComponentUpdatePlan>;
+  applyComponentUpdates(planId: string): Promise<ComponentUpdateBatchResult>;
+  getComponentUpdatesStatus(): Promise<ComponentUpdatesStatus>;
+  retryComponentUpdate(planId: string, itemId: string): Promise<ComponentUpdateBatchResult>;
   checkLauncherUpdate(): Promise<LauncherUpdate | undefined>;
   installLauncherUpdate(): Promise<void>;
   restartLauncher(): Promise<void>;
@@ -582,12 +659,15 @@ export interface LauncherApi {
   readBackendDiagnosticLog(): Promise<DiagnosticLog>;
   createDiagnosticReport(gameId?: string): Promise<DiagnosticReport>;
   saveDiagnosticReport(content: string): Promise<boolean>;
-  login(): Promise<void>;
-  logout(): Promise<void>;
+  login(player?: boolean): Promise<void>;
+  logout(player?: boolean): Promise<void>;
+  useAccount(name: string): Promise<void>;
+  forgetAccount(name: string): Promise<void>;
   offlinePermissions(): Promise<OfflinePermissions>;
   setOfflinePermissions(enabled: boolean): Promise<OfflinePermissions>;
   searchCatalog(query: string, cursor?: string): Promise<CatalogSearchResult>;
   getFeaturedCatalog(): Promise<CatalogSearchResult>;
+  getStoreAccess(): Promise<StoreAccess>;
   getAccountLibrary(kind: AccountLibraryPage['kind'], cursor?: string, refresh?: boolean, sort?: AccountLibraryPage['sort']): Promise<AccountLibraryPage>;
   startInstall(request: InstallRequest): Promise<string>;
   getInstallPlan(productId: string, destination?: string): Promise<InstallPlan>;
@@ -601,9 +681,10 @@ export interface LauncherApi {
   removeDownload(id: string): Promise<void>;
   clearFinishedDownloads(): Promise<void>;
   importGame(path?: string): Promise<Game | null>;
-  updateGame(id: string, patch: Partial<Pick<Game, 'title' | 'executable' | 'launchArgs' | 'locale' | 'launchTools'>>): Promise<Game>;
+  updateGame(id: string, patch: Partial<Pick<Game, 'title' | 'executable' | 'launchArgs' | 'locale' | 'launchTools' | 'runtime' | 'runtimeSeparatePrefix'>>): Promise<Game>;
   getGameLocales(id: string): Promise<string[]>;
   removeGame(id: string, mode: 'library' | 'delete-files'): Promise<void>;
+  getGameRuntimeReadiness(id: string): Promise<boolean>;
   getGameLaunchOptions(id: string): Promise<GameLaunchOptions>;
   getGameDetails(id: GameDetailsTarget): Promise<GameStoreDetails | undefined>;
   getGameActivity(id: GameDetailsTarget, refresh?: boolean): Promise<GameActivity>;

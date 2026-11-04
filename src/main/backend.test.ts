@@ -58,6 +58,7 @@ describe('prebuilt backend', () => {
         archiveSha512:'a'.repeat(128),files:{LICENSE:'b'.repeat(64),'xodus-cli':'c'.repeat(64),'xodus-service':'d'.repeat(64)}};
       const fetcher=vi.fn(async(input:URL|RequestInfo)=>{
         const target=String(input);
+        if(target.includes('/repos/domsvoboda/nexus-backend/releases?'))return new Response('[]');
         if(target.includes('/releases?'))return new Response(JSON.stringify([{tag_name:tag,assets:[archive,name+'.manifest.json',name+'.sha512sum',name+'-source.tar.xz',name+'-source.sha512sum'].map(asset=>({name:asset,browser_download_url:url(asset)}))}]));
         if(target.endsWith('.manifest.json'))return new Response(JSON.stringify(manifest));
         if(target.endsWith('.sha512sum'))return new Response(manifest.archiveSha512+'  '+archive+'\n');
@@ -152,6 +153,7 @@ describe('prebuilt backend', () => {
       let downloading = false;
       const fetcher = vi.fn(async (input: URL | RequestInfo) => {
         const target = String(input);
+        if (target.includes('/repos/domsvoboda/nexus-backend/releases?')) return new Response('[]');
         if (target.includes('/releases?')) return new Response(JSON.stringify([
           { tag_name: 'v0.1.0', assets: [] },
           { tag_name: tag, prerelease: true, assets: [] },
@@ -220,6 +222,7 @@ describe('prebuilt backend', () => {
     const newestUrl = (asset: string) => `https://github.com/domsvoboda/xodus-nexus/releases/download/${newest}/${asset}`;
     const fetcher = (async (input: URL | RequestInfo) => {
       const target = String(input);
+        if (target.includes('/repos/domsvoboda/nexus-backend/releases?')) return new Response('[]');
       if (target.includes('/releases?')) return new Response(JSON.stringify([
         { tag_name: 'v9.9.9', assets: [] },
         { tag_name: `backend-v${backendLock.version}`, assets: [{ name: name(backendLock.version, '.tar.xz'), browser_download_url: 'https://github.com/domsvoboda/xodus-nexus/releases/download/ignored/x' }] },
@@ -263,7 +266,8 @@ describe('prebuilt backend', () => {
         browser_download_url: `https://github.com/domsvoboda/xodus-nexus/releases/download/backend-v${v}/${backendPackageName(v, a)}${suffix}`,
       })) });
     const fetcher = (async (input: URL | RequestInfo) => {
-      const url = String(input); requests.push(url);
+      const url = String(input);
+      if (url.includes('/repos/domsvoboda/nexus-backend/releases?')) return new Response('[]'); requests.push(url);
       if (url.includes('/releases?')) return new Response(JSON.stringify([release('9.9.9', arch === 'arm64' ? 'x64' : 'arm64'), release('9.9.8', arch, false), release(version, arch)]));
       if (url.endsWith('.manifest.json')) return new Response(JSON.stringify({ schema: 1, authUi: 'electron', version, commit: 'a'.repeat(40), recipeSha256: 'b'.repeat(64), compatibility: 'linux-run-fixture', platform: 'linux', arch,
         archive: name + '.tar.xz', archiveSha512: sum, files: { 'xodus-cli': 'd'.repeat(64), 'xodus-service': 'e'.repeat(64), LICENSE: 'f'.repeat(64) } }));

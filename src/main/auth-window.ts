@@ -42,7 +42,7 @@ export function authViewFactory(parent?: BrowserWindow, testSession?: Session, r
           width: 580, height: 760, parent, show: false, title: localize('Xodus sign in'), autoHideMenuBar: true,
           webPreferences: { session: isolated, preload: path.join(folder, '../preload/auth.cjs'), nodeIntegration: false, contextIsolation: true,
             additionalArguments: ['--nexus-auth-ui=' + JSON.stringify({
-              label: localize('Xodus Nexus passkey help'), title: localize('Passkey taking too long?'),
+              label: localize('Nexus Launcher passkey help'), title: localize('Passkey taking too long?'),
               help: localize('If your account uses a passkey or security key, continue in Google Chrome. Or cancel this request to choose another method.'),
               browser: localize('Continue in browser'), cancel: localize('Cancel passkey request'),
               error: localize('Could not open browser sign-in. Google Chrome must be installed. Try again or choose another method.'),

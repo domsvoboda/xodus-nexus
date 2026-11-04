@@ -92,3 +92,9 @@ test('active updates and invalid options cannot delete an installation', async t
   await fs.writeFile(`${f.image}.nexus-update.lock`, '-1'); assert.equal(f.run().status, 1);
   await fs.writeFile(`${f.image}.nexus-update.lock`, '999999999'); assert.equal(f.run().status, 0);
 });
+
+test('renamed display labels keep installer identities and leave saved data intact',async t=>{
+ const f=await fixture(t);const desktop=path.join(f.root,'.local/share/applications/xodus-nexus.desktop');
+ await fs.writeFile(desktop,(await fs.readFile(desktop,'utf8')).replace('Name=Xodus Nexus','Name=Nexus Launcher'));
+ const result=f.run();assert.equal(result.status,0,result.stderr);await absent(f.image);await absent(desktop);await f.kept();
+});

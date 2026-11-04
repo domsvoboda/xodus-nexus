@@ -12,12 +12,12 @@ export interface AuthView {
 }
 export type AuthViewFactory = (send: (session: number, payload: string) => void, cancel: (session: number) => void, fail: () => void) => AuthView;
 
-export function startAuthTransport(binary: string, createView: AuthViewFactory, environment: NodeJS.ProcessEnv = process.env, timeoutMs = 600_000): {
+export function startAuthTransport(binary: string, createView: AuthViewFactory, environment: NodeJS.ProcessEnv = process.env, timeoutMs = 600_000, player = false): {
   child: ChildProcessWithoutNullStreams; result: Promise<{ code: number; output: string }>;
 } {
   // This explicit flag is absent in the native backend. Never fall back to an
   // incompatible handshake. The backend uses only these private stdio pipes.
-  const child = spawn(binary, ['--external-webview-stdio', 'login'], {
+  const child = spawn(binary, ['--external-webview-stdio', 'login', ...(player ? ['--player'] : [])], {
     env: { ...externalLauncherEnvironment(environment), XODUS_LOG: 'off', RUST_LOG: 'off' }, stdio: ['pipe', 'pipe', 'pipe'], shell: false,
   });
   observeBackendChild(child, 'login');

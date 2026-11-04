@@ -109,7 +109,7 @@ export async function createDiagnosticReport(input: {
   privateValues?: string[];
 }): Promise<DiagnosticReport> {
   const { snapshot: data } = input;
-  const lines = ['Xodus Nexus diagnostic report', `Created: ${new Date().toISOString()}`,
+  const lines = ['Nexus Launcher diagnostic report', `Created: ${new Date().toISOString()}`,
     'Automatic redaction is best effort. Review this report before sharing.',
     'Logs are bounded snapshots, not complete files. Prefixes, game files and saves are not read.',
     '', '## Versions', `Launcher: ${clean(input.launcherVersion)}`,
