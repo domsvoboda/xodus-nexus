@@ -36,6 +36,7 @@ interface StoreSearchResponse {
   productsList?: unknown;
   cursor?: unknown;
   hasMorePages?: unknown;
+  nextPageNumber?: unknown;
 }
 
 interface DisplayCatalogResponse {
@@ -59,6 +60,13 @@ const STORE_HOSTS = new Set(['www.xbox.com', 'xbox.com', 'apps.microsoft.com']);
 const CACHE_TTL_MS = 10 * 60 * 1000;
 const SEARCH_CACHE_LIMIT = 100;
 const SEARCH_REQUEST_LIMIT = 32;
+// The Store's games recommendation feeds return about ten products per page.
+// Trending games are dominated by free-to-play titles that the public browsing
+// policy has to hide, so the top paid collection supplies real breadth. Both
+// feeds are bounded here: one page is cached for ten minutes per market.
+const FEATURED_PAGE_ITEMS = 12;
+const FEATURED_TRENDING_PAGES = 1;
+const FEATURED_PAID_PAGES = 3;
 // Box art is square and carries the game's title branding, matching the
 // square library tiles; promotional square art is the textless fallback.
 const POSTER_PURPOSES = ['BoxArt', 'TitledPoster', 'Poster', 'FeaturePromotionalSquareArt'];
@@ -196,6 +204,21 @@ function bundleReferences(product: Record<string, unknown> | undefined): BundleR
     }
   }
   return [...references].map(([productId, primary]) => ({ productId, primary }));
+}
+
+/** Merge Store collections in priority order, keeping one row per product ID. */
+function mergeCollections(...collections: StoreSearchResponse[]): StoreSearchResponse {
+  const seen = new Set<string>();
+  const productsList: StoreSearchProduct[] = [];
+  for (const collection of collections) {
+    for (const product of Array.isArray(collection.productsList) ? collection.productsList as StoreSearchProduct[] : []) {
+      const productId = string(product?.productId)?.toUpperCase();
+      if (!productId || seen.has(productId)) continue;
+      seen.add(productId);
+      productsList.push(product);
+    }
+  }
+  return { productsList };
 }
 
 function packageSupport(productId: string, details: Map<string, Record<string, unknown>>, visited = new Set<string>(), budget = { remaining: 512 }): PackageSupport {
@@ -537,16 +560,57 @@ export class CatalogService {
     return this.cachedResult(cacheKey, () => this.featuredResult(market));
   }
 
+  /** Read one public Store recommendation feed, bounded to a fixed page count. */
+  private async computedCollection(listName: string, market: string, pages: number): Promise<StoreSearchResponse & { title?: unknown }> {
+    const collected: StoreSearchProduct[] = [];
+    let title: unknown;
+    let page = 1;
+    for (let index = 0; index < pages; index += 1) {
+      const url = new URL('https://apps.microsoft.com/api/Reco/GetComputedProductsList');
+      for (const [key, value] of Object.entries({
+        listName, pgNo: String(page), noItems: String(FEATURED_PAGE_ITEMS), filteredCategories: 'AllProducts',
+        mediaType: 'Games', gl: market, hl: 'en-us', exp: '0',
+      })) url.searchParams.set(key, value);
+      const response = await this.fetcher(url, { headers: { Accept: 'application/json' }, signal: AbortSignal.timeout(20_000) });
+      if (!response.ok) throw new Error(`Microsoft Store ${listName} collection returned HTTP ${response.status}.`);
+      const payload = await response.json() as StoreSearchResponse & { title?: unknown };
+      title = title ?? payload.title;
+      const products = Array.isArray(payload.productsList) ? payload.productsList as StoreSearchProduct[] : [];
+      collected.push(...products);
+      if (payload.hasMorePages !== true || products.length === 0) break;
+      // Captured contract (US pages 1..10, CZ pages 1..3, TopPaid pages 1..3):
+      // a continuation names exactly the next page while hasMorePages is true,
+      // and the end of a feed reports nextPageNumber -1 with hasMorePages
+      // false. Any other value (string, fraction, repeat, jump, sentinel) stops
+      // pagination and keeps the products already collected instead of
+      // following it, so the request budget cannot be redirected.
+      if (payload.nextPageNumber !== page + 1) break;
+      page += 1;
+    }
+    return { productsList: collected, title };
+  }
+
   private async featuredResult(market: string): Promise<CatalogSearchResult> {
-    const url = new URL('https://apps.microsoft.com/api/Reco/GetComputedProductsList');
-    for (const [key, value] of Object.entries({
-      listName: 'TopTrending', pgNo: '1', noItems: '12', filteredCategories: 'AllProducts',
-      mediaType: 'Games', gl: market, hl: 'en-us', exp: '0',
-    })) url.searchParams.set(key, value);
-    const response = await this.fetcher(url, { headers: { Accept: 'application/json' }, signal: AbortSignal.timeout(20_000) });
-    if (!response.ok) throw new Error(`Microsoft Store featured collection returned HTTP ${response.status}.`);
-    const search = await response.json() as StoreSearchResponse & { title?: unknown };
-    return this.result(search, string(search.title) ?? 'Trending games', market, false);
+    // Two honest public collections. Trending games are dominated by
+    // free-to-play offers that the public browsing policy must hide, so the top
+    // paid games collection supplies the real breadth of the landing page.
+    // Each feed is bounded by FEATURED_*_PAGES and served from the ten minute
+    // cache, so a page load never becomes an unbounded request fan-out.
+    const [trending, paid] = await Promise.allSettled([
+      this.computedCollection('TopTrending', market, FEATURED_TRENDING_PAGES),
+      this.computedCollection('TopPaid', market, FEATURED_PAID_PAGES),
+    ]);
+    if (trending.status === 'rejected' && paid.status === 'rejected') {
+      throw trending.reason instanceof Error ? trending.reason : new Error('Microsoft Store featured collections could not be loaded.');
+    }
+    const merged = mergeCollections(
+      ...(trending.status === 'fulfilled' ? [trending.value] : []),
+      ...(paid.status === 'fulfilled' ? [paid.value] : []),
+    );
+    const title = string(trending.status === 'fulfilled' ? trending.value.title : undefined)
+      ?? string(paid.status === 'fulfilled' ? paid.value.title : undefined)
+      ?? 'Featured games';
+    return this.result(merged, title, market, false);
   }
 
   async posters(ids: string[], rawMarket: string): Promise<Map<string, string>> {

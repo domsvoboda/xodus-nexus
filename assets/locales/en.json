@@ -826,6 +826,7 @@
   "ui.this_downloads_licensed_content_into_a_separate_393e175": "This downloads licensed content into a separate managed folder. Close the game first.",
   "ui.this_log_is_too_large_for_the_clipboard_use_show_97f6e93": "This log is too large for the clipboard. Use Show log file to attach the complete file.",
   "ui.tools_must_already_be_installed_applies_to_this_956d794": "Tools must already be installed. Applies to this game and its shortcuts, not the launcher.",
+  "ui.top_paid_games_8040f77": "Top paid and trending games",
   "ui.trending_pc_games_2025848": "Trending PC games",
   "ui.try_a_different_title_or_a_microsoft_store_produ_326af8c": "Try a different title or a Microsoft Store Product ID.",
   "ui.try_this_if_a_standard_dualsense_controller_is_n_114e408": "Use if a DualSense is not detected. Disables native HIDRAW for this game only. Advanced haptics and adaptive triggers may be unavailable. Does not change Xbox controller settings.",

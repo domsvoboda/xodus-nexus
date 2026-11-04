@@ -16,7 +16,10 @@ it.each(['search', 'featured'] as const)('coalesces twenty concurrent %s request
   const request = () => kind === 'search' ? catalog.search('Game', 'US') : catalog.featured('US');
   const pending = Array.from({ length: 20 }, request);
   await Promise.resolve();
-  expect(fetcher).toHaveBeenCalledTimes(1);
+  // One shared chain per key: one search request, or the two bounded Store
+  // recommendation feeds for featured (trending and top paid).
+  const chain = kind === 'search' ? 1 : 2;
+  expect(fetcher).toHaveBeenCalledTimes(chain);
   gate.release();
   const results = await Promise.all(pending);
   results[0].query = 'changed';
@@ -26,7 +29,7 @@ it.each(['search', 'featured'] as const)('coalesces twenty concurrent %s request
     expect(result.products).toEqual([]);
   }
   expect((await request()).products).toEqual([]);
-  expect(fetcher).toHaveBeenCalledTimes(1);
+  expect(fetcher).toHaveBeenCalledTimes(chain);
 });
 
 it('shares a failure without caching it and permits a clean retry', async () => {
@@ -52,7 +55,8 @@ it('separates markets, pages and featured results while retaining normalized sea
     catalog.search('Game', 'US'), catalog.search(' game ', 'us'), catalog.search('Game', 'CZ'),
     catalog.search('Game', 'US', 'page2'), catalog.featured('US'), catalog.search('featured', 'US'),
   ]);
-  expect(fetcher).toHaveBeenCalledTimes(5);
+  // Four search keys plus the two bounded recommendation feeds of one featured key.
+  expect(fetcher).toHaveBeenCalledTimes(6);
 });
 
 it('evicts least-recently-used results and expires entries without extending their lifetime on hits', async () => {
