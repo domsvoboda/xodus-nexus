@@ -1,7 +1,7 @@
 {
   "schema": 2,
   "repository": "https://github.com/domsvoboda/nexus-backend.git",
-  "commit": "128d42195225bf1bf2f2bcb8a9dedf4c044ace7a",
+  "commit": "b264d6490c9111fb8681c87d1a4429011cbab7db",
   "version": "0.2.15",
   "minimumVersion": "0.2.14",
   "rust": "1.99.0",

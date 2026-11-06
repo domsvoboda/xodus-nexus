@@ -2,7 +2,7 @@
   "name": "xodus-nexus",
   "productName": "Nexus Launcher",
   "desktopName": "org.xodusgaming.nexus.desktop",
-  "version": "0.4.2",
+  "version": "0.5.0",
   "description": "Xbox-inspired Microsoft Store game launcher for Linux",
   "license": "MIT",
   "author": "Xodus Nexus contributors",
