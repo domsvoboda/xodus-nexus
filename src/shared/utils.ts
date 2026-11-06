@@ -41,9 +41,11 @@ export function parseBackendHelp(help: string): BackendCapabilities {
 }
 
 export function stripAnsi(value: string): string {
-  // ANSI CSI/OSC sequences emitted by indicatif and tracing.
+  // ANSI CSI/OSC sequences emitted by indicatif and tracing. Each OSC ends at
+  // its first BEL or ESC-backslash terminator; visible text between two
+  // terminated sequences (for example OSC 8 hyperlink wraps) must survive.
   return value
-    .replace(/\u001b\][^\u0007]*(?:\u0007|\u001b\\)/g, '')
+    .replace(/\u001b\](?:[^\u0007\u001b]|\u001b(?!\\))*(?:\u0007|\u001b\\)/g, '')
     .replace(/\u001b\[[0-?]*[ -/]*[@-~]/g, '')
     .replace(/\r/g, '\n');
 }
