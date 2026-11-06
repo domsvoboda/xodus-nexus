@@ -1,25 +1,24 @@
-import {gameRuntimeAvailable} from '../shared/runtime-selection';
 import {expect,it} from 'vitest';
 import {renderToStaticMarkup} from 'react-dom/server';
 import {GameRuntimeFields} from './GameRuntimeFields';
+import type {InstalledRuntimeFamily} from '../shared/runtime-selection';
 const change=()=>{};
-it('offers only default when no verified variants are installed, never an unbuilt CachyOS option',()=>{
- const html=renderToStaticMarkup(<GameRuntimeFields value="default" separate={false} installed={[]} change={change} changeSeparate={change}/>);
+const installed:InstalledRuntimeFamily[]=[
+ {id:'nexus',label:'Standard',buildId:'a'.repeat(64),sourceCommit:'b'.repeat(40),manifestSha256:'c'.repeat(64)},
+ {id:'nexus-cachyos',label:'CachyOS',buildId:'d'.repeat(64),sourceCommit:'e'.repeat(40),manifestSha256:'f'.repeat(64)},
+];
+it('offers only the default runtime when no verified family is installed, never an unbuilt CachyOS option',()=>{
+ const html=renderToStaticMarkup(<GameRuntimeFields value="default" installed={[]} change={change}/>);
  expect(html.match(/<option/g)).toHaveLength(1);expect(html).not.toContain('CachyOS');expect(html).toContain('Use default runtime');
 });
-it('lists verified families with explicit separate-prefix acknowledgment and save warning',()=>{
- const html=renderToStaticMarkup(<GameRuntimeFields value="nexus-cachyos" separate={false} installed={[{id:'nexus-cachyos',label:'CachyOS',buildId:'a'.repeat(64),sourceCommit:'b'.repeat(40),manifestSha256:'c'.repeat(64)}]} change={change} changeSeparate={change}/>);
- expect(html).toContain('CachyOS');expect(html).toMatch(/type="checkbox" required/);expect(html).toContain('class="check-input"');const help=html.match(/aria-describedby="([^"]+)"/)?.[1];expect(help).toBeTruthy();expect(html).toContain('<small id="'+help+'">');expect(html).toContain('Existing local saves stay in the old prefix');expect(html).toContain('Updates within this family reuse the same prefix and local saves');expect(html).not.toContain('each runtime build');expect(html).not.toContain('this runtime build');expect(html).not.toContain('checked=""');
+it('lists the default, Standard and CachyOS as plain choices without a separate-prefix consent step',()=>{
+ const html=renderToStaticMarkup(<GameRuntimeFields value="nexus-cachyos" installed={installed} change={change}/>);
+ expect(html.match(/<option/g)).toHaveLength(3);
+ expect(html).toContain('>Standard</option>');expect(html).toContain('>CachyOS</option>');
+ expect(html).not.toContain('type="checkbox"');expect(html).not.toContain('required=""');
+ expect(html).not.toContain('separate prefix');expect(html).not.toContain('local saves');
 });
-it('shows a missing persisted selection as disabled rather than falling back',()=>{
- const html=renderToStaticMarkup(<GameRuntimeFields value="nexus-cachyos" separate installed={[]} change={change} changeSeparate={change}/>);
- expect(html).toMatch(/value="nexus-cachyos" disabled="" selected=""/);expect(html).toContain('(unavailable)');
-});
-
-it('allows a verified selected family without a default and never borrows default availability for a missing family',()=>{
- const installed=[{id:'nexus-cachyos' as const,label:'Experimental',buildId:'a'.repeat(64),sourceCommit:'b'.repeat(40),manifestSha256:'c'.repeat(64)}];
- expect(gameRuntimeAvailable('nexus-cachyos',true,false,installed)).toBe(true);
- expect(gameRuntimeAvailable('nexus-cachyos',true,true,[])).toBe(false);
- expect(gameRuntimeAvailable('nexus-cachyos',false,true,installed)).toBe(false);
- expect(gameRuntimeAvailable(undefined,false,true,[])).toBe(true);
+it('shows a missing persisted selection as unavailable rather than falling back to another runtime',()=>{
+ const html=renderToStaticMarkup(<GameRuntimeFields value="nexus-cachyos" installed={[]} change={change}/>);
+ expect(html).toMatch(/value="nexus-cachyos" disabled="" selected=""/);expect(html).toContain('CachyOS (unavailable)');
 });

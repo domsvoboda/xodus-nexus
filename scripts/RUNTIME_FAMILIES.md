@@ -37,14 +37,22 @@ build. Every new launch resolves the current family receipt and uses it
 directly. The existing prefix and local saves are reused in place. No migration,
 copy, transfer or prefix initialization occurs when saving the selection.
 
-Selecting a family for the first time requires an explicit separate-prefix
-choice; changing family is a separate explicit choice. New family prefixes live
-under `runtime-prefixes/<family>/prefixes/<gameId>/`. Pre-0.5 build-bound
-prefixes remain under `runtime-prefixes/<family>/<buildId>/<gameId>/` and are
-preserved by their recorded build origin as prefix anchors, not as runtime
-selections. The default family keeps `compatdata/<gameId>` and
-`prefixes/<gameId>`. Unknown or mismatched prefix bindings fail closed, and a
-nonempty unbound prefix is never adopted.
+A game's prefix location is a durable backend-owned identity stored with the
+game record (`runtimePrefixIdentity`). It is captured from the location that the
+persisted selection already used, so changing family or updating a family build
+selects only the verified runner: no separate-prefix consent, copy, reset, merge
+or save migration is involved. A game without an existing prefix uses the
+canonical per-game location `compatdata/<gameId>`, with `prefixes/<gameId>` for
+its plain Wine root, independent of the chosen family. Existing family and build
+prefixes keep their exact paths under `runtime-prefixes/<family>/prefixes/<gameId>/`
+and `runtime-prefixes/<family>/<buildId>/<gameId>/`, bound by their recorded
+origin rather than by the current family. Unknown, partial or mismatched bindings
+and unbound nonempty experimental prefixes fail closed for every runner.
+Symlinked prefixes or binding files are refused on experimental layouts with any
+runner and on the canonical prefix with a managed runner; the pre-0.5 canonical
+default prefix keeps its existing behaviour. A legacy history with several
+existing prefixes that the persisted record does not select is refused as well,
+with every prefix and save preserved and nothing merged.
 
 ## Session rules
 

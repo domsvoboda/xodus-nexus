@@ -1,4 +1,4 @@
-import type {RuntimeFamily,GameRuntimeSelection,InstalledRuntimeFamily,RuntimeBuildApproval,RuntimePrefixAnchors} from './runtime-selection.js';
+import type {RuntimeFamily,GameRuntimeSelection,InstalledRuntimeFamily,RuntimeBuildApproval,RuntimePrefixAnchors,RuntimePrefixIdentity} from './runtime-selection.js';
 export type Page = 'home' | 'store' | 'library' | 'downloads' | 'settings' | 'social';
 
 export interface BackendCapabilities {
@@ -141,7 +141,11 @@ export interface Game {
   runtime?: GameRuntimeSelection;
   runtimeSeparatePrefix?: boolean;
   runtimeBuild?: RuntimeBuildApproval; // Old prefix origin only, never a launch pin.
-  runtimePrefixes?: RuntimePrefixAnchors;
+  runtimePrefixes?: RuntimePrefixAnchors; // Legacy per-family path metadata, never a launch pin.
+  /** Backend-owned durable prefix location. Captured from the persisted state
+   * before a selection change; it survives family switches and reloads and is
+   * never accepted from the renderer. */
+  runtimePrefixIdentity?: RuntimePrefixIdentity;
   launchArgs?: string;
   launchTools?: GameLaunchTools;
   locale?: string;

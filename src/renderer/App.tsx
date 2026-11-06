@@ -230,7 +230,7 @@ function useGameLaunchOptions(game: Game | undefined, data: AppSnapshot): GameLa
       .then((value) => { if (!cancelled) setOptions(value); })
       .catch((error) => { if (!cancelled) setOptions({ cloudSaves: false, cloudReason: errorMessage(error), vcInstall: false, vcReason: errorMessage(error) }); });
     return () => { cancelled = true; };
-  }, [game?.id, game?.runtime, game?.runtimeSeparatePrefix, game?.runtimeBuild?.buildId, game?.runtimeBuild?.manifestSha256, JSON.stringify(game?.runtimePrefixes), data.runtime.variants?.map(item=>item.id+':'+item.buildId).join(','), data.settings.winePath, data.settings.runtimeRoot, data.runtime.winePath, data.backend.binaryPath, data.backend.commit, data.backend.available]);
+  }, [game?.id, game?.runtime, game?.runtimeSeparatePrefix, game?.runtimePrefixIdentity, game?.runtimeBuild?.buildId, game?.runtimeBuild?.manifestSha256, JSON.stringify(game?.runtimePrefixes), data.runtime.variants?.map(item=>item.id+':'+item.buildId).join(','), data.settings.winePath, data.settings.runtimeRoot, data.runtime.winePath, data.backend.binaryPath, data.backend.commit, data.backend.available]);
   return options;
 }
 
@@ -694,7 +694,6 @@ export function LibraryPage({ data, toast, filters, onFiltersChange, selection, 
   const [editTitle, setEditTitle] = useState('');
   const [editLocale, setEditLocale] = useState('');
   const [editRuntime,setEditRuntime]=useState<GameRuntimeSelection>('default');
-  const [editSeparatePrefix,setEditSeparatePrefix]=useState(false);
   const [runtimeChoices,setRuntimeChoices]=useState<InstalledRuntimeFamily[]>(data.runtime.variants??[]);
   const runtimeChoicesKey=JSON.stringify(data.runtime.variants??[]);
   useEffect(()=>setRuntimeChoices(data.runtime.variants??[]),[runtimeChoicesKey]);
@@ -776,7 +775,6 @@ export function LibraryPage({ data, toast, filters, onFiltersChange, selection, 
     setEditTitle(game.title);
     setEditLocale(game.locale ?? '');
     setEditRuntime(game.runtime ?? 'default');
-    setEditSeparatePrefix(game.runtimeSeparatePrefix===true);
     setEditTools({ ...defaultLaunchTools, ...game.launchTools });
     setLocaleOptions([]);
     const request = ++localeRequest.current;
@@ -792,7 +790,7 @@ export function LibraryPage({ data, toast, filters, onFiltersChange, selection, 
     if (!dialogGame) return;
     setDialogBusy(true);
     try {
-      await window.launcher.updateGame(dialogGame.id, { title: editTitle.trim(), locale: editLocale, launchTools: normalizeLaunchTools(editTools), runtime:editRuntime, runtimeSeparatePrefix:editSeparatePrefix });
+      await window.launcher.updateGame(dialogGame.id, { title: editTitle.trim(), locale: editLocale, launchTools: normalizeLaunchTools(editTools), runtime:editRuntime });
       toast({ kind: 'success', message: ui("ui.game_settings_saved_7f466a5") });
       setDialogGame(undefined);
     } catch (error) { toast({ kind: 'error', message: errorMessage(error) }); }
@@ -903,7 +901,7 @@ export function LibraryPage({ data, toast, filters, onFiltersChange, selection, 
         <h2>{ui("ui.game_settings_fece860")}</h2>
         <label>{ui("ui.display_name_2b7f6a8")}<input data-gamepad-initial required value={editTitle} onChange={(event) => setEditTitle(event.target.value)} /></label>
         <GameLanguage value={editLocale} locales={localeOptions} onChange={setEditLocale} />
-        <GameRuntimeFields value={editRuntime} separate={editSeparatePrefix} installed={runtimeChoices} change={value=>{setEditRuntime(value);setEditSeparatePrefix(value===(modalGame.runtime??'default')?modalGame.runtimeSeparatePrefix===true:Boolean(value!=='default'&&modalGame.runtimePrefixes?.[value]));}} changeSeparate={setEditSeparatePrefix}/>
+        <GameRuntimeFields value={editRuntime} installed={runtimeChoices} change={setEditRuntime}/>
         <GameLaunchToolFields value={editTools} change={setEditTools} />
         <div className="dialog-actions"><button type="button" className="secondary" disabled={dialogBusy} data-gamepad-cancel onClick={() => setDialogGame(undefined)}>{ui("ui.cancel_19766ed")}</button><button className="primary" disabled={dialogBusy || !editTitle.trim()}><Check />{ui("ui.save_1509f56")}</button></div>
       </form>}
