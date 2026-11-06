@@ -43,7 +43,7 @@ language? Request it in a [GitHub issue](https://github.com/domsvoboda/xodus-nex
 
 ## Install
 
-Download the latest Linux AppImage from [Releases](https://github.com/domsvoboda/xodus-nexus/releases), make it executable and open it. Stable releases currently ship for x86_64. Experimental ARM64 support requires matching native launcher, backend and runtime builds, compatible graphics drivers and FEX for x86 Windows games.
+Download the Linux AppImage for your architecture (**x86_64** or experimental **ARM64**) from [Releases](https://github.com/domsvoboda/xodus-nexus/releases), make it executable and open it. ARM64 requires matching native backend and runtime builds and compatible graphics drivers. The ARM64 runtime includes FEX for x86 and x86_64 Windows games; game compatibility remains experimental.
 
 The current x86_64 runtime requires glibc 2.38 or newer (for example Ubuntu 24.04 or a current SteamOS, Fedora or Arch installation). Ubuntu 22.04 does not meet this requirement.
 
