@@ -1,5 +1,6 @@
 import {useComponentUpdates} from './ComponentUpdates';
 import {ManagedRuntimeSettings} from './ManagedRuntimeSettings';
+import {DefaultRuntimeSettings} from './DefaultRuntimeSettings';
 import {StatusDot} from './StatusDot';
 import {useGameRuntimeReady} from './useGameRuntimeReady';
 import {useStoreAccess} from './store-access';
@@ -21,7 +22,7 @@ import {reconcileSettingsDraft, storageSettingsPatch} from './settings-draft';
 import {xboxOverlaySettings} from '../shared/xbox-overlay-settings';
 import './xbox-desktop-social.css';
 import { estimateTimeRemaining, isNewerVersion } from '../shared/utils';
-import { nexusRuntimeUpdateAvailable, runtimeDisplay, activeRuntimeIsCachyos } from '../shared/runtime-display';
+import { nexusRuntimeUpdateAvailable } from '../shared/runtime-display';
 import { subscriptionBadge } from '../shared/subscription';
 import { defaultLaunchTools, normalizeLaunchTools } from '../shared/launch-tools';
 import { DEFAULT_SHADER_CACHE_GIB, shaderCacheLimits } from '../shared/shader-cache';
@@ -1028,8 +1029,6 @@ export function SettingsPage({ data, toast }: { data: AppSnapshot; toast: (value
   const caps = data.backend.capabilities;
   let cacheLimitValid = true;
   try { shaderCacheLimits(form.shaderCacheLimitGiB ?? DEFAULT_SHADER_CACHE_GIB); } catch { cacheLimitValid = false; }
-  const runtimeInfo = runtimeDisplay(data.runtime);
-  const activeCachyos = activeRuntimeIsCachyos(data.runtime);
   const overlay=xboxOverlaySettings(form);
   const savedOverlay=xboxOverlaySettings(data.settings);
   const overlayDirty=overlay.overlayEnabled!==savedOverlay.overlayEnabled||overlay.overlaySide!==savedOverlay.overlaySide||(form.overlayShortcut??savedOverlay.overlayShortcut)!==savedOverlay.overlayShortcut;
@@ -1117,18 +1116,9 @@ export function SettingsPage({ data, toast }: { data: AppSnapshot; toast: (value
       <div className="button-row end"><button className="secondary" disabled={Boolean(busy) || data.backend.checking || data.backend.updating} onClick={() => invoke('backend-check', () => window.launcher.checkBackendUpdate())}>{busy === 'backend-check' || data.backend.checking ? <LoaderCircle className="spin" /> : <RefreshCw />}{ui("ui.check_for_updates_f26f327")}</button>{data.backend.releaseAvailable && data.backend.updateAvailable ? <button className="primary" disabled={Boolean(busy) || data.backend.updating || data.backend.checking} onClick={() => invoke('backend-update', () => window.launcher.updateBackend(), ui("ui.the_nexus_backend_was_verified_installed_and_act_62d374e"))}>{busy === 'backend-update' || data.backend.updating ? <LoaderCircle className="spin" /> : <ArrowDownToLine />}{data.backend.available ? ui("ui.update_backend_bddcd8b") : ui("ui.install_backend_73e7239")}</button> : null}</div>
     </section>
 
-    <section className="settings-card">
-      <div className="settings-heading"><div className="settings-icon"><Gamepad2 /></div><div><h2>{ui("runtime.default_title")}</h2><p>{data.runtime.installed ? ui("ui.active_ae2c40a", { runtime: runtimeInfo.title, version: runtimeInfo.version }) : ui("ui.no_runtime_selected_b8e7445")}</p></div><span className={`status-label ${data.runtime.installed && runtimeInfo.source === 'Nexus runtime' ? 'ready' : 'unknown'}`}><StatusDot tone={data.runtime.installed && runtimeInfo.source === 'Nexus runtime' ? 'green' : 'amber'} />{!data.runtime.installed ? ui("ui.missing_8af1d32") : runtimeInfo.source === 'Nexus runtime' ? ui("ui.ready_c2e3ac4") : ui("ui.other_runtime_ce6adfb")}</span></div>
-      {data.runtime.nexusError ? <div className="alert amber"><CircleAlert /><span>{data.runtime.nexusError}</span></div> : null}
-      {data.runtime.error ? <div className="alert amber"><CircleAlert /><span>{uiText(data.runtime.error)}</span></div> : null}{data.runtime.phase ? <div className="runtime-phase"><LoaderCircle className={data.runtime.updating ? 'spin' : ''} /><span>{uiText(data.runtime.phase)}</span></div> : null}
-      {activeCachyos ? null : <div className="button-row end">
-        <button className="secondary" disabled={Boolean(busy) || data.runtime.nexusChecking} onClick={() => invoke('runtime-check', () => window.launcher.checkNexusRuntime())}>{busy === 'runtime-check' || data.runtime.nexusChecking ? <LoaderCircle className="spin" /> : <RefreshCw />}{ui("ui.check_for_updates_f26f327")}</button>
-        {nexusRuntimeUpdateAvailable(data.runtime) ? <button className="primary" disabled={Boolean(busy) || data.runtime.updating} onClick={() => invoke('runtime-install-nexus', () => window.launcher.installNexusRuntime(), ui("ui.nexus_runtime_was_verified_installed_and_selecte_51b0ff1"))}>{busy === 'runtime-install-nexus' || data.runtime.updating ? <LoaderCircle className="spin" /> : <ArrowDownToLine />}{ui("ui.install_nexus_runtime_2cf3608")}{data.runtime.nexusVersion ? ` ${data.runtime.nexusVersion.replace(/^runtime-/, '')}` : ''}</button> : null}
-      </div>}
-      {data.runtime.updating || runtimeLogs.length > 0 ? <pre className="build-log">{runtimeLogs.join('\n') || ui("ui.waiting_for_output_f05fefe")}</pre> : null}
-    </section>
+    <DefaultRuntimeSettings data={data} busy={busy} disabled={componentUpdatesDisabled} runtimeLogs={runtimeLogs} invoke={invoke}/>
 
-    <ManagedRuntimeSettings data={data} disabled={Boolean(busy)||data.componentUpdates?.running===true||data.auth.running||data.backend.updating||data.runtime.updating||Boolean(data.launcherUpdate?.updating)||Boolean(data.gameOperation&&['preparing','running','stopping'].includes(data.gameOperation.status))||data.downloads.some(task=>['queued','running','paused'].includes(task.status))} onBusyChange={value=>setBusy(value?'managed-runtime':undefined)}/>
+    <ManagedRuntimeSettings data={data} disabled={componentUpdatesDisabled} onBusyChange={value=>setBusy(value?'managed-runtime':undefined)}/>
 
     <div className="settings-storage">
       <section className="settings-card compact">
@@ -1160,8 +1150,6 @@ export function SettingsPage({ data, toast }: { data: AppSnapshot; toast: (value
       <div className="diagnostics-content">
         <DiagnosticReportButton games={data.games} />
         <section><h3>{ui("ui.game_logging_6cb644e")}</h3><div className="toggle-row"><CheckField className="toggle" label={ui("ui.verbose_game_logs_58e750b")} description={ui("ui.writes_full_wine_vkd3d_proton_and_xodus_diagnost_dfa1fa3")} checked={form.verboseLogs} onChange={(event) => setForm({ ...form, verboseLogs: event.target.checked })} /></div><div className="button-row"><button className="secondary" disabled={Boolean(busy)} onClick={() => invoke('save-diagnostics', () => window.launcher.updateSettings({ verboseLogs: form.verboseLogs }), ui("ui.logging_settings_saved_5a9dd67"))}>{ui("ui.save_diagnostics_52fe7bd")}</button></div></section>
-        <section><h3>{ui("ui.backend_details_522061f")}</h3><p className="diagnostic-path mono">{data.backend.binaryPath ?? ui("ui.no_backend_selected_e322189")}</p><div className="meta-grid"><div><span>{ui("ui.source_56ccd01")}</span><strong>{data.backend.source === 'external' ? ui("ui.external_installation_read_only_9cedb28") : data.backend.delivery === 'release' ? ui("ui.nexus_github_release_44f7ae9") : data.backend.source === 'managed' ? ui("ui.local_versioned_build_284259d") : '—'}</strong></div><div><span>{ui("ui.commit_79663c1")}</span><strong className="mono">{data.backend.commit?.slice(0, 12) ?? '—'}</strong></div></div></section>
-        <section><h3>{ui("ui.runtime_details_77fa868")}</h3><p className="diagnostic-path mono">{data.runtime.winePath ?? ui("ui.no_runtime_selected_b8e7445")}</p><div className="meta-grid"><div><span>{ui("ui.source_56ccd01")}</span><strong>{runtimeInfo.source}</strong></div><div><span>{ui("ui.build_3053677")}</span><strong className="mono">{data.runtime.commit ?? '—'}</strong></div></div></section>
       </div>
     </details>
   </main>;
