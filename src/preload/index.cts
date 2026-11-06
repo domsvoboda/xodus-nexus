@@ -123,6 +123,7 @@ const api: LauncherApi = {
   setOfflinePermissions: (enabled: boolean) => ipcRenderer.invoke('set-offline-permissions', enabled),
   searchCatalog: (query: string, cursor?: string) => ipcRenderer.invoke('catalog-search', query, cursor),
   getFeaturedCatalog: () => ipcRenderer.invoke('catalog-featured'),
+  browseCatalog: (cursor?: string) => ipcRenderer.invoke('catalog-browse', cursor),
   getRecentGamePassShelf: () => ipcRenderer.invoke('catalog-recent-gamepass'),
   getStoreAccess: () => ipcRenderer.invoke('store-access'),
   getAccountLibrary: (kind, cursor, refresh, sort) => ipcRenderer.invoke('account-library', kind, cursor, refresh, sort),

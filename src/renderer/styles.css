@@ -290,6 +290,8 @@ button.primary svg, button.secondary svg { width: 17px; height: 17px; }
 .catalog-card-install:disabled { opacity: .42; cursor: not-allowed; }
 .catalog-card-install svg { width: 14px; height: 14px; }
 .load-more { padding: 24px 0 4px; display: flex; justify-content: center; }
+.store-pagination { flex-direction: column; gap: 10px; align-items: center; }
+.store-pagination > .alert.amber { width: 100%; margin: 0; text-align: left; }
 .featured-catalog { margin-top: 4px; }
 .catalog-loading { min-height: 260px; display: flex; align-items: center; justify-content: center; gap: 10px; border: 1px dashed #454a50; color: var(--muted); font-size: 10px; }
 .catalog-loading svg { width: 18px; color: var(--green); }

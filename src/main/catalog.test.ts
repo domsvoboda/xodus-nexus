@@ -352,6 +352,148 @@ describe('Public Store landing collections', () => {
     const result = await new CatalogService(landingFetcher(collections, details, [])).featured('US');
     expect(result.products.map(product => product.title)).toEqual(['Paid With Demo']);
   });
+
+  const browsePages = (pages: number, extra: (index: number) => Record<string, unknown>[] = () => []) => {
+    const collections: Record<string, unknown[]> = { TopPaid: [] };
+    for (let index = 1; index <= pages; index += 1) {
+      collections.TopPaid.push({
+        title: 'Top paid games',
+        hasMorePages: index < pages,
+        nextPageNumber: index < pages ? index + 1 : -1,
+        productsList: [row(`9BROWSE00${index}`, `Browse ${index}`, 9.99 + index), ...extra(index)],
+      });
+    }
+    return collections;
+  };
+  const browseDetails = (pages: number, extra: string[] = []) => Object.fromEntries([
+    ...Array.from({ length: pages }, (_, index) => [`9BROWSE00${index + 1}`, game(`9BROWSE00${index + 1}`, [paidSku(9.99 + index + 1)])]),
+    ...extra.map(id => [id, game(id, [paidSku(19.99)])]),
+  ]);
+
+  it('continues from the exact page the featured read did not cover', async () => {
+    const requests: string[] = [];
+    const service = new CatalogService(landingFetcher(browsePages(6), browseDetails(6), requests));
+    const featured = await service.featured('US');
+    expect(requests.filter(request => request.startsWith('TopPaid'))).toEqual(['TopPaid:1', 'TopPaid:2', 'TopPaid:3']);
+    expect(featured.hasMore).toBe(true);
+    expect(featured.cursor).toBe('paid-4');
+    const first = await service.browse('US', featured.cursor);
+    expect(requests.filter(request => request.startsWith('TopPaid'))).toEqual(['TopPaid:1', 'TopPaid:2', 'TopPaid:3', 'TopPaid:4']);
+    expect(first.products.map(product => product.title)).toEqual(['Browse 4']);
+    expect(first.hasMore).toBe(true);
+    expect(first.cursor).toBe('paid-5');
+    const second = await service.browse('US', first.cursor);
+    expect(second.products.map(product => product.title)).toEqual(['Browse 5']);
+    expect(second.cursor).toBe('paid-6');
+    const third = await service.browse('US', second.cursor);
+    expect(third.hasMore).toBe(false);
+    expect(third.cursor).toBeUndefined();
+  });
+
+  it('offers no continuation when the paid feed ended inside the featured budget', async () => {
+    const requests: string[] = [];
+    const featured = await new CatalogService(landingFetcher(browsePages(2), browseDetails(2), requests)).featured('US');
+    expect(requests.filter(request => request.startsWith('TopPaid'))).toEqual(['TopPaid:1', 'TopPaid:2']);
+    expect(featured.products.map(product => product.title)).toEqual(['Browse 1', 'Browse 2']);
+    expect(featured.hasMore).toBe(false);
+    expect(featured.cursor).toBeUndefined();
+  });
+
+  it('restarts the paid feed from its first page when the featured paid read failed', async () => {
+    const requests: string[] = [];
+    const collections = { ...browsePages(6), TopTrending: [{ title: 'Trending games', hasMorePages: false, productsList: [row('9TRENDING01', 'Trending Paid', 9.99)] }] };
+    const details = { ...browseDetails(6), '9TRENDING01': game('9TRENDING01', [paidSku(9.99)]) }, state = { failPage2: true };
+    const fetcher = (async (input: URL | RequestInfo) => {
+      const url = new URL(String(input));
+      if (url.pathname.includes('GetComputedProductsList')) {
+        const name = url.searchParams.get('listName') ?? '', page = Number(url.searchParams.get('pgNo') ?? '1');
+        requests.push(`${name}:${page}`);
+        if (name === 'TopPaid' && page === 2 && state.failPage2) return new Response('{}', { status: 503 });
+        const payload = collections[name]?.[page - 1];
+        return payload ? new Response(JSON.stringify(payload), { status: 200 }) : new Response('{}', { status: 404 });
+      }
+      if (url.pathname.includes('/v7.0/products')) {
+        const ids = (url.searchParams.get('bigIds') ?? '').split(',').map(id => id.toUpperCase());
+        return new Response(JSON.stringify({ Products: ids.flatMap(id => details[id] ? [details[id]] : []) }), { status: 200 });
+      }
+      return new Response('{}', { status: 404 });
+    }) as typeof fetch;
+    const service = new CatalogService(fetcher);
+    const featured = await service.featured('US');
+    // A failed paid read contributes nothing; its items are recovered from page 1.
+    expect(featured.products.map(product => product.title)).toEqual(['Trending Paid']);
+    expect(featured.hasMore).toBe(true);
+    expect(featured.cursor).toBe('paid-1');
+    // Recovery reads the skipped first page again instead of assuming it exists.
+    const recovered = await service.browse('US', featured.cursor);
+    expect(requests.filter(request => request.startsWith('TopPaid'))).toEqual(['TopPaid:1', 'TopPaid:2', 'TopPaid:1']);
+    expect(recovered.products.map(product => product.title)).toEqual(['Browse 1']);
+    expect(recovered.cursor).toBe('paid-2');
+  });
+
+  it('rejects a totally failed featured read and returns a real continuation after a retry', async () => {
+    const requests: string[] = [];
+    const collections = browsePages(6), details = browseDetails(6), state = { fail: true };
+    const fetcher = (async (input: URL | RequestInfo) => {
+      const url = new URL(String(input));
+      if (url.pathname.includes('GetComputedProductsList')) {
+        const name = url.searchParams.get('listName') ?? '', page = Number(url.searchParams.get('pgNo') ?? '1');
+        requests.push(`${name}:${page}`);
+        if (state.fail) return new Response('{}', { status: 503 });
+        const payload = collections[name]?.[page - 1];
+        return payload ? new Response(JSON.stringify(payload), { status: 200 }) : new Response('{}', { status: 404 });
+      }
+      if (url.pathname.includes('/v7.0/products')) {
+        const ids = (url.searchParams.get('bigIds') ?? '').split(',').map(id => id.toUpperCase());
+        return new Response(JSON.stringify({ Products: ids.flatMap(id => details[id] ? [details[id]] : []) }), { status: 200 });
+      }
+      return new Response('{}', { status: 404 });
+    }) as typeof fetch;
+    const service = new CatalogService(fetcher);
+    await expect(service.featured('US')).rejects.toThrow('TopTrending');
+    state.fail = false;
+    const retried = await service.featured('US');
+    expect(retried.products.map(product => product.title)).toEqual(['Browse 1', 'Browse 2', 'Browse 3']);
+    expect(retried.hasMore).toBe(true);
+    expect(retried.cursor).toBe('paid-4');
+  });
+
+  it('reads the first paid page when no cursor is provided, so a page-1 recovery request is honest', async () => {
+    const requests: string[] = [];
+    const result = await new CatalogService(landingFetcher(browsePages(4), browseDetails(4), requests)).browse('US');
+    expect(requests.filter(request => request.startsWith('TopPaid'))).toEqual(['TopPaid:1']);
+    expect(result.products.map(product => product.title)).toEqual(['Browse 1']);
+    expect(result.cursor).toBe('paid-2');
+  });
+
+  it('serves a repeated cursor from one shared request and never redirects the page budget', async () => {
+    const requests: string[] = [];
+    const service = new CatalogService(landingFetcher(browsePages(6), browseDetails(6), requests));
+    const [left, right] = await Promise.all([service.browse('US', 'paid-5'), service.browse('US', 'paid-5')]);
+    expect(left.products).toEqual(right.products);
+    expect(requests.filter(request => request.startsWith('TopPaid'))).toEqual(['TopPaid:5']);
+  });
+
+  it('stops at the last bounded page even when the feed still offers a continuation', async () => {
+    const pages = browsePages(41);
+    pages.TopPaid[39] = { title: 'Top paid games', hasMorePages: true, nextPageNumber: 41, productsList: [row('9BROWSE0040', 'Browse 40', 29.99)] };
+    const result = await new CatalogService(landingFetcher(pages, browseDetails(41), [])).browse('US', 'paid-40');
+    expect(result.hasMore).toBe(false);
+    expect(result.cursor).toBeUndefined();
+  });
+
+  it('keeps the public browsing policy on continued pages', async () => {
+    const collections = browsePages(4, index => index === 4 ? [row('9BROWSETRIAL', 'Browse Trial', 29.99), row('9BROWSEFREE0', 'Browse Free', 0)] : []);
+    const details = { ...browseDetails(4), '9BROWSETRIAL': game('9BROWSETRIAL', [trialSku()]), '9BROWSEFREE0': game('9BROWSEFREE0', [freeSku()]) };
+    const result = await new CatalogService(landingFetcher(collections, details, [])).browse('US', 'paid-4');
+    expect(result.products.map(product => product.title)).toEqual(['Browse 4']);
+  });
+
+  it.each(['paid-0', 'paid-41', 'paid-1000', 'paid-4x', '4', 'cursor', '', 'paid-'])('rejects the invalid browse cursor %s without any request', async cursor => {
+    const requests: string[] = [];
+    await expect(new CatalogService(landingFetcher({}, {}, requests)).browse('US', cursor)).rejects.toThrow('browse cursor');
+    expect(requests).toEqual([]);
+  });
 });
 
 describe('Store-only offer policy',()=>{

@@ -97,6 +97,20 @@ function raceCallerDeadline<T>(promise: Promise<T>, signal: AbortSignal): Promis
 const FEATURED_PAGE_ITEMS = 12;
 const FEATURED_TRENDING_PAGES = 1;
 const FEATURED_PAID_PAGES = 3;
+// The landing page shows a bounded featured set. Its own result carries the
+// cursor for the next unread Top paid page, so the renderer continues the exact
+// feed that was actually read instead of assuming which pages exist.
+const BROWSE_COLLECTION = 'TopPaid';
+const BROWSE_FIRST_PAGE = 1;
+const BROWSE_LAST_PAGE = 40;
+
+function browsePage(value: unknown): number {
+  if (value === undefined) return BROWSE_FIRST_PAGE;
+  const digits = string(value)?.match(/^paid-([0-9]{1,2})$/)?.[1];
+  const page = digits === undefined ? NaN : Number(digits);
+  if (!Number.isInteger(page) || page < 1 || page > BROWSE_LAST_PAGE) throw new Error('The Store browse cursor is invalid.');
+  return page;
+}
 // Box art is square and carries the game's title branding, matching the
 // square library tiles; promotional square art is the textless fallback.
 const POSTER_PURPOSES = ['BoxArt', 'TitledPoster', 'Poster', 'FeaturePromotionalSquareArt'];
@@ -629,22 +643,30 @@ export class CatalogService {
   }
 
   /** Read one public Store recommendation feed, bounded to a fixed page count. */
-  private async computedCollection(listName: string, market: string, pages: number): Promise<StoreSearchResponse & { title?: unknown }> {
+  private async collectionPage(listName: string, market: string, page: number): Promise<StoreSearchResponse & { title?: unknown }> {
+    const url = new URL('https://apps.microsoft.com/api/Reco/GetComputedProductsList');
+    for (const [key, value] of Object.entries({
+      listName, pgNo: String(page), noItems: String(FEATURED_PAGE_ITEMS), filteredCategories: 'AllProducts',
+      mediaType: 'Games', gl: market, hl: 'en-us', exp: '0',
+    })) url.searchParams.set(key, value);
+    const response = await this.fetcher(url, { headers: { Accept: 'application/json' }, signal: AbortSignal.timeout(20_000) });
+    if (!response.ok) throw new Error(`Microsoft Store ${listName} collection returned HTTP ${response.status}.`);
+    return await response.json() as StoreSearchResponse & { title?: unknown };
+  }
+
+  private async computedCollection(listName: string, market: string, pages: number): Promise<StoreSearchResponse & { title?: unknown; nextPage?: number }> {
     const collected: StoreSearchProduct[] = [];
     let title: unknown;
     let page = 1;
+    // `nextPage` stays set only when this bounded read stopped while the feed
+    // still offered its exact documented continuation.
+    let nextPage: number | undefined;
     for (let index = 0; index < pages; index += 1) {
-      const url = new URL('https://apps.microsoft.com/api/Reco/GetComputedProductsList');
-      for (const [key, value] of Object.entries({
-        listName, pgNo: String(page), noItems: String(FEATURED_PAGE_ITEMS), filteredCategories: 'AllProducts',
-        mediaType: 'Games', gl: market, hl: 'en-us', exp: '0',
-      })) url.searchParams.set(key, value);
-      const response = await this.fetcher(url, { headers: { Accept: 'application/json' }, signal: AbortSignal.timeout(20_000) });
-      if (!response.ok) throw new Error(`Microsoft Store ${listName} collection returned HTTP ${response.status}.`);
-      const payload = await response.json() as StoreSearchResponse & { title?: unknown };
+      const payload = await this.collectionPage(listName, market, page);
       title = title ?? payload.title;
       const products = Array.isArray(payload.productsList) ? payload.productsList as StoreSearchProduct[] : [];
       collected.push(...products);
+      nextPage = undefined;
       if (payload.hasMorePages !== true || products.length === 0) break;
       // Captured contract (US pages 1..10, CZ pages 1..3, TopPaid pages 1..3):
       // a continuation names exactly the next page while hasMorePages is true,
@@ -653,9 +675,10 @@ export class CatalogService {
       // pagination and keeps the products already collected instead of
       // following it, so the request budget cannot be redirected.
       if (payload.nextPageNumber !== page + 1) break;
+      nextPage = page + 1;
       page += 1;
     }
-    return { productsList: collected, title };
+    return { productsList: collected, title, nextPage };
   }
 
   private async featuredResult(market: string): Promise<CatalogSearchResult> {
@@ -678,7 +701,34 @@ export class CatalogService {
     const title = string(trending.status === 'fulfilled' ? trending.value.title : undefined)
       ?? string(paid.status === 'fulfilled' ? paid.value.title : undefined)
       ?? 'Featured games';
-    return this.result(merged, title, market, false);
+    // The continuation names the next unread paid page of the read that really
+    // happened. A paid read that failed while trending worked restarts the paid
+    // feed from its first page, so no paid item is silently skipped.
+    const nextPage = paid.status === 'fulfilled' ? paid.value.nextPage : 1;
+    const cursor = nextPage === undefined || nextPage > BROWSE_LAST_PAGE ? undefined : `paid-${nextPage}`;
+    return { ...await this.result(merged, title, market, false), cursor, hasMore: Boolean(cursor) };
+  }
+
+  /** Continue the public landing collection after the bounded featured set.
+   * One upstream page per call, one shared page per cursor and the same public
+   * browsing policy as the landing page, so demos, trials and free offers stay
+   * excluded. An unknown, repeated or out-of-budget cursor never starts a
+   * request. */
+  async browse(rawMarket: string, rawCursor?: string): Promise<CatalogSearchResult> {
+    const market = normalizeMarket(rawMarket);
+    const page = browsePage(rawCursor);
+    return this.cachedResult(`${market}\u0000browse\u0000${page}`, () => this.browseResult(market, page));
+  }
+
+  private async browseResult(market: string, page: number): Promise<CatalogSearchResult> {
+    const payload = await this.collectionPage(BROWSE_COLLECTION, market, page);
+    const title = string(payload.title) ?? 'Top paid games';
+    const rows = Array.isArray(payload.productsList) ? payload.productsList as StoreSearchProduct[] : [];
+    const result = await this.result(payload, title, market, false);
+    // Continue only on the documented exact continuation of a non-empty page.
+    const next = rows.length > 0 && payload.hasMorePages === true &&
+      payload.nextPageNumber === page + 1 && page + 1 <= BROWSE_LAST_PAGE;
+    return { ...result, cursor: next ? `paid-${page + 1}` : undefined, hasMore: next };
   }
 
   async posters(ids: string[], rawMarket: string): Promise<Map<string, string>> {

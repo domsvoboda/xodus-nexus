@@ -680,6 +680,7 @@ export interface LauncherApi {
   setOfflinePermissions(enabled: boolean): Promise<OfflinePermissions>;
   searchCatalog(query: string, cursor?: string): Promise<CatalogSearchResult>;
   getFeaturedCatalog(): Promise<CatalogSearchResult>;
+  browseCatalog(cursor?: string): Promise<CatalogSearchResult>;
   getRecentGamePassShelf(): Promise<RecentGamePassShelf>;
   getStoreAccess(): Promise<StoreAccess>;
   getAccountLibrary(kind: AccountLibraryPage['kind'], cursor?: string, refresh?: boolean, sort?: AccountLibraryPage['sort']): Promise<AccountLibraryPage>;

@@ -1793,6 +1793,7 @@ function registerDemoIpc(catalogMarket: () => string): void {
   ipcMain.handle('set-offline-permissions', (_event, enabled: boolean) => ({ enabled: Boolean(enabled), requestSuccess: true, remainingToggles: 1, maxToggles: 3, periodDays: 365, checkedAt: new Date().toISOString() }));
   ipcMain.handle('catalog-search', (_event, query: string, cursor?: string) => catalog.search(query, publicStoreMarket(), cursor));
   ipcMain.handle('catalog-featured', () => catalog.featured(publicStoreMarket()));
+  ipcMain.handle('catalog-browse', (_event, cursor?: string) => catalog.browse(publicStoreMarket(), cursor));
   ipcMain.handle('catalog-recent-gamepass', () => homeGamePassShelf.get(publicStoreMarket()));
   ipcMain.handle('store-access', () => ({configuredMarket:snapshot().settings.market,account:snapshot().auth.username??'demo',backend:snapshot().backend.binaryPath??'',market:catalogMarket(),checkedAt:new Date().toISOString(),expiresAt:new Date(Date.now()+60_000).toISOString(),accessByProductId:{}}));
   ipcMain.handle('account-library', (_event, kind: 'all' | 'owned' | 'gamepass') => demoAccountLibrary(kind, demoArtwork));
@@ -2095,6 +2096,7 @@ function registerIpc(): void {
   });
   ipcMain.handle('save-diagnostic-report', (_event, content: unknown) => saveReviewedReport(content));
   ipcMain.handle('catalog-featured', () => catalog.featured(publicStoreMarket()));
+  ipcMain.handle('catalog-browse', (_event, cursor?: string) => catalog.browse(publicStoreMarket(), cursor));
   ipcMain.handle('catalog-recent-gamepass', () => homeGamePassShelf.get(publicStoreMarket()));
   ipcMain.handle('start-install', (_event, request: InstallRequest) => startInstall(request));
   ipcMain.handle('install-plan', async (_event, raw: string, destination?: string) => {

@@ -35,7 +35,8 @@ import { requestTextKeyboard } from './touch-keyboard';
 import { ConfirmationProvider, useConfirmation } from './Confirmation';
 import { GameRemovalContents } from './GameRemovalContents';
 import { GameDetails } from './GameDetails';
-import {CatalogGameDetails,catalogGameInstalled,publicStorePrice} from './CatalogGameDetails';
+import { CatalogGameDetails,catalogGameInstalled,publicStorePrice } from './CatalogGameDetails';
+import { appendStoreProducts, storePageState, storeRequested, type StoreListPage } from './store-pagination';
 import {HomeGamePassSection,useRecentGamePassShelf} from './HomeGamePass';
 import {recentlyInstalledGames} from './home-shelves';
 import { GameLanguage } from './GameLanguage';
@@ -342,40 +343,103 @@ export function StoreProductCard({ product, selected, disabled, label, select, i
   </article>;
 }
 
+export function StorePagination({ page, loading, error, load }: { page?: StoreListPage; loading: boolean; error?: string; load: () => void }) {
+  if (!page && !error) return null;
+  if (page && !loading && !page.hasMore && !page.stalled && !error) return null;
+  return <div className="load-more store-pagination" data-gamepad-library-footer>
+    {error ? <div className="alert amber" role="alert"><CircleAlert /><span>{uiText(error)}</span><button className="secondary" data-gamepad-skip disabled={loading} onClick={load}>{loading ? <LoaderCircle className="spin" /> : <RefreshCw />}{ui("ui.try_again_d8b839")}</button></div> : null}
+    {page?.stalled && !error ? <p className="account-library-note" role="status">{ui('store.no_more_pages')}</p> : null}
+    {page?.hasMore ? <button className="secondary" aria-disabled={loading} aria-busy={loading} onClick={() => { if (!loading) load(); }}>{loading ? <LoaderCircle className="spin" /> : <Plus />}{ui("ui.load_more_results_e03f1e4")}</button> : null}
+    {loading && !page?.hasMore ? <span className="library-loading" role="status"><LoaderCircle className="spin" />{ui("ui.loading_live_store_collection_20763b0")}</span> : null}
+  </div>;
+}
+
 export function StorePage({ data, toast, go, initialQuery }: { data: AppSnapshot; toast: (value: Toast) => void; go: (page: Page) => void; initialQuery: string }) {
   const startPackageInstall = usePackageInstall();
   const access = useStoreAccess(data);
-  const [catalog, setCatalog] = useState<CatalogSearchResult>();
+  // The Store shows one paged list at a time: public search results, or the
+  // featured landing page continued by the same collection feed.
+  const [search, setSearch] = useState<(StoreListPage & { query: string })>();
+  const [searching, setSearching] = useState(false);
+  const [searchError, setSearchError] = useState<string>();
+  const [searchPageError, setSearchPageError] = useState<string>();
+  const [searchPageLoading, setSearchPageLoading] = useState(false);
+  // A page request belongs to the search generation that started it. A newer
+  // query owns its own in-flight marker and busy state, so a late answer from
+  // an older generation can neither block nor clear the visible one.
+  const searchGeneration = useRef(0), searchPageInFlight = useRef<number>();
+  const [browseAvailable] = useState(() => typeof window !== 'undefined' && typeof window.launcher?.browseCatalog === 'function');
+  const [browse, setBrowse] = useState<StoreListPage>(() => ({ products: [], hasMore: false, stalled: false, requested: [] }));
+  const [browseLoading, setBrowseLoading] = useState(false);
+  const [browseError, setBrowseError] = useState<string>();
+  const browseInFlight = useRef(false);
   const [featured, setFeatured] = useState<CatalogSearchResult>();
   const [featuredLoading, setFeaturedLoading] = useState(true);
   const [featuredError, setFeaturedError] = useState<string>();
+  const [featuredRevision, setFeaturedRevision] = useState(0);
   const [selected, setSelected] = useState<CatalogProduct>();
   const [detailOpen,setDetailOpen]=useState(false);
-  const pageRef=useRef<HTMLElement>(null),savedScroll=useRef(0),wasOpen=useRef(false);
+  const pageRef=useRef<HTMLElement>(null),savedScroll=useRef(0),wasOpen=useRef(false),sentinel=useRef<HTMLDivElement>(null);
   useBrowserLayoutEffect(()=>{
     const scroll=pageRef.current?.closest('.page-scroll');
     if(detailOpen&&selected){if(scroll)scroll.scrollTop=0;focusDetailEntry(pageRef.current);}
     else if(wasOpen.current){if(scroll)scroll.scrollTop=savedScroll.current;[...pageRef.current?.querySelectorAll<HTMLElement>('[data-gamepad-detail-target]')??[]].find(card=>card.getAttribute('data-gamepad-detail-target')===selected?.productId)?.focus({preventScroll:true});}
     wasOpen.current=detailOpen&&Boolean(selected);
   },[detailOpen,selected?.productId]);
-  const [loadingMore, setLoadingMore] = useState(false);
   const [busy, setBusy] = useState<string>();
+
+  /** Drops every page-scoped search value instead of leaving it to a stale
+   * request, so a later feed never inherits the previous query's state. */
+  function resetSearchState() {
+    searchGeneration.current += 1;
+    searchPageInFlight.current = undefined;
+    setSearch(undefined); setSearchError(undefined); setSearching(false);
+    setSearchPageError(undefined); setSearchPageLoading(false);
+  }
+  // First page of a public search. A newer query always invalidates the older
+  // request so a slow answer can never replace the visible results.
+  async function runSearch(query: string) {
+    const generation = ++searchGeneration.current;
+    searchPageInFlight.current = undefined;
+    setSearch(undefined); setSearching(true); setSearchError(undefined);
+    setSearchPageError(undefined); setSearchPageLoading(false);
+    try {
+      const next = await window.launcher.searchCatalog(query);
+      if (generation !== searchGeneration.current) return;
+      setSearch({ ...storePageState([], next, []), query: next.query });
+      setSelected(undefined);
+    } catch (error) {
+      if (generation === searchGeneration.current) setSearchError(errorMessage(error));
+    } finally {
+      if (generation === searchGeneration.current) setSearching(false);
+    }
+  }
   useEffect(() => {
-    if (initialQuery.trim().length < 2) return;
-    let cancelled = false;
-    window.launcher.searchCatalog(initialQuery).then((result) => {
-      if (!cancelled) { setCatalog(result); setSelected(undefined); }
-    }).catch((error) => { if (!cancelled) toast({ kind: 'error', message: errorMessage(error) }); });
-    return () => { cancelled = true; };
+    const query = initialQuery.trim();
+    if (query.length < 2) { resetSearchState(); return; }
+    void runSearch(query);
+    return () => { searchGeneration.current += 1; };
   }, [initialQuery]);
   useEffect(() => {
     let cancelled = false;
     window.launcher.getFeaturedCatalog()
-      .then((result) => { if (!cancelled) setFeatured(result); })
-      .catch((error) => { if (!cancelled) setFeaturedError(errorMessage(error)); })
+      .then((result) => {
+        if (cancelled) return;
+        setFeatured(result); setFeaturedError(undefined);
+        // The landing continuation is the exact next page of the read that
+        // really happened, never an assumed page number.
+        setBrowse(current => current.products.length ? current : { products: [], cursor: result.cursor, hasMore: Boolean(result.hasMore && result.cursor && browseAvailable), stalled: false, requested: [] });
+      })
+      .catch((error) => {
+        if (cancelled) return;
+        setFeaturedError(errorMessage(error));
+        // A failed landing is not a dead end: the first paid page is an honest
+        // recovery path with the same public policy.
+        setBrowse(current => current.products.length ? current : { products: [], cursor: undefined, hasMore: browseAvailable, stalled: false, requested: [] });
+      })
       .finally(() => { if (!cancelled) setFeaturedLoading(false); });
     return () => { cancelled = true; };
-  }, []);
+  }, [featuredRevision]);
 
   function installDestination(product: CatalogProduct): string {
     const folder = product.title.normalize('NFKD').replace(/[^\p{L}\p{N}]+/gu, '-').replace(/^-+|-+$/g, '').slice(0, 80) || product.productId;
@@ -387,15 +451,77 @@ export function StorePage({ data, toast, go, initialQuery }: { data: AppSnapshot
     if(openDetails){savedScroll.current=pageRef.current?.closest('.page-scroll')?.scrollTop??0;setDetailOpen(true);}
   }
 
-  async function loadMore() {
-    if (!catalog?.cursor) return;
-    setLoadingMore(true);
+  async function loadMoreSearch() {
+    const cursor = search?.cursor;
+    const generation = searchGeneration.current;
+    if (!search || !cursor || !search.hasMore) return;
+    if (searchPageInFlight.current === generation) return;
+    searchPageInFlight.current = generation; setSearchPageError(undefined); setSearchPageLoading(true);
     try {
-      const next = await window.launcher.searchCatalog(catalog.query, catalog.cursor);
-      setCatalog({ ...next, products: [...catalog.products, ...next.products] });
-    } catch (error) { toast({ kind: 'error', message: errorMessage(error) }); }
-    finally { setLoadingMore(false); }
+      const next = await window.launcher.searchCatalog(search.query, cursor);
+      if (generation !== searchGeneration.current) return;
+      setSearch(current => {
+        if (!current || current.query !== search.query) return current;
+        return { ...storePageState(current.products, next, storeRequested(current, cursor)), query: current.query };
+      });
+    } catch (error) {
+      if (generation === searchGeneration.current) setSearchPageError(errorMessage(error));
+    } finally {
+      // Only the generation that owns the marker may release it or clear the
+      // busy state, so a late finish never clobbers a newer page request.
+      if (searchPageInFlight.current === generation) searchPageInFlight.current = undefined;
+      if (generation === searchGeneration.current) setSearchPageLoading(false);
+    }
   }
+
+  async function loadMoreBrowse() {
+    if (!browse.hasMore || browseInFlight.current) return;
+    const cursor = browse.cursor;
+    browseInFlight.current = true; setBrowseLoading(true); setBrowseError(undefined);
+    try {
+      const next = await window.launcher.browseCatalog(cursor);
+      setBrowse(current => storePageState(current.products, next, storeRequested(current, cursor)));
+    } catch (error) {
+      setBrowseError(errorMessage(error));
+    } finally {
+      browseInFlight.current = false; setBrowseLoading(false);
+    }
+  }
+
+  function retryFeatured() { setFeaturedRevision(value => value + 1); }
+
+  // The landing grid and the paged collection are one list; the featured cards
+  // stay first and every later page appends after them.
+  const landingProducts = appendStoreProducts(featured?.products.slice(3) ?? [], browse.products);
+  const featuredRail = featured?.products.slice(0, 3) ?? [];
+  // Scrolling near the end of the real scroll container continues the list. A
+  // failure is never retried automatically; the visible control retries.
+  // Only the feed that is actually displayed gates auto-load: an old search
+  // error or a browse failure must never block the other feed.
+  const autoLoad = useRef<() => void>(() => {});
+  autoLoad.current = () => {
+    if (search) {
+      if (searchPageError || searchPageLoading || !search.hasMore) return;
+      void loadMoreSearch();
+      return;
+    }
+    if (browseError || browseLoading || !browse.hasMore) return;
+    void loadMoreBrowse();
+  };
+  const autoKey = search
+    ? `search:${search.cursor ?? ''}:${search.hasMore}:${searchPageError ?? ''}:${searchPageLoading}`
+    : `browse:${browse.cursor ?? ''}:${browse.hasMore}:${browseError ?? ''}:${browseLoading}`;
+  // The sentinel only exists once a list is on screen, so its arrival must
+  // re-create the observer even when the cursor did not change.
+  const listOnScreen = Boolean(search) || Boolean(featured?.products.length) || Boolean(featuredError);
+  useEffect(() => {
+    const node = sentinel.current, root = pageRef.current?.closest('.page-scroll');
+    if (!node || !root || typeof IntersectionObserver !== 'function') return;
+    if (!(search ?? browse).hasMore) return;
+    const observer = new IntersectionObserver((entries) => { if (entries.some(entry => entry.isIntersecting)) autoLoad.current(); }, { root, rootMargin: '400px 0px' });
+    observer.observe(node);
+    return () => { observer.disconnect(); };
+  }, [autoKey, listOnScreen, detailOpen]);
 
   async function install(product: CatalogProduct, target = installDestination(product)) {
     if (!access.canInstall(product)) return;
@@ -424,13 +550,28 @@ export function StorePage({ data, toast, go, initialQuery }: { data: AppSnapshot
   if(detailOpen&&selected)return <main ref={pageRef} className="page store-page library-detail-open"><CatalogGameDetails key={`${selected.productId}:${data.auth.username}:${data.auth.player}:${data.auth.stored}:${data.auth.running}:${data.backend.binaryPath}:${data.settings.market}`} product={selected} data={data} storeMode storeAccess={access} back={()=>setDetailOpen(false)} backLabel={ui('game.back_to_store')} toast={toast}/></main>;
   // Only the product grid renders a price. The first three featured tiles are
   // artwork-only, and all catalog results render in the price-bearing grid.
-  const priceGrid=catalog?catalog.products:featured?.products.slice(3)??[];
-  const publicPriceShown=priceGrid.some(product=>Boolean(publicStorePrice(product)));
   return <main ref={pageRef} className="page store-page">
-    <header className="page-header"><div><h1>{ui("ui.store_ee7da93")}</h1>{publicPriceShown?<p>{ui('store.us_price_context')}</p>:null}</div><span className="catalog-source"><StatusDot />Microsoft Store</span></header>
-    {!catalog ? <section className="featured-catalog"><SectionTitle title={ui("ui.featured_c533caf")} />{featuredLoading ? <div className="catalog-loading"><LoaderCircle className="spin" /><span>{ui("ui.loading_live_store_collection_20763b0")}</span></div> : featured?.products.length ? <><div className="featured-rail">{featured.products.slice(0, 3).map((product) => <button className="featured-tile" key={product.productId} data-gamepad-detail-target={product.productId} onClick={() => selectProduct(product)}>{product.heroUrl || product.posterUrl ? <img src={product.heroUrl ?? product.posterUrl} alt="" /> : <div className="featured-tile-placeholder"><Gamepad2 /></div>}<span className="featured-tile-copy"><GameTitle title={product.title} /><small>{product.publisher ?? 'Microsoft Store'} · {product.installability === 'supported' ? ui('store.verified_pc') : ui("ui.check_package_support_79592da")}</small></span></button>)}</div><SectionTitle title={ui("ui.top_paid_games_8040f77")} />{productGrid(featured.products.slice(3))}</> : <div className="catalog-empty"><Store /><h2>{ui("ui.featured_games_are_temporarily_unavailable_3901a69")}</h2><p>{featuredError ?? ui("ui.search_still_works_with_live_microsoft_store_dat_b3eeb72")}</p></div>}</section> : null}
+    <header className="page-header"><div><h1>{ui("ui.store_ee7da93")}</h1></div><span className="catalog-source"><StatusDot />Microsoft Store</span></header>
+    {!search && !searching && !searchError ? <section className="featured-catalog"><SectionTitle title={ui("ui.featured_c533caf")} />
+      {featuredLoading ? <div className="catalog-loading"><LoaderCircle className="spin" /><span>{ui("ui.loading_live_store_collection_20763b0")}</span></div> : <>
+        {featuredError && landingProducts.length ? <div className="empty-strip"><CircleAlert /><div><strong>{ui("ui.featured_games_are_temporarily_unavailable_3901a69")}</strong><span>{uiText(featuredError)}</span></div><button className="secondary" onClick={retryFeatured}><RefreshCw />{ui("ui.try_again_d8b839")}</button></div> : null}
+        {featuredRail.length ? <div className="featured-rail">{featuredRail.map((product) => <button className="featured-tile" key={product.productId} data-gamepad-detail-target={product.productId} onClick={() => selectProduct(product)}>{product.heroUrl || product.posterUrl ? <img src={product.heroUrl ?? product.posterUrl} alt="" /> : <div className="featured-tile-placeholder"><Gamepad2 /></div>}<span className="featured-tile-copy"><GameTitle title={product.title} /><small>{product.publisher ?? 'Microsoft Store'} · {product.installability === 'supported' ? ui('store.verified_pc') : ui("ui.check_package_support_79592da")}</small></span></button>)}</div> : null}
+        {landingProducts.length ? <><SectionTitle title={ui("ui.top_paid_games_8040f77")} />{productGrid(landingProducts)}</> : null}
+        {featuredError && !landingProducts.length ? <div className="catalog-empty"><Store /><h2>{ui("ui.featured_games_are_temporarily_unavailable_3901a69")}</h2><p>{uiText(featuredError)}</p><button className="secondary" onClick={retryFeatured}><RefreshCw />{ui("ui.try_again_d8b839")}</button></div> : null}
+        {!featuredError && !landingProducts.length ? <div className="catalog-empty"><Store /><h2>{ui("ui.featured_games_are_temporarily_unavailable_3901a69")}</h2><p>{ui("ui.search_still_works_with_live_microsoft_store_dat_b3eeb72")}</p></div> : null}
+      </>}
+    </section> : null}
 
-    {catalog ? <><SectionTitle title={ui("ui.results_for_343a212", { query: catalog.query })} />{productGrid(catalog.products)}{catalog.products.length === 0 ? <div className="empty-state compact"><div><Search /></div><h2>{ui("ui.no_games_found_6da4c04")}</h2><p>{ui("ui.try_a_different_title_or_a_microsoft_store_produ_326af8c")}</p></div> : null}{catalog.hasMore ? <div className="load-more" data-gamepad-library-footer><button className="secondary" aria-disabled={loadingMore} aria-busy={loadingMore} onClick={() => { if (!loadingMore) void loadMore(); }}>{loadingMore ? <LoaderCircle className="spin" /> : <Plus />}{ui("ui.load_more_results_e03f1e4")}</button></div> : null}</> : null}
+    {search || searching || searchError ? <><SectionTitle title={search ? ui("ui.results_for_343a212", { query: search.query }) : ui("ui.results_for_343a212", { query: initialQuery.trim() })} />
+      {searchError ? <div className="alert amber" role="alert"><CircleAlert /><span>{uiText(searchError)}</span><button className="secondary" disabled={searching} onClick={() => void runSearch(initialQuery.trim())}><RefreshCw />{ui("ui.try_again_d8b839")}</button></div> : null}
+      {searching && !search ? <div className="catalog-loading"><LoaderCircle className="spin" /><span>{ui("ui.loading_live_store_collection_20763b0")}</span></div> : null}
+      {search ? productGrid(search.products) : null}
+      {search && search.products.length === 0 && !search.hasMore ? <div className="empty-state compact"><div><Search /></div><h2>{ui("ui.no_games_found_6da4c04")}</h2><p>{ui("ui.try_a_different_title_or_a_microsoft_store_produ_326af8c")}</p></div> : null}
+      {search ? <div ref={sentinel} /> : null}
+      <StorePagination page={search} loading={searchPageLoading} error={searchPageError} load={() => void loadMoreSearch()} />
+    </> : null}
+
+    {!search && !searching && !searchError && !featuredLoading ? <><div ref={sentinel} /><StorePagination page={browse} loading={browseLoading} error={browseError} load={() => void loadMoreBrowse()} /></> : null}
 
   </main>;
 }

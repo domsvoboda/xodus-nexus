@@ -29,15 +29,15 @@ function handlerStatements(names:string[],owner:string):string{
  if(missing.length)throw Error(`Missing IPC handlers: ${missing.join(', ')}.`);
  return found.map(node=>node.getText(parsed)).join('\n');
 }
-const mainNames=['catalog-search','catalog-featured','catalog-recent-gamepass','game-details','store-access','account-library','install-plan','game-activity','game-achievements'];
+const mainNames=['catalog-search','catalog-featured','catalog-browse','catalog-recent-gamepass','game-details','store-access','account-library','install-plan','game-activity','game-achievements'];
 const mainCode=ts.transpileModule([declarations(['storeAccess']),handlerStatements(mainNames,'registerIpc')].join('\n'),{compilerOptions:{target:ts.ScriptTarget.ES2022}}).outputText;
-const demoCode=ts.transpileModule(handlerStatements(['catalog-search','catalog-featured','catalog-recent-gamepass','game-details','store-access'],'registerDemoIpc'),{compilerOptions:{target:ts.ScriptTarget.ES2022}}).outputText;
+const demoCode=ts.transpileModule(handlerStatements(['catalog-search','catalog-featured','catalog-browse','catalog-recent-gamepass','game-details','store-access'],'registerDemoIpc'),{compilerOptions:{target:ts.ScriptTarget.ES2022}}).outputText;
 
 function fixture(mode:'main'|'demo'){
  const handlers=new Map<string,Function>(),products={query:'q',market:'US',products:[],hasMore:false,fetchedAt:'',source:'Microsoft Store'};
  // CZ desktop with settings.market 'neutral': the effective account region.
  let market='CZ';
- const catalog={search:vi.fn(async()=>products),featured:vi.fn(async()=>products),gameDetails:vi.fn(async(productId:string)=>({productId,xboxTitleId:'123'}))};
+ const catalog={search:vi.fn(async()=>products),featured:vi.fn(async()=>products),browse:vi.fn(async()=>products),gameDetails:vi.fn(async(productId:string)=>({productId,xboxTitleId:'123'}))};
  const homeGamePassShelf={get:vi.fn(async(market:string)=>({market,products:[],fetchedAt:'2026-11-04T10:00:00.000Z',source:'Microsoft Game Pass catalog'}))};
  const games=[{id:'owned-game',storeId:'9GGGGGGGGGGG',title:'Owned Game',path:'/synthetic/game'}];
  const store={games,settings:{market:'neutral'}};
@@ -61,6 +61,8 @@ it('browses the neutral US Store on a CZ desktop while Store access keeps the ef
  expect(f.catalog.search).toHaveBeenCalledWith('gears','US','cursor');
  await f.call('catalog-featured');
  expect(f.catalog.featured).toHaveBeenCalledWith('US');
+ await f.call('catalog-browse','paid-4');
+ expect(f.catalog.browse).toHaveBeenCalledWith('US','paid-4');
  await f.call('catalog-recent-gamepass');
  expect(f.homeGamePassShelf.get).toHaveBeenCalledWith('US');
  // A public shelf never reads or verifies account access.
@@ -122,6 +124,8 @@ it('demo applies the same scoped policy instead of an all-US catalog',async()=>{
  expect(f.catalog.search).toHaveBeenCalledWith('gears','US','cursor');
  await f.call('catalog-featured');
  expect(f.catalog.featured).toHaveBeenCalledWith('US');
+ await f.call('catalog-browse');
+ expect(f.catalog.browse).toHaveBeenCalledWith('US',undefined);
  await f.call('catalog-recent-gamepass');
  expect(f.homeGamePassShelf.get).toHaveBeenCalledWith('US');
  await f.call('game-details',{productId:'9PUBLICGAME1',scope:'public-store'});

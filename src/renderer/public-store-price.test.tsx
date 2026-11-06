@@ -129,24 +129,17 @@ it('marks a priced public Store card with its US market and keeps a missing pric
  expect(free).not.toContain('US Store, USD');
 });
 
-it('shows the US price note only when the rendered Store grid contains a formatted price',async()=>{
+it('marks real US prices on the cards without repeating a price paragraph in the Store header',async()=>{
  vi.stubGlobal('IS_REACT_ACT_ENVIRONMENT',true);
  const data=snapshot('CZ');
- const page=async(products:CatalogProduct[])=>{
-  installLauncher(products);
-  return mount(<StorePage data={data} toast={()=>{}} go={()=>{}} initialQuery=""/>);
- };
  // The first three featured entries are artwork-only hero tiles with no price.
- const pricedHeroes=await page([item('9HERO0000001','$29.99'),item('9HERO0000002','$19.99'),item('9HERO0000003','$9.99')]);
- try{expect(pricedHeroes.node.innerHTML).not.toContain(note);}
- finally{await pricedHeroes.unmount();}
- const pricedGrid=await page([item('9HERO0000001'),item('9HERO0000002'),item('9HERO0000003'),item('9GRID0000001','$29.99')]);
+ installLauncher([item('9HERO0000001'),item('9HERO0000002'),item('9HERO0000003'),item('9GRID0000001','$29.99')]);
+ const view=await mount(<StorePage data={data} toast={()=>{}} go={()=>{}} initialQuery=""/>);
  try{
-  expect(pricedGrid.node.innerHTML).toContain(note);
-  expect(pricedGrid.node.innerHTML).toContain('US Store, USD');
+  const html=view.node.innerHTML;
+  expect(view.node.querySelector('.page-header p')).toBeNull();
+  expect(html).toContain('$29.99 · US Store, USD');
+  expect(html).toContain('US Store, USD');
   expect(data.settings.market).toBe('CZ');
- }finally{await pricedGrid.unmount();}
- const unpricedGrid=await page([item('9HERO0000001','$29.99'),item('9HERO0000002'),item('9HERO0000003'),item('9GRID0000001')]);
- try{expect(unpricedGrid.node.innerHTML).not.toContain(note);}
- finally{await unpricedGrid.unmount();}
+ }finally{await view.unmount();}
 });

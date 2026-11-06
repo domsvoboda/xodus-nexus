@@ -345,6 +345,7 @@
   "store.available_with": "Available with {{plan}}",
   "store.id": "Store ID {{id}}",
   "store.package_id": "Package ID {{id}}",
+  "store.no_more_pages": "The Store did not return any more games.",
   "store.us_price_context": "Public Store prices come from the US Store and are shown in USD. Checkout price and local availability can differ.",
   "store.us_price_short": "US Store, USD",
   "store.verified_msixvc": "PC MSIXVC verified",
