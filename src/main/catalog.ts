@@ -97,6 +97,12 @@ function raceCallerDeadline<T>(promise: Promise<T>, signal: AbortSignal): Promis
 const FEATURED_PAGE_ITEMS = 12;
 const FEATURED_TRENDING_PAGES = 1;
 const FEATURED_PAID_PAGES = 3;
+// Filtering add-on resale offers can leave the landing rail with one or two
+// cards even though the official paid chart has more standalone games. Refill
+// from the next official page, in rank order, up to a hard page bound so a
+// single landing load cannot fan out indefinitely.
+const FEATURED_MIN_ITEMS = 3;
+const FEATURED_MAX_PAID_PAGES = 5;
 // The landing page shows a bounded featured set. Its own result carries the
 // cursor for the next unread Top paid page, so the renderer continues the exact
 // feed that was actually read instead of assuming which pages exist.
@@ -250,6 +256,37 @@ function bundleReferences(product: Record<string, unknown> | undefined): BundleR
   return [...references].map(([productId, primary]) => ({ productId, primary }));
 }
 
+/** Featured cards must represent a standalone game offer. Public ProductType
+ * alone cannot prove that: an offer typed Game can bundle a base game with a
+ * currency card, add-on or content pack. A root with no bundled references is
+ * the product itself; a root with references is a standalone game only when
+ * every referenced child is also a Game. Genuine multi-game packs and edition
+ * wrappers therefore remain eligible, while base-game-plus-extra offers and
+ * add-on resale bundles do not. */
+export function standaloneFeaturedOffer(productId: string, details: Map<string, Record<string, unknown>>): boolean {
+  const product = details.get(productId);
+  const type = string(product?.ProductType);
+  if (!product || (type !== 'Game' && type !== 'Bundle')) return false;
+  const references = bundleReferences(product);
+  if (references.length === 0) return type === 'Game';
+  for (const reference of references) {
+    if (string(details.get(reference.productId)?.ProductType) !== 'Game') return false;
+  }
+  return true;
+}
+
+/** Editions and resale variants of one base game share an official product
+ * group. Featured keeps the first, highest-ranked representative of the group. */
+function featuredIdentity(productId: string, details: Map<string, Record<string, unknown>>): string {
+  return string(object(details.get(productId)?.Properties)?.ProductGroupId)?.toLowerCase() ?? productId;
+}
+
+function catalogProductIds(collection: StoreSearchResponse): string[] {
+  return (Array.isArray(collection.productsList) ? collection.productsList as StoreSearchProduct[] : [])
+    .flatMap((product) => string(object(product)?.productId)?.toUpperCase() ?? [])
+    .filter((value, index, values) => values.indexOf(value) === index);
+}
+
 /** Merge Store collections in priority order, keeping one row per product ID. */
 function mergeCollections(...collections: StoreSearchResponse[]): StoreSearchResponse {
   const seen = new Set<string>();
@@ -366,7 +403,7 @@ export function excludedStoreOffer(search: Record<string, unknown>, detail?: Rec
   return free || price?.isFree===true || (!malformed&&values.length>0&&values.every(v=>v===0));
 }
 
-export function parseCatalogProducts(search: StoreSearchResponse, catalog: DisplayCatalogResponse, policy: 'library' | 'store' = 'library'): CatalogProduct[] {
+export function parseCatalogProducts(search: StoreSearchResponse, catalog: DisplayCatalogResponse, policy: 'library' | 'store' | 'featured' = 'library'): CatalogProduct[] {
   const detailMap = new Map<string, Record<string, unknown>>();
   const details = Array.isArray(catalog.Products) ? catalog.Products : [];
   for (const detail of details) {
@@ -375,6 +412,7 @@ export function parseCatalogProducts(search: StoreSearchResponse, catalog: Displ
     if (id && record) detailMap.set(id, record);
   }
   const products = Array.isArray(search.productsList) ? search.productsList as StoreSearchProduct[] : [];
+  const featured = new Set<string>();
   return products.flatMap((product) => {
     if(!object(product))return [];
     const productId = string(product.productId)?.toUpperCase();
@@ -384,6 +422,15 @@ export function parseCatalogProducts(search: StoreSearchResponse, catalog: Displ
     // Game includes base games and game bundles. Endpoint mediaType/isGame
     // alone also admits extras; children cannot change the offer's own type.
     if(policy==='store' && (detail?.ProductType!=='Game' || excludedStoreOffer(product as Record<string,unknown>,detail)))return [];
+    // The featured shelf additionally requires standalone-game composition and
+    // one card per official product group so an add-on resale or lower edition
+    // cannot duplicate the base game ranked above it.
+    if(policy==='featured'){
+      if(!standaloneFeaturedOffer(productId,detailMap)||excludedStoreOffer(product as Record<string,unknown>,detail))return [];
+      const identity=featuredIdentity(productId,detailMap);
+      if(featured.has(identity))return [];
+      featured.add(identity);
+    }
     const support = packageSupport(productId, detailMap);
     return [{
       productId,
@@ -573,9 +620,8 @@ export class CatalogService {
     return { Products: [...details.values()] };
   }
 
-  private async details(ids: string[], market: string): Promise<DisplayCatalogResponse> {
-    const details = new Map<string, Record<string, unknown>>();
-    let pending = ids.filter((value, index, values) => values.indexOf(value) === index);
+  private async detailMap(ids: string[], market: string, details = new Map<string, Record<string, unknown>>()): Promise<Map<string, Record<string, unknown>>> {
+    let pending = ids.filter((value, index, values) => values.indexOf(value) === index && !details.has(value));
     for (let depth = 0; depth < 4 && pending.length > 0 && details.size < 100; depth += 1) {
       const next = new Set<string>();
       for (let offset = 0; offset < pending.length; offset += 25) {
@@ -595,18 +641,19 @@ export class CatalogService {
       }
       pending = [...next];
     }
-    return { Products: [...details.values()] };
+    return details;
   }
 
-  private async result(search: StoreSearchResponse, query: string, market: string, includePaging: boolean): Promise<CatalogSearchResult> {
-    const ids = (Array.isArray(search.productsList) ? search.productsList as StoreSearchProduct[] : [])
-      .flatMap((product) => string(object(product)?.productId)?.toUpperCase() ?? [])
-      .filter((value, index, values) => values.indexOf(value) === index);
-    const catalog = await this.details(ids, market);
+  private async details(ids: string[], market: string): Promise<DisplayCatalogResponse> {
+    return { Products: [...(await this.detailMap(ids, market)).values()] };
+  }
+
+  private async result(search: StoreSearchResponse, query: string, market: string, includePaging: boolean, policy: 'store' | 'featured' = 'store', catalog?: DisplayCatalogResponse): Promise<CatalogSearchResult> {
+    const details = catalog ?? await this.details(catalogProductIds(search), market);
     return {
       query,
       market,
-      products: parseCatalogProducts(search, catalog, 'store'),
+      products: parseCatalogProducts(search, details, policy),
       cursor: includePaging ? string(search.cursor) : undefined,
       hasMore: includePaging && search.hasMorePages === true && Boolean(string(search.cursor)),
       fetchedAt: new Date().toISOString(),
@@ -654,10 +701,10 @@ export class CatalogService {
     return await response.json() as StoreSearchResponse & { title?: unknown };
   }
 
-  private async computedCollection(listName: string, market: string, pages: number): Promise<StoreSearchResponse & { title?: unknown; nextPage?: number }> {
+  private async computedCollection(listName: string, market: string, pages: number, firstPage = 1): Promise<StoreSearchResponse & { title?: unknown; nextPage?: number }> {
     const collected: StoreSearchProduct[] = [];
     let title: unknown;
-    let page = 1;
+    let page = firstPage;
     // `nextPage` stays set only when this bounded read stopped while the feed
     // still offered its exact documented continuation.
     let nextPage: number | undefined;
@@ -694,7 +741,7 @@ export class CatalogService {
     if (trending.status === 'rejected' && paid.status === 'rejected') {
       throw trending.reason instanceof Error ? trending.reason : new Error('Microsoft Store featured collections could not be loaded.');
     }
-    const merged = mergeCollections(
+    let merged = mergeCollections(
       ...(trending.status === 'fulfilled' ? [trending.value] : []),
       ...(paid.status === 'fulfilled' ? [paid.value] : []),
     );
@@ -704,9 +751,31 @@ export class CatalogService {
     // The continuation names the next unread paid page of the read that really
     // happened. A paid read that failed while trending worked restarts the paid
     // feed from its first page, so no paid item is silently skipped.
-    const nextPage = paid.status === 'fulfilled' ? paid.value.nextPage : 1;
+    let nextPage = paid.status === 'fulfilled' ? paid.value.nextPage : undefined;
+    if (paid.status !== 'fulfilled') {
+      const cursor = `paid-${BROWSE_FIRST_PAGE}`;
+      return { ...await this.result(merged, title, market, false, 'featured'), cursor, hasMore: true };
+    }
+    const details = await this.detailMap(catalogProductIds(merged), market);
+    let result = await this.result(merged, title, market, false, 'featured', { Products: [...details.values()] });
+    let paidPages = FEATURED_PAID_PAGES;
+    while (result.products.length < FEATURED_MIN_ITEMS && nextPage !== undefined && nextPage <= BROWSE_LAST_PAGE && paidPages < FEATURED_MAX_PAID_PAGES) {
+      const page = nextPage;
+      try {
+        const extra = await this.computedCollection('TopPaid', market, 1, page);
+        merged = mergeCollections(merged, extra);
+        nextPage = extra.nextPage;
+        paidPages += 1;
+        await this.detailMap(catalogProductIds(extra), market, details);
+        result = await this.result(merged, title, market, false, 'featured', { Products: [...details.values()] });
+      } catch {
+        // Keep the standalone games already read; browsing can still recover
+        // the failed official page through the ordinary continuation.
+        break;
+      }
+    }
     const cursor = nextPage === undefined || nextPage > BROWSE_LAST_PAGE ? undefined : `paid-${nextPage}`;
-    return { ...await this.result(merged, title, market, false), cursor, hasMore: Boolean(cursor) };
+    return { ...result, cursor, hasMore: Boolean(cursor) };
   }
 
   /** Continue the public landing collection after the bounded featured set.
@@ -724,7 +793,7 @@ export class CatalogService {
     const payload = await this.collectionPage(BROWSE_COLLECTION, market, page);
     const title = string(payload.title) ?? 'Top paid games';
     const rows = Array.isArray(payload.productsList) ? payload.productsList as StoreSearchProduct[] : [];
-    const result = await this.result(payload, title, market, false);
+    const result = await this.result(payload, title, market, false, 'featured');
     // Continue only on the documented exact continuation of a non-empty page.
     const next = rows.length > 0 && payload.hasMorePages === true &&
       payload.nextPageNumber === page + 1 && page + 1 <= BROWSE_LAST_PAGE;

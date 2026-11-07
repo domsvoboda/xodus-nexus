@@ -340,6 +340,96 @@ describe('Public Store landing collections', () => {
     expect(result.products.map(product => product.title)).toEqual(['Budget Page 1', 'Budget Page 2', 'Budget Page 3']);
   });
 
+  const bundleSku = (children: string[], price = 29.99) => ({
+    Sku: { SkuType: 'full', Properties: { IsBundle: true, BundledSkus: children.map(BigId => ({ BigId, IsPrimary: false })) } },
+    Availabilities: [{ OrderManagementData: { Price: { MSRP: price, ListPrice: price } } }],
+  });
+  const groupedGame = (productId: string, group?: string, skus: unknown[] = [paidSku(19.99)]) => ({
+    ...game(productId, skus),
+    ...(group ? { Properties: { ProductGroupId: group } } : {}),
+  });
+
+  it('keeps genuine all-Game bundles and rejects base-game-plus-extra offers in Featured', async () => {
+    const collections = {
+      TopTrending: [],
+      TopPaid: [{ title: 'Top paid games', hasMorePages: false, productsList: [
+        row('9STANDALONE1', 'Standalone', 19.99),
+        row('9MULTIGAME01', 'Genuine Multi Game', 29.99),
+        row('9SHARKBUNDL', 'Game And Currency', 39.99),
+        row('9VAULTBUNDL', 'Game And DLC', 49.99),
+        row('9CURRENCY01', 'Currency Only', 4.99),
+        row('9DLCONLY001', 'DLC Only', 9.99),
+        row('9UNKNOWNBND', 'Unknown Child Bundle', 59.99),
+        row('9MISSINGBND', 'Missing Child Bundle', 69.99),
+      ] }],
+    };
+    const details = {
+      '9STANDALONE1': groupedGame('9STANDALONE1'),
+      '9MULTIGAME01': groupedGame('9MULTIGAME01', undefined, [bundleSku(['9GAMECHILD1', '9GAMECHILD2'])]),
+      '9GAMECHILD1': { ProductId: '9GAMECHILD1', ProductType: 'Game' },
+      '9GAMECHILD2': { ProductId: '9GAMECHILD2', ProductType: 'Game' },
+      '9SHARKBUNDL': groupedGame('9SHARKBUNDL', undefined, [bundleSku(['9GAMECHILD1', '9CONSUMABLE'])]),
+      '9CONSUMABLE': { ProductId: '9CONSUMABLE', ProductType: 'Consumable' },
+      '9VAULTBUNDL': groupedGame('9VAULTBUNDL', undefined, [bundleSku(['9GAMECHILD1', '9DURABLE01'])]),
+      '9DURABLE01': { ProductId: '9DURABLE01', ProductType: 'Durable' },
+      '9CURRENCY01': { ProductId: '9CURRENCY01', ProductType: 'Consumable' },
+      '9DLCONLY001': { ProductId: '9DLCONLY001', ProductType: 'GameAddOn' },
+      '9UNKNOWNBND': groupedGame('9UNKNOWNBND', undefined, [bundleSku(['9UNKNOWNCH'])]),
+      '9UNKNOWNCH': { ProductId: '9UNKNOWNCH', ProductType: 'Mystery' },
+      '9MISSINGBND': groupedGame('9MISSINGBND', undefined, [bundleSku(['9WITHHELD'])]),
+    };
+    const result = await new CatalogService(landingFetcher(collections, details, [])).featured('US');
+    expect(result.products.map(product => product.title)).toEqual(['Standalone', 'Genuine Multi Game']);
+  });
+
+  it('keeps one highest-ranked card per official product group and never merges products without a group', async () => {
+    const collections = {
+      TopTrending: [],
+      TopPaid: [{ title: 'Top paid games', hasMorePages: false, productsList: [
+        row('9BASEGAME01', 'Base Game', 29.99),
+        row('9LOWEREDIT1', 'Lower Edition', 39.99),
+        row('9UNKNOWN001', 'Unknown Group One', 9.99),
+        row('9UNKNOWN002', 'Unknown Group Two', 9.99),
+      ] }],
+    };
+    const details = {
+      '9BASEGAME01': groupedGame('9BASEGAME01', 'group-one'),
+      '9LOWEREDIT1': groupedGame('9LOWEREDIT1', 'group-one'),
+      '9UNKNOWN001': groupedGame('9UNKNOWN001'),
+      '9UNKNOWN002': groupedGame('9UNKNOWN002'),
+    };
+    const result = await new CatalogService(landingFetcher(collections, details, [])).featured('US');
+    expect(result.products.map(product => product.title)).toEqual(['Base Game', 'Unknown Group One', 'Unknown Group Two']);
+  });
+
+  it('refills a short Featured shelf from the next official paid page within the hard page bound', async () => {
+    const requests: string[] = [];
+    const excluded = (id: string) => row(id, `Excluded ${id}`, 9.99);
+    const pageOne = Array.from({ length: 11 }, (_, index) => `9EXCLUDEP1${index}`);
+    const pageTwo = Array.from({ length: 12 }, (_, index) => `9EXCLUDEP2${index}`);
+    const pageThree = Array.from({ length: 12 }, (_, index) => `9EXCLUDEP3${index}`);
+    const refill = Array.from({ length: 11 }, (_, index) => `9REFILLP4${index}`);
+    const collections = {
+      TopTrending: [],
+      TopPaid: [
+        { title: 'Top paid games', hasMorePages: true, nextPageNumber: 2, productsList: [...pageOne.map(excluded), row('9FIRSTGOOD1', 'First Standalone', 19.99)] },
+        { title: 'Top paid games', hasMorePages: true, nextPageNumber: 3, productsList: pageTwo.map(excluded) },
+        { title: 'Top paid games', hasMorePages: true, nextPageNumber: 4, productsList: pageThree.map(excluded) },
+        { title: 'Top paid games', hasMorePages: true, nextPageNumber: 5, productsList: refill.map((id, index) => row(id, `Refill ${index + 1}`, 19.99)) },
+      ],
+    };
+    const details: Record<string, unknown> = {
+      '9DURABLE01': { ProductId: '9DURABLE01', ProductType: 'Durable' },
+      '9FIRSTGOOD1': groupedGame('9FIRSTGOOD1'),
+    };
+    for (const id of [...pageOne, ...pageTwo, ...pageThree]) details[id] = groupedGame(id, undefined, [bundleSku(['9DURABLE01'])]);
+    for (const id of refill) details[id] = groupedGame(id);
+    const result = await new CatalogService(landingFetcher(collections, details, requests)).featured('US');
+    expect(result.products.map(product => product.title)).toEqual(['First Standalone', ...refill.map((_, index) => `Refill ${index + 1}`)]);
+    expect(requests.filter(request => request.startsWith('TopPaid'))).toEqual(['TopPaid:1', 'TopPaid:2', 'TopPaid:3', 'TopPaid:4']);
+    expect(result.cursor).toBe('paid-5');
+  });
+
   it('excludes trial and demo offers that appear in the top paid collection', async () => {
     const collections = {
       TopTrending: [{ title: 'Trending games', hasMorePages: false, productsList: [] }],
@@ -483,8 +573,18 @@ describe('Public Store landing collections', () => {
   });
 
   it('keeps the public browsing policy on continued pages', async () => {
-    const collections = browsePages(4, index => index === 4 ? [row('9BROWSETRIAL', 'Browse Trial', 29.99), row('9BROWSEFREE0', 'Browse Free', 0)] : []);
-    const details = { ...browseDetails(4), '9BROWSETRIAL': game('9BROWSETRIAL', [trialSku()]), '9BROWSEFREE0': game('9BROWSEFREE0', [freeSku()]) };
+    const collections = browsePages(4, index => index === 4 ? [
+      row('9BROWSETRIAL', 'Browse Trial', 29.99),
+      row('9BROWSEFREE0', 'Browse Free', 0),
+      row('9BROWSEDLC0', 'Browse DLC Bundle', 29.99),
+    ] : []);
+    const details = {
+      ...browseDetails(4),
+      '9BROWSETRIAL': game('9BROWSETRIAL', [trialSku()]),
+      '9BROWSEFREE0': game('9BROWSEFREE0', [freeSku()]),
+      '9BROWSEDLC0': groupedGame('9BROWSEDLC0', undefined, [bundleSku(['9DURABLE01'])]),
+      '9DURABLE01': { ProductId: '9DURABLE01', ProductType: 'Durable' },
+    };
     const result = await new CatalogService(landingFetcher(collections, details, [])).browse('US', 'paid-4');
     expect(result.products.map(product => product.title)).toEqual(['Browse 4']);
   });
