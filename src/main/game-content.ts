@@ -218,17 +218,23 @@ export function contentOffers(base: Manifest, catalog: unknown, access: Access, 
     const product = byId.get(id);
     const title = product?.LocalizedProperties?.find((row: RecordValue) => typeof row?.ProductTitle === 'string')?.ProductTitle?.slice(0, 300) || id;
     const licensed = access[id];
+    const skus = contentSkus(product ?? {});
+    const bundled = product?.ProductType === 'Durable' && skus.some(props => Array.isArray(props.BundledSkus) && props.BundledSkus.length);
+    const licenseOnly = product?.ProductType === 'Durable' && skus.length && skus.every(props => (props.PackagesDeclared ?? Object.hasOwn(props, 'Packages'))
+      && (props.Packages === null || Array.isArray(props.Packages) && props.Packages.length === 0));
     if (!licensed) {
       const pkg = verify.includes(id) ? packageChoice(base, baseProduct, product) : undefined;
       if (pkg) { selected.push(pkg); return { productId: id, title, status: 'verify', downloadBytes: pkg.downloadBytes,
         note: 'Included in an active offer. Xodus must verify this add-on license before downloading.' }; }
+      if (verify.includes(id) && bundled)
+        return { productId: id, title, status: 'bundle', note: 'Included in an active offer. Its related add-ons are listed separately.' };
+      if (verify.includes(id) && licenseOnly)
+        return { productId: id, title, status: 'license-only', note: 'Included in an active offer. No download is required; the game must verify this license through the runtime.' };
       return { productId: id, title, status: 'unlicensed', note: 'No active account license was verified.' };
     }
-    const skus = contentSkus(product ?? {});
-    if (product?.ProductType === 'Durable' && skus.some(props => Array.isArray(props.BundledSkus) && props.BundledSkus.length))
+    if (bundled)
       return { productId: id, title, access: licensed, status: 'bundle', note: 'Content bundle. Its related add-ons are listed separately.' };
-    if (product?.ProductType === 'Durable' && skus.length && skus.every(props => (props.PackagesDeclared ?? Object.hasOwn(props, 'Packages'))
-      && (props.Packages === null || Array.isArray(props.Packages) && props.Packages.length === 0)))
+    if (licenseOnly)
       return { productId: id, title, access: licensed, status: 'license-only', note: 'No download required. The game must verify this license through the runtime.' };
     const pkg = packageChoice(base, baseProduct, product);
     if (!pkg) return { productId: id, title, access: licensed, status: 'unsupported', note: 'No unambiguous related PC MSIXVC content package was verified.' };
