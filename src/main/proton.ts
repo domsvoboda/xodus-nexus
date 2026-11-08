@@ -571,6 +571,7 @@ export async function prepareProtonRunner(
         SteamGameId: '0',
         UMU_ID: 'xodus-nexus',
         UMU_USE_STEAM: '0',
+        PYTHONDONTWRITEBYTECODE: '1',
       },
       maxOutput: 1_000_000,
     });
@@ -713,6 +714,10 @@ export async function prepareProtonRunner(
     // Play command rewrites a Unix executable into the prefix Z: form below.
     ...fexEnvironment(path.join(compatibilityDataPath, 'proton-fex-config.json'), path.join(files, 'lib', 'wine', 'i386-windows', 'xgameruntime.dll')),
     ...extraExports,
+    // Force this after inherited launch options and every managed export: the
+    // Proton session is Python and must not create __pycache__ inside the
+    // immutable runtime family root.
+    "export PYTHONDONTWRITEBYTECODE='1'",
     // Launchers (including EAC) may finish before the game they spawned.
     // Keep Xodus and its temporary launch view/account service alive until
     // the isolated game prefix has no remaining Wine processes.
