@@ -1270,7 +1270,7 @@ export function SettingsPage({ data, toast }: { data: AppSnapshot; toast: (value
     <details className="settings-card settings-guide" aria-label={ui('settings.guide_title')}>
       <summary><PanelLeft aria-hidden="true"/><span className="guide-summary-text"><strong>{ui('settings.guide_title')}</strong><small>{ui('settings.guide_summary')}</small></span><span className={`guide-state${savedOverlay.overlayEnabled?' on':''}`}>{savedOverlay.overlayEnabled?ui('settings.guide_on'):ui('settings.guide_off')}</span><ChevronRight aria-hidden="true"/></summary>
       <div className="guide-settings-content">
-        <CheckField className="guide-enable" label={ui('settings.guide_enable')} description={ui('settings.guide_enable_help')} role="switch" checked={overlay.overlayEnabled} disabled={Boolean(busy)} onChange={event=>setForm({...form,overlayEnabled:event.target.checked})}/>
+        <CheckField className="guide-enable" label={ui('settings.guide_enable')} description={ui('settings.guide_enable_help_short')} role="switch" checked={overlay.overlayEnabled} disabled={Boolean(busy)} onChange={event=>setForm({...form,overlayEnabled:event.target.checked})}/>
         <fieldset className="guide-settings-fields" disabled={!overlay.overlayEnabled||Boolean(busy)}>
           <legend className="social-sr-only">{ui('settings.guide_controls')}</legend>
           <label htmlFor="guide-shortcut"><span>{ui('settings.guide_shortcut')}</span><OverlayShortcutRecorder value={form.overlayShortcut??'Super+G'} onChange={overlayShortcut=>setForm(current=>({...current,overlayShortcut}))}/></label>

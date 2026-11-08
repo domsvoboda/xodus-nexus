@@ -1,3 +1,4 @@
+import { readFileSync } from 'node:fs';
 import { expect, it } from 'vitest';
 import { renderToStaticMarkup } from 'react-dom/server';
 import { demoSnapshot } from '../shared/demo-data';
@@ -85,4 +86,20 @@ it('allows an available game update to queue behind a different game download (#
   data.downloads[0].gameId = data.games[0].id;
   const locked = render(data, true).match(/<button\b[^>]*>(?:(?!<\/button>)[\s\S])*?Update game<\/button>/)?.[0];
   expect(locked).toContain('disabled');
+});
+
+it('keeps the bottom Social clearance in the scroll container without doubling page padding', () => {
+  const styles = readFileSync('src/renderer/styles.css', 'utf8');
+  const controls = readFileSync('src/renderer/controls.css', 'utf8');
+  const details = readFileSync('src/renderer/game-details.css', 'utf8');
+  const social = readFileSync('src/renderer/xbox-desktop-social.css', 'utf8');
+  expect(social).toContain('.content-shell>.page-scroll { padding-bottom:72px; }');
+  expect(styles).toMatch(/\.page \{[^}]*padding: 30px 44px 0;/);
+  expect(styles).toMatch(/\.page \{ padding: 28px 38px 0; \}/);
+  expect(styles).toMatch(/\.library-page \{ padding: 22px 24px 0; \}/);
+  expect(styles).toMatch(/\.library-page \{ padding: 18px 16px 0; \}/);
+  expect(controls).toMatch(/\.page \{ padding: 20px 20px 0; \}/);
+  expect(details).toMatch(/\.game-details-page \{[^}]*padding: 20px 38px 0;/);
+  expect(details).toMatch(/\.game-details-page \{ padding: 18px 24px 0; \}/);
+  expect(details).toMatch(/\.game-details-page \{ padding: 14px 16px 0; \}/);
 });

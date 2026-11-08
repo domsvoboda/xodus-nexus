@@ -82,7 +82,6 @@ export function AchievementsContent({ title, value, loading, refresh }: { title:
       {value?.partial ? <p className="achievements-warning">{ui("ui.incomplete_list_counts_and_gamerscore_describe_l_87878b8")}</p> : null}
       <ul className="achievements-preview" aria-label={ui("ui.recent_achievements_5e17b64")}>{achievementList(items, 'all').slice(0, 3).map(item => <AchievementCard key={item.id} item={item} />)}</ul>
     </>}
-    <p className="achievements-footnote">{ui("ui.from_xbox_availability_and_progress_may_vary_by_e4913f8")}</p>
     {open && value?.status === 'available' ? <AchievementsDialog title={title} value={value} close={() => setOpen(false)} /> : null}
   </section>;
 }

@@ -29,10 +29,10 @@ it('labels a partial list rather than presenting loaded counts as the complete g
   const html=renderToStaticMarkup(<AchievementsContent title="Game" value={{status:'available',partial:true,items:[item()]}} loading={false} refresh={()=>{}}/>);
   expect(html).toContain('1 unlocked in 1 loaded');expect(html).toContain('loaded achievements only');expect(html).toContain('View all 1');
 });
-it('makes the full list a B-closeable modal and keeps read-only language visible', () => {
+it('makes the full list a B-closeable modal without the removed read-only footnote', () => {
   const html=renderToStaticMarkup(<AchievementsDialog title="Game" value={{status:'available',items:[item()]}} close={()=>{}}/>);
   expect(html).toContain('role="dialog"');expect(html).toContain('aria-modal="true"');expect(html).toContain('data-gamepad-cancel');expect(html).toContain('Filter achievements');
   for(const label of ['All achievements','Unlocked','Locked'])expect(html).toContain(label);
   const section=renderToStaticMarkup(<AchievementsContent title="Game" value={{status:'available',items:[item()]}} loading={false} refresh={()=>{}}/>);
-  expect(section).toContain('Read-only Xbox progress');
+  expect(section).not.toContain('Read-only Xbox progress');
 });
