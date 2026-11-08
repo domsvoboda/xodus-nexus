@@ -148,7 +148,6 @@ export function GameDetailsContent({ game, detailId,back, backLabel, play, manag
         </div>
         <aside className="gd-facts"><h2>{ui("ui.game_information_978fa44")}</h2><dl><div><dt>{ui("ui.publisher_2137854")}</dt><dd>{details?.publisher ?? game.publisher ?? ui("ui.unavailable_ca18449")}</dd></div><div><dt>{ui("ui.release_date_bd84924")}</dt><dd>{release ?? ui("ui.unavailable_ca18449")}</dd></div><div><dt>{ui("ui.categories_b8b1d89")}</dt><dd>{details?.categories.length ? details.categories.join(' · ') : ui("ui.unavailable_ca18449")}</dd></div>{details ? <div><dt>{ui("ui.metadata_source_7be21e8")}</dt><dd>Microsoft Store</dd></div> : null}</dl>{technical?<details><summary>{ui("ui.installation_details_7ee3b59")}</summary>{technical}</details>:null}</aside>
       </div>
-      <p className="gd-disclaimer">{ui("ui.xbox_activity_may_be_delayed_or_unavailable_for_c15dd35")}</p>
     </div>
     {gallery !== undefined && images.length ? <Gallery title={game.title} images={images} initial={gallery} close={() => setGallery(undefined)} /> : null}
   </section>;
