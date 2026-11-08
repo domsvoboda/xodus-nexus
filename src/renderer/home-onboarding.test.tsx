@@ -8,3 +8,8 @@ it('uses real library highlights instead of duplicating sidebar shortcuts',()=>{
  expect(html).not.toContain('Quick access');expect(html).not.toContain('quick-grid');
  expect(html).toContain(data.games[0].title);
 });
+it('does not render the generic compatibility banner',()=>{
+ const data=demoSnapshot(),html=renderToStaticMarkup(<HomePage data={data} go={()=>{}} action={()=>{}} />);
+ expect(html).not.toContain('Compatibility status');
+ expect(html).not.toContain('Package ownership and installation do not guarantee');
+});
