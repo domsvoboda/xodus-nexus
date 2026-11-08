@@ -3,13 +3,13 @@ import { createHash, randomUUID } from 'node:crypto';
 import path from 'node:path';
 import { run } from './process.js';
 import {
-  BACKEND_REPOSITORIES, BACKEND_REPOSITORY, LEGACY_BACKEND_REPOSITORIES, type BackendRepository, backendPackageName, backendAssetUrl, compareVersions, minimumBackendVersion,
+  BACKEND_REPOSITORIES, BACKEND_REPOSITORY, LEGACY_BACKEND_REPOSITORIES, type BackendRepository, backendPackageName, backendAssetUrl, compareVersions, minimumBackendVersion, backendLock, backendRecipeSha256,
   validateBackendManifest, validateBackendArchive, type BackendPackageManifest,
 } from './backend-package.js';
 import { BACKEND_ARCH_SUFFIX, currentArch, isLinuxElf64, nexusArch, type NexusArch } from './arch.js';
 import { backendDiagnostic } from './backend-diagnostics.js';
 
-export interface BackendArtifact { repository: BackendRepository; tag: string; manifest: BackendPackageManifest; archiveUrl: string }
+export interface BackendArtifact { repository: BackendRepository; tag: string; manifest: BackendPackageManifest; archiveUrl: string; /** Set only by the trusted local import entrypoint. */ localArchive?: string; delivery?: 'release' | 'local' }
 
 /** Fixed installer failure codes. Never derived from messages or paths. */
 export type BackendInstallStage =
@@ -56,6 +56,62 @@ async function bytes(url: string, fetcher: typeof fetch, limit: number): Promise
   return Buffer.concat(parts);
 }
 
+export interface PreparedLocalBackend { artifact: BackendArtifact; cleanup: () => Promise<void> }
+/** Prepare a local backend build-output directory through the same manifest,
+ * archive and source checks as a published install. The returned snapshot is
+ * private and must be cleaned by the caller after the core installer finishes. */
+export async function prepareLocalBackend(directory: string, managedRoot: string): Promise<PreparedLocalBackend> {
+    if (typeof directory !== 'string' || !path.isAbsolute(directory)) throw Error('Choose an absolute local backend build directory.');
+    await fs.mkdir(managedRoot, { recursive: true, mode: 0o700 });
+    const snapshot = await fs.mkdtemp(path.join(managedRoot, '.import-'));
+    await fs.chmod(snapshot, 0o700);
+    try {
+        const entries = await fs.readdir(directory);
+        const manifests = entries.filter(name => /^xodus-nexus-backend-\d+\.\d+\.\d+-linux-(x86_64|aarch64)\.manifest\.json$/.test(name));
+        if (manifests.length !== 1) throw Error('Local backend build must contain exactly one package manifest.');
+        const manifestName = manifests[0], manifestFile = path.join(directory, manifestName);
+        const manifestStat = await fs.lstat(manifestFile);
+        if (!manifestStat.isFile() || manifestStat.isSymbolicLink()) throw Error('Local backend manifest must be a regular non-symlink file.');
+        const manifestBytes = await fs.readFile(manifestFile);
+        const manifest = validateBackendManifest(JSON.parse(manifestBytes.toString('utf8')), currentArch(), BACKEND_REPOSITORY);
+        const packageName = backendPackageName(manifest.version, currentArch());
+        if (manifestName !== packageName + '.manifest.json' || manifest.version !== backendLock.version
+            || manifest.recipeSha256 !== backendRecipeSha256 || manifest.compatibility !== backendLock.compatibility) {
+            throw Error('Local backend does not match the current source, recipe and compatibility contract.');
+        }
+        const names = {
+            manifest: manifestName,
+            archive: manifest.archive,
+            checksum: packageName + '.sha512sum',
+            source: packageName + '-source.tar.xz',
+            sourceChecksum: packageName + '-source.sha512sum',
+        };
+        const copied: Record<string, string> = {};
+        for (const [kind, name] of Object.entries(names)) {
+            const source = path.join(directory, name), target = path.join(snapshot, name);
+            const stat = await fs.lstat(source);
+            if (!stat.isFile() || stat.isSymbolicLink()) throw Error('Local backend input must be a regular non-symlink file: ' + name);
+            await fs.copyFile(source, target);
+            const staged = await fs.lstat(target);
+            if (!staged.isFile() || staged.isSymbolicLink()) throw Error('Copied local backend input is not a regular file: ' + name);
+            copied[kind] = target;
+        }
+        if (!(await fs.readFile(copied.manifest)).equals(manifestBytes)) throw Error('Copied local backend manifest changed before installation.');
+        if (createHash('sha512').update(await fs.readFile(copied.archive)).digest('hex') !== manifest.archiveSha512) throw Error('Local backend archive SHA-512 mismatch.');
+        const checksum = (await fs.readFile(copied.checksum, 'utf8')).trim();
+        if (checksum !== `${manifest.archiveSha512}  ${manifest.archive}`) throw Error('Local backend SHA-512 file does not match the manifest.');
+        const sourceChecksum = (await fs.readFile(copied.sourceChecksum, 'utf8')).trim();
+        const sourceLine = /^([a-f0-9]{128})[ \t]+\*?(\S+)$/.exec(sourceChecksum);
+        if (!sourceLine || sourceLine[2] !== (packageName + '-source.tar.xz')) throw Error('Local backend source checksum does not name the corresponding source.');
+        if (createHash('sha512').update(await fs.readFile(copied.source)).digest('hex') !== sourceLine[1]) throw Error('Local backend source archive SHA-512 mismatch.');
+        const artifact: BackendArtifact = { repository: BACKEND_REPOSITORY, tag: 'local-' + manifest.version, manifest, archiveUrl: '', localArchive: copied.archive, delivery: 'local' };
+        return { artifact, cleanup: async () => { await fs.rm(snapshot, { recursive: true, force: true }); } };
+    }
+    catch (error) {
+        await fs.rm(snapshot, { recursive: true, force: true }).catch(() => undefined);
+        throw error;
+    }
+}
 export async function discoverBackend(fetcher: typeof fetch, arch: NexusArch = currentArch()): Promise<BackendArtifact> {
   type Release = { tag_name?: string; draft?: boolean; prerelease?: boolean;
     assets?: Array<{ name?: string; browser_download_url?: string }> };
@@ -117,40 +173,63 @@ export async function installBackend(
     await assertIdle();
     stage = 'update-manifest';
     const manifest = validateBackendManifest(artifact.manifest, currentArch(), artifact.repository);
-    backendAssetUrl(artifact.tag, manifest.archive, artifact.archiveUrl, artifact.repository);
+    if (!artifact.localArchive) backendAssetUrl(artifact.tag, manifest.archive, artifact.archiveUrl, artifact.repository);
     const download = path.join(managedRoot, `.download-${randomUUID()}`);
     stage = 'update-storage';
     await fs.mkdir(download, { recursive: true });
     staging = download;
-    phase('Downloading the Nexus backend…');
-    backendDiagnostic({ operation: 'update', event: 'diagnostic', stage: 'update-download' });
-    stage = 'update-download-http';
     const archive = path.join(staging, manifest.archive);
-    const response = await fetcher(artifact.archiveUrl, { signal: AbortSignal.timeout(300_000) });
-    if (!response.ok || !response.body) throw new BackendHttpError(response.status);
-    const reader = response.body.getReader();
-    stage = 'update-storage';
-    const file = await fs.open(archive, 'wx');
-    const hash = createHash('sha512');
-    let size = 0;
-    try {
-      for (;;) {
-        // Transport reads and local writes fail independently; keep their fixed
-        // stages separate so a broken stream is never reported as storage.
-        stage = 'update-download-http';
-        const chunk = await reader.read();
-        if (chunk.done) break;
-        size += chunk.value.length;
-        if (size > 256 * 1024 * 1024) throw new BackendInstallError('update-download-limit', new Error('Backend archive exceeds the download limit.'));
-        hash.update(chunk.value);
-        stage = 'update-storage';
-        await file.writeFile(chunk.value);
-      }
-    } finally { await file.close(); await reader.cancel(); }
-    phase('Verifying the backend checksum and archive…');
-    backendDiagnostic({ operation: 'update', event: 'diagnostic', stage: 'update-verify' });
-    stage = 'update-checksum';
-    if (hash.digest('hex') !== manifest.archiveSha512) throw new Error('Backend SHA-512 verification failed.');
+    if (artifact.localArchive) {
+      phase('Copying the local Nexus backend…');
+      backendDiagnostic({ operation: 'update', event: 'diagnostic', stage: 'update-download' });
+      stage = 'update-storage';
+      const source = await fs.open(artifact.localArchive, constants.O_RDONLY | constants.O_NOFOLLOW);
+      const file = await fs.open(archive, 'wx');
+      const hash = createHash('sha512');
+      let size = 0;
+      try {
+        for await (const chunk of source.createReadStream({ autoClose: false })) {
+          size += chunk.length;
+          if (size > 256 * 1024 * 1024) throw new BackendInstallError('update-download-limit', new Error('Backend archive exceeds the download limit.'));
+          hash.update(chunk);
+          await file.writeFile(chunk);
+        }
+      } finally { await file.close(); await source.close(); }
+      phase('Verifying the backend checksum and archive…');
+      backendDiagnostic({ operation: 'update', event: 'diagnostic', stage: 'update-verify' });
+      stage = 'update-checksum';
+      if (hash.digest('hex') !== manifest.archiveSha512) throw new Error('Backend SHA-512 verification failed.');
+    }
+    else {
+      phase('Downloading the Nexus backend…');
+      backendDiagnostic({ operation: 'update', event: 'diagnostic', stage: 'update-download' });
+      stage = 'update-download-http';
+      const response = await fetcher(artifact.archiveUrl, { signal: AbortSignal.timeout(300_000) });
+      if (!response.ok || !response.body) throw new BackendHttpError(response.status);
+      const reader = response.body.getReader();
+      stage = 'update-storage';
+      const file = await fs.open(archive, 'wx');
+      const hash = createHash('sha512');
+      let size = 0;
+      try {
+        for (;;) {
+          // Transport reads and local writes fail independently; keep their fixed
+          // stages separate so a broken stream is never reported as storage.
+          stage = 'update-download-http';
+          const chunk = await reader.read();
+          if (chunk.done) break;
+          size += chunk.value.length;
+          if (size > 256 * 1024 * 1024) throw new BackendInstallError('update-download-limit', new Error('Backend archive exceeds the download limit.'));
+          hash.update(chunk.value);
+          stage = 'update-storage';
+          await file.writeFile(chunk.value);
+        }
+      } finally { await file.close(); await reader.cancel(); }
+      phase('Verifying the backend checksum and archive…');
+      backendDiagnostic({ operation: 'update', event: 'diagnostic', stage: 'update-verify' });
+      stage = 'update-checksum';
+      if (hash.digest('hex') !== manifest.archiveSha512) throw new Error('Backend SHA-512 verification failed.');
+    }
     stage = 'update-archive';
     const listing = await runner('tar', ['-tJf', archive], { maxOutput: 100_000 });
     const verbose = await runner('tar', ['-tvJf', archive], { maxOutput: 100_000 });

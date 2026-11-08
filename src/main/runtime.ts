@@ -19,7 +19,8 @@ import { runtimePayloadMatches } from './runtime-payload-identity.js';
 const REPOSITORY = 'xodus-gaming/Proton';
 const BRANCH = 'xodus/bleeding-edge';
 const REPOSITORY_URL = 'https://github.com/xodus-gaming/Proton.git';
-const NEXUS_REPOSITORY = 'domsvoboda/xodus-nexus';
+const NEXUS_REPOSITORY = 'domsvoboda/nexus-launcher';
+const LEGACY_NEXUS_REPOSITORY = 'domsvoboda/xodus-nexus';
 const NEXUS_RUNTIME_REPOSITORY = 'domsvoboda/nexus-runtime';
 
 interface RuntimePointer {
@@ -115,6 +116,7 @@ export class RuntimeManager {
   checkManagedRuntime(family:unknown,options:unknown,onStatus:()=>void=()=>{}) {return this.managedCheck(family,options,onStatus);}
   private async managedCheck(family:unknown,options:unknown,onStatus:()=>void) {try{onStatus();return await this.managed.check(family,options);}finally{onStatus();}}
   async installManagedRuntime(family:unknown,expected:unknown,options:unknown,onStatus:()=>void=()=>{}) {const result=await this.managed.install(family,expected,options);try{await this.refreshFamilies();onStatus();}catch(error){return {...result,success:false,error:[result.error,'Updating runtime status failed: '+(error as Error).message].filter(Boolean).join(' ')};}return result;}
+  async importManagedRuntime(family:unknown,directory:unknown,options:unknown,onStatus:()=>void=()=>{}) {const result=await this.managed.importLocal(family,directory,options);try{await this.refreshFamilies();onStatus();}catch(error){return {...result,success:false,error:[result.error,'Updating runtime status failed: '+(error as Error).message].filter(Boolean).join(' ')};}return result;}
   async installPreparedManagedRuntime(family: unknown, target: Readonly<VerifiedManagedFamilyRelease>, options: unknown, onStatus: () => void = () => { }) {
       const result = await this.managed.install(family, target.candidateSha256, options, target);
       try {
@@ -555,12 +557,15 @@ export class RuntimeManager {
     try {
       // Each host installs the runtime built for it: -x86_64 or -aarch64.
       const suffix = runtimeArchiveArch(this.hostArch);
-      for (const repository of [NEXUS_RUNTIME_REPOSITORY, NEXUS_REPOSITORY]) {
+      let selected = false;
+      for (const repository of [NEXUS_RUNTIME_REPOSITORY, NEXUS_REPOSITORY, LEGACY_NEXUS_REPOSITORY]) {
         const response = await this.fetcher(`https://api.github.com/repos/${repository}/releases?per_page=30`, {
           headers: { Accept: 'application/vnd.github+json' },
           signal: AbortSignal.timeout(20_000),
         });
-        if (response.status === 404 && repository === NEXUS_RUNTIME_REPOSITORY) continue;
+        // The new canonical launcher repository owns the historical runtime
+        // assets after the rename. The old name remains a read-only fallback.
+        if (response.status === 404) continue;
         if (!response.ok) throw new Error('The Nexus runtime release list could not be read.');
         const releases = await response.json() as Array<{ tag_name?: unknown; published_at?: unknown; draft?: boolean; prerelease?: boolean; assets?: Array<{ name?: unknown; browser_download_url?: unknown }> }>;
         let found: { version: string; archive: { name: string; url: string }; checksum: { name: string; url: string } } | undefined;
@@ -588,8 +593,7 @@ export class RuntimeManager {
             }
           }
         }
-        if (!found && repository === NEXUS_RUNTIME_REPOSITORY) continue;
-        if (!found) throw new Error('No Nexus runtime release has been published yet.');
+        if (!found) continue;
         this.nexusArtifact = {
           version: found.version,
           name: found.archive.name,
@@ -598,8 +602,10 @@ export class RuntimeManager {
           checksumUrl: found.checksum.url,
         };
         Object.assign(this.status, { nexusAvailable: true, nexusName: found.archive.name, nexusVersion: found.version, nexusError: undefined });
+        selected = true;
         break;
       }
+      if (!selected) throw new Error('No Nexus runtime release has been published yet.');
     } catch (error) {
       this.nexusArtifact = undefined;
       Object.assign(this.status, { nexusAvailable: false, nexusName: undefined, nexusVersion: undefined, nexusError: (error as Error).message });

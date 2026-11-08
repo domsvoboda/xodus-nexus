@@ -1,6 +1,5 @@
 import {useComponentUpdates} from './ComponentUpdates';
 import {ManagedRuntimeSettings} from './ManagedRuntimeSettings';
-import {DefaultRuntimeSettings} from './DefaultRuntimeSettings';
 import {StatusDot} from './StatusDot';
 import {useGameRuntimeReady} from './useGameRuntimeReady';
 import {useStoreAccess} from './store-access';
@@ -22,7 +21,6 @@ import {reconcileSettingsDraft, storageSettingsPatch} from './settings-draft';
 import {xboxOverlaySettings} from '../shared/xbox-overlay-settings';
 import './xbox-desktop-social.css';
 import { estimateTimeRemaining, isNewerVersion } from '../shared/utils';
-import { nexusRuntimeUpdateAvailable } from '../shared/runtime-display';
 import { subscriptionBadge } from '../shared/subscription';
 import { defaultLaunchTools, normalizeLaunchTools } from '../shared/launch-tools';
 import { DEFAULT_SHADER_CACHE_GIB, shaderCacheLimits } from '../shared/shader-cache';
@@ -138,13 +136,11 @@ function AccountAvatar({ auth, large = false, license = false }: { auth: AppSnap
  * an uninstalled optional family is never advertised or checked on render. */
 export function TopStatus({ data, go, openFriends }: { data: AppSnapshot; go: (page: Page) => void; openFriends?: () => void }) {
   const restart = data.launcherUpdate?.restartRequired;
-  // The default-runtime notice and the managed Standard family describe the
-  // same runtime family, so one entry survives the deduplication below.
+  // Only managed family receipts are runtime updates. The legacy global
+  // runtime is never advertised as a second, hidden family selector.
   const managed = (data.runtime.managedFamilies ?? []).filter(family =>
     Boolean(family.installed) && Boolean(family.available) && family.updateAvailable === true);
   const runtimeUpdates = new Map<string, string>();
-  if (nexusRuntimeUpdateAvailable(data.runtime) && !managed.some(family => family.id === 'nexus'))
-    runtimeUpdates.set('nexus', ui('home.runtime_update', { version: data.runtime.nexusVersion?.replace(/^runtime-/, '') ?? '' }).trim());
   for (const family of managed) {
     const candidate = family.available;
     if (!candidate || runtimeUpdates.has(family.id)) continue;
@@ -1143,21 +1139,22 @@ export function SettingsPage({ data, toast }: { data: AppSnapshot; toast: (value
     setAccountManagement(enabled);
     setForm(current => ({ ...current, multiAccountEnabled: enabled }));
   }
-  const [runtimeLogs, setRuntimeLogs] = useState<string[]>([]);
   useEffect(() => {
     const previous = previousSettings.current;
     previousSettings.current = data.settings;
     setForm(current => reconcileSettingsDraft(current, previous, data.settings));
   }, [data.settings]);
-  useEffect(() => window.launcher.onOperationLog(({ scope, line }) => {
-    if (scope === 'runtime') setRuntimeLogs((items) => [...items.slice(-199), line]);
-  }), []);
 
   async function invoke(name: string, fn: () => Promise<unknown>, success?: string) {
     setBusy(name);
     try { await fn(); if (success) toast({ kind: 'success', message: success }); }
     catch (error) { toast({ kind: 'error', message: errorMessage(error) }); }
     finally { setBusy(undefined); }
+  }
+  async function importBackendArchive() {
+    const directory = await window.launcher.chooseDirectory();
+    if (!directory) return;
+    await invoke('backend-import', () => window.launcher.importBackend(directory), ui('backend.local_installed'));
   }
 
   async function pick(kind: 'install' | 'runtime' | 'wine') {
@@ -1250,14 +1247,12 @@ export function SettingsPage({ data, toast }: { data: AppSnapshot; toast: (value
     {caps.offlinePc && !data.auth.running ? <OfflinePermissionsCard key={`${data.auth.username}:${data.auth.stored}:${data.backend.binaryPath}:${data.settings.runtimeRoot}`} toast={toast} signedIn={data.auth.stored === true} /> : null}
 
     <section className="settings-card">
-      <div className="settings-heading"><div className="settings-icon"><Terminal /></div><div><h2>{ui("ui.xodus_backend_a99abd3")}</h2><p>{data.backend.version ? ui("ui.nexus_backend_909289e", { version: data.backend.version }) : data.backend.available ? ui("ui.backend_cli_02229de", { version: data.backend.capabilities.version ?? ui('settings.unknown_version') }) : ui("ui.install_the_prebuilt_nexus_backend_bd247cd")}</p></div><span className={`status-label ${data.backend.available ? 'ready' : 'off'}`}><StatusDot tone={data.backend.available ? 'green' : 'red'} />{data.backend.available ? ui("ui.validated_3dac322") : ui("ui.offline_5c3ce8d")}</span></div>
+      <div className="settings-heading"><div className="settings-icon"><Terminal /></div><div><h2>{ui("ui.xodus_backend_a99abd3")}</h2><p>{data.backend.version ? ui("ui.nexus_backend_909289e", { version: data.backend.version }) : data.backend.available ? ui("ui.backend_cli_02229de", { version: data.backend.capabilities.version ?? ui('settings.unknown_version') }) : ui("ui.install_the_prebuilt_nexus_backend_bd247cd")}{data.backend.delivery === 'local' ? ` · ${ui('backend.local_build')}` : ''}</p></div><span className={`status-label ${data.backend.available ? 'ready' : 'off'}`}><StatusDot tone={data.backend.available ? 'green' : 'red'} />{data.backend.available ? ui("ui.validated_3dac322") : ui("ui.offline_5c3ce8d")}</span></div>
       {data.backend.blockReason ? <div className="alert amber"><CircleAlert /><span>{uiText(data.backend.blockReason)}</span></div> : null}
       {data.backend.phase ? <p className="runtime-phase">{uiText(data.backend.phase)}</p> : null}
       <div className="backend-diagnostic-action"><BackendLogButton toast={toast} /><p className="fine-print">{ui("ui.local_operation_results_and_safe_error_codes_no_cd558f7")}</p></div>
-      <div className="button-row end"><button className="secondary" disabled={Boolean(busy) || data.backend.checking || data.backend.updating} onClick={() => invoke('backend-check', () => window.launcher.checkBackendUpdate())}>{busy === 'backend-check' || data.backend.checking ? <LoaderCircle className="spin" /> : <RefreshCw />}{ui("ui.check_for_updates_f26f327")}</button>{data.backend.releaseAvailable && data.backend.updateAvailable ? <button className="primary" disabled={Boolean(busy) || data.backend.updating || data.backend.checking} onClick={() => invoke('backend-update', () => window.launcher.updateBackend(), ui("ui.the_nexus_backend_was_verified_installed_and_act_62d374e"))}>{busy === 'backend-update' || data.backend.updating ? <LoaderCircle className="spin" /> : <ArrowDownToLine />}{data.backend.available ? ui("ui.update_backend_bddcd8b") : ui("ui.install_backend_73e7239")}</button> : null}</div>
+      <div className="button-row end"><button className="secondary" disabled={Boolean(busy) || data.backend.checking || data.backend.updating} onClick={() => invoke('backend-check', () => window.launcher.checkBackendUpdate())}>{busy === 'backend-check' || data.backend.checking ? <LoaderCircle className="spin" /> : <RefreshCw />}{ui("ui.check_for_updates_f26f327")}</button><button className="secondary" disabled={Boolean(busy) || data.backend.updating || data.backend.checking} onClick={() => void importBackendArchive()}>{busy === 'backend-import' ? <LoaderCircle className="spin" /> : <FolderOpen />}{ui('backend.install_from_archive')}</button>{data.backend.releaseAvailable && data.backend.updateAvailable ? <button className="primary" disabled={Boolean(busy) || data.backend.updating || data.backend.checking} onClick={() => invoke('backend-update', () => window.launcher.updateBackend(), ui("ui.the_nexus_backend_was_verified_installed_and_act_62d374e"))}>{busy === 'backend-update' || data.backend.updating ? <LoaderCircle className="spin" /> : <ArrowDownToLine />}{data.backend.available ? ui("ui.update_backend_bddcd8b") : ui("ui.install_backend_73e7239")}</button> : null}</div>
     </section>
-
-    <DefaultRuntimeSettings data={data} busy={busy} disabled={componentUpdatesDisabled} runtimeLogs={runtimeLogs} invoke={invoke}/>
 
     <ManagedRuntimeSettings data={data} disabled={componentUpdatesDisabled} onBusyChange={value=>setBusy(value?'managed-runtime':undefined)}/>
 
@@ -1349,7 +1344,7 @@ export function FirstRunWizard({ data, toast }: { data: AppSnapshot; toast: (val
         <CircleAlert aria-hidden="true" />
         <div><h2 id="wizard-disclaimer-title">{ui("ui.independent_unofficial_project_4197cf7")}</h2>
           <p>{ui("ui.xodus_nexus_is_built_on_xodus_but_it_is_551be13")}{' '}<strong>{ui("ui.not_an_official_xodus_project_d61df4f")}</strong>{' '}{ui("ui.and_is_not_developed_or_maintained_by_the_upstre_af143ff")}</p>
-          <p>{ui("ui.please_report_nexus_issues_only_in_the_c9de146")}{' '}<a href="https://github.com/domsvoboda/xodus-nexus/issues" target="_blank" rel="noopener noreferrer">{ui("ui.nexus_repository_068a220")}</a>{ui("ui.not_upstream_a_problem_in_nexus_may_not_exist_in_e123052")}</p>
+          <p>{ui("ui.please_report_nexus_issues_only_in_the_c9de146")}{' '}<a href="https://github.com/domsvoboda/nexus-launcher/issues" target="_blank" rel="noopener noreferrer">{ui("ui.nexus_repository_068a220")}</a>{ui("ui.not_upstream_a_problem_in_nexus_may_not_exist_in_e123052")}</p>
         </div>
       </section>
       <p>{ui("ui.choose_where_games_install_everything_else_can_b_5cfa4a3")}</p>

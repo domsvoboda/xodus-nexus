@@ -1,5 +1,5 @@
 import { expect, it } from 'vitest';
-import { parseManagedFamilyRelease, verifyManagedFamilyCandidate } from './runtime-family-release';
+import { parseManagedFamilyRelease, verifyLocalManagedFamilyCandidate, verifyManagedFamilyCandidate } from './runtime-family-release';
 // Sanitized public c070 release metadata, no download or native execution.
 function fixture(family = 'nexus-cachyos') {
     const commit = 'c0702eafb4ff4043c54e38bc5028ea77fa6a9487', repository = 'domsvoboda/' + (family === 'nexus' ? 'nexus-runtime' : 'nexus-runtime-cachyos');
@@ -189,4 +189,54 @@ it('allows bounded ancillary release assets without weakening selected pair iden
         name: 'LICENSE', size: 100, browser_download_url: f.release.assets[0].browser_download_url.replace('candidate.json', 'LICENSE')
     });
     expect(verifyManagedFamilyCandidate(f.bytes, f.parse()).files).toHaveLength(4);
+});
+
+it('accepts an honest no-CI local candidate only through the trusted local entrypoint', () => {
+    const f = fixture();
+    delete f.candidate.runId;
+    f.candidate.localBuild = true;
+    f.candidate.diagnosticOnly = true;
+    f.candidate.promotable = false;
+    const bytes = f.sync();
+    const local = verifyLocalManagedFamilyCandidate(bytes, f.parse());
+    expect(local.local).toBe(true);
+    expect(local.runId).toBeUndefined();
+    expect(local.validation.stableApproved).toBe(false);
+    expect(() => verifyManagedFamilyCandidate(bytes, f.parse())).toThrow('Invalid candidate run ID');
+});
+it.each([
+    ['localBuild', false], ['localBuild', undefined],
+    ['diagnosticOnly', false], ['diagnosticOnly', undefined],
+    ['promotable', true], ['promotable', undefined],
+])('rejects a local candidate with %s=%s', (key, value) => {
+    const f = fixture();
+    delete f.candidate.runId;
+    f.candidate.localBuild = true;
+    f.candidate.diagnosticOnly = true;
+    f.candidate.promotable = false;
+    f.candidate[key] = value;
+    const bytes = f.sync();
+    expect(() => verifyLocalManagedFamilyCandidate(bytes, f.parse())).toThrow('localBuild=true');
+});
+it('rejects a CI runId on the local entrypoint and never lets local flags bypass the network entrypoint', () => {
+    const f = fixture();
+    f.candidate.localBuild = true;
+    f.candidate.diagnosticOnly = true;
+    f.candidate.promotable = false;
+    const bytes = f.sync();
+    expect(() => verifyLocalManagedFamilyCandidate(bytes, f.parse())).toThrow('must not contain a CI run ID');
+    delete f.candidate.runId;
+    const localBytes = f.sync();
+    expect(() => verifyManagedFamilyCandidate(localBytes, f.parse())).toThrow('Invalid candidate run ID');
+});
+it('records an optional local build ID without inventing a CI run ID', () => {
+    const f = fixture();
+    delete f.candidate.runId;
+    f.candidate.localBuild = true;
+    f.candidate.diagnosticOnly = true;
+    f.candidate.promotable = false;
+    f.candidate.localBuildId = 'local-20261108-1';
+    const local = verifyLocalManagedFamilyCandidate(f.sync(), f.parse());
+    expect(local.localBuildId).toBe('local-20261108-1');
+    expect(local.runId).toBeUndefined();
 });

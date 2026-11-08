@@ -64,6 +64,15 @@ describe('backend mutation boundaries', () => {
     const oldRefresh = m.refresh(); await entered.promise; await m.update(() => {}); release.resolve(); await oldRefresh;
     expect(m.current.binaryPath).toBe(path.join(root, 'selected/xodus-cli')); expect(m.current.commit).toBe(backendLock.commit); expect(m.current.recipeSha256).toBe(backendRecipeSha256);
   });
+  it('never downgrades a local backend to an older published release, but offers the exact official same version', async () => {
+    const m=manager(), pointer=path.join(root,'xodus-backends/current.json');
+    await fs.writeFile(pointer,JSON.stringify({binaryPath:'/local/xodus-cli',commit:'e7884a27f698c7447b96b431b2935f9ed50677f5',delivery:'local',version:'0.2.15'}));
+    Object.assign((m as unknown as {status:object}).status,{available:true,source:'managed',binaryPath:'/local/xodus-cli'});
+    vi.mocked(discoverBackend).mockResolvedValue(artifact('0.2.14'));
+    expect((await m.checkUpdate()).updateAvailable).toBe(false);
+    vi.mocked(discoverBackend).mockResolvedValue(artifact('0.2.15'));
+    expect((await m.checkUpdate()).updateAvailable).toBe(true);
+  });
   it('prepares no install for an absent, external or locally built backend', async () => {
     const m=manager(); for (const source of ['none','external','managed']) {
       Object.assign((m as unknown as {status:object}).status,{available:source!=='none',source});
