@@ -7,7 +7,7 @@ import {demoSnapshot} from '../shared/demo-data';
 import type {ManagedFamilyStatus,ManagedFamilyInstallResult} from '../shared/types';
 let root:Root,data:ReturnType<typeof demoSnapshot>,busy:ReturnType<typeof vi.fn>;
 const offer={version:'runtime-cachyos-11.0',candidateSha256:'a'.repeat(64),sourceCommit:'b'.repeat(40),archiveName:'nexus-runtime-cachyos-x86_64.tar.xz',requiresBackendVersion:'0.2.3',requiresLauncherVersion:'0.5.0'};
-const build={id:'nexus-cachyos' as const,label:'CachyOS',buildId:'c'.repeat(64),manifestSha256:'d'.repeat(64),sourceCommit:'e'.repeat(40)};
+const build={id:'nexus-cachyos' as const,label:'CachyOS',buildId:'c'.repeat(64),manifestSha256:'d'.repeat(64),sourceCommit:'e'.repeat(40),displayWinePath:'/managed/cachyos/files/bin/wine'};
 const available=():ManagedFamilyStatus=>({id:'nexus-cachyos',checking:false,installing:false,available:offer,updateAvailable:true});
 const installed=(channel:'stable'|'prerelease'='stable',updateAvailable=false):ManagedFamilyStatus=>({...available(),installed:build,version:'runtime-cachyos-10.0',channel,updateAvailable});
 const standard:ManagedFamilyStatus={id:'nexus',checking:false,installing:false,installed:{...build,id:'nexus',label:'Standard'},version:'runtime-10.0',channel:'stable',updateAvailable:false};
@@ -24,13 +24,16 @@ beforeEach(async()=>{
  document.body.innerHTML='<div id="root"></div>';root=createRoot(document.getElementById('root')!);await render();
 });
 afterEach(async()=>{await act(async()=>root.unmount());vi.restoreAllMocks();vi.unstubAllGlobals();document.body.innerHTML='';});
-it('renders one concise CachyOS card with no experimental text, prerelease control or help paragraph',()=>{
+it('renders one concise CachyOS card with no binary path, experimental text, prerelease control or help paragraph',()=>{
  expect(document.querySelectorAll('section.settings-card.managed-runtime-settings')).toHaveLength(1);
- expect(document.querySelectorAll('h3,.managed-runtime-family,input[type="checkbox"]')).toHaveLength(0);
+ expect(document.querySelectorAll('h3,.managed-runtime-family,.managed-runtime-binary,input[type="checkbox"]')).toHaveLength(0);
  expect([...document.querySelectorAll('h2')].map(node=>node.textContent)).toEqual(['CachyOS runtime']);
  expect(text().toLowerCase()).not.toContain('experimental');
  expect(card().querySelector('.status-label.unknown')?.textContent).toContain('Not installed');
  expect(button('Install CachyOS runtime')).toBeUndefined();
+ expect(text()).not.toContain('Read-only path');expect(text()).not.toContain('binary');
+ expect(card().querySelector('.button-row.end')).not.toBeNull();
+ expect(button('Check for updates')).toBeDefined();
  expect(window.launcher.checkManagedRuntime).not.toHaveBeenCalled();expect(window.launcher.installManagedRuntime).not.toHaveBeenCalled();
 });
 it('never infers an installed family from a Standard snapshot or an unrelated default runtime',async()=>{
@@ -38,6 +41,21 @@ it('never infers an installed family from a Standard snapshot or an unrelated de
  expect(text()).toContain('Not installed');expect(text()).not.toContain('Installed: runtime-10.0');
  expect(button('Install CachyOS runtime')).toBeUndefined();
 });
+it('shows the phase panel only while checking or installing, never as an idle ready status',async()=>{
+ data.runtime.managedFamilies=[installed('stable',false)];await render();
+ expect(card().querySelector('.runtime-phase')).toBeNull();
+ data.runtime.managedFamilies=[{...installed('stable',false),phase:'Runtime is ready.'}];await render();
+ expect(card().querySelector('.runtime-phase')).toBeNull();
+ expect(text()).not.toContain('Runtime is ready.');
+ data.runtime.managedFamilies=[{...installed('stable',false),checking:true,phase:'Checking the CachyOS runtime release.'}];await render();
+ expect(card().querySelector('.runtime-phase')?.textContent).toContain('Checking the CachyOS runtime release.');
+ data.runtime.managedFamilies=[{...installed('stable',false),installing:true,phase:'Installing the verified CachyOS runtime.'}];await render();
+ expect(card().querySelector('.runtime-phase')?.textContent).toContain('Installing the verified CachyOS runtime.');
+ data.runtime.managedFamilies=[{...installed('stable',false),phase:'Runtime is ready.',error:'Backend 0.3.0 or newer is required'}];await render();
+ expect(card().querySelector('.runtime-phase')).toBeNull();
+ expect(alerts()).toContain('Backend 0.3.0 or newer is required');
+});
+
 it('checks explicitly and installs the exact captured candidate',async()=>{
  await click(button('Check for updates'));
  expect(window.launcher.checkManagedRuntime).toHaveBeenCalledWith('nexus-cachyos',{allowCachyos:true,allowPrerelease:false});
@@ -50,6 +68,7 @@ it('checks explicitly and installs the exact captured candidate',async()=>{
 it('shows a managed installation with its version and keeps its recorded prerelease channel without a toggle',async()=>{
  data.runtime.managedFamilies=[installed('prerelease',true)];await render();
  expect(text()).toContain('Installed: runtime-cachyos-10.0');expect(text()).toContain('READY');
+ expect(text()).not.toContain('/managed/cachyos/files/bin/wine');expect(text()).not.toContain('Read-only path');
  expect(card().querySelector('.status-label.ready')).not.toBeNull();expect(document.querySelector('input[type="checkbox"]')).toBeNull();
  await click(button('Update CachyOS runtime'));
  expect(window.launcher.installManagedRuntime).toHaveBeenCalledWith('nexus-cachyos',offer.candidateSha256,{allowCachyos:true,allowPrerelease:true});
@@ -57,6 +76,7 @@ it('shows a managed installation with its version and keeps its recorded prerele
 it('reports an active local CachyOS default runtime truthfully without claiming a managed installation',async()=>{
  data.runtime=activeCachy;await render();
  expect(text()).toContain('ACTIVE');expect(text()).toContain('Active local build: cachyos-11.0-experimental-ge36f73cb-local');
+ expect(text()).not.toContain('/local/cachyos/files/bin/wine');
  expect(text()).not.toContain('Installed:');expect(card().querySelector('.status-label.ready')).not.toBeNull();
  expect(button('Install CachyOS runtime')).toBeUndefined();
  await click(button('Check for updates'));
@@ -65,6 +85,7 @@ it('reports an active local CachyOS default runtime truthfully without claiming 
 it('does not claim an active local CachyOS runtime when the default runtime is something else',async()=>{
  data.runtime={...activeCachy,name:'nexus-runtime-11.0-experimental-g5910703e-local'};await render();
  expect(text()).not.toContain('ACTIVE');expect(text()).toContain('Not installed');
+ expect(text()).not.toContain('/local/cachyos/files/bin/wine');
 });
 it('reports a committed uncertain install as attention instead of success',async()=>{
  data.runtime.managedFamilies=[available()];await render();

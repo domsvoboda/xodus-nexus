@@ -56,7 +56,6 @@ export function demoSnapshot(versions: DemoVersions = { launcher: '0.0.0', backe
     backend: {
       available: true, source: 'managed', binaryPath: '/home/demo/.config/xodus-nexus/xodus-backends/current', commit: versions.backendCommit, upstreamCommit: versions.backendCommit, updateAvailable: false, checking: false, updating: false, externalRoot: '',
       capabilities: { commands: ['login', 'logout', 'download', 'streaming', 'run', 'license', 'extract', 'profile', 'library'], nativeSocial: true, account: true, profile: true, library: true, login: true, externalAuth: true, logout: true, download: true, streaming: true, streamingProgressJson: true, streamingControls: true, run: true, version: '0.5.0' },
-      prerequisites: { git: true, cargo: true, rustc: true, protoc: true },
       linuxRunPatch: versions.backendCompatibility,
       version: versions.backend, delivery: 'release', releaseAvailable: true, releaseVersion: versions.backend,
     },

@@ -18,7 +18,7 @@ it('retains Game bundles and unsupported Games without deriving the root kind fr
  // Unknown/unsupported package metadata changes installability, not game kind.
  expect(parseCatalogProducts({productsList:[row()]},{Products:[game()]},'store')[0].installability).not.toBe('supported');
 });
-it('filters actual search, featured, pagination and Product ID queries with the same root policy',async()=>{
+it('filters search and pagination with the root policy while Featured also requires standalone composition',async()=>{
  const requests:URL[]=[];
  const records=[game(),game(BUNDLE,{DisplaySkuAvailabilities:[{Sku:{Properties:{BundledSkus:[{BigId:DLC}]}}}]}),{ProductId:DLC,ProductType:'Durable'},{ProductId:APP,ProductType:'Application'}];
  const service=new CatalogService((async(input:URL|RequestInfo)=>{
@@ -30,7 +30,9 @@ it('filters actual search, featured, pagination and Product ID queries with the 
   const productsList=query===DLC?[row(DLC)]:query===GAME?[row()]:[row(),row(BUNDLE),row(DLC),row(APP)];
   return new Response(JSON.stringify({productsList,cursor:'page2',hasMorePages:true}));
  }) as typeof fetch);
- for(const result of [await service.search('Game','US'),await service.featured('US'),await service.search('Game','US','page2')])expect(result.products.map(p=>p.productId)).toEqual([GAME,BUNDLE]);
+ for(const result of [await service.search('Game','US'),await service.search('Game','US','page2')])expect(result.products.map(p=>p.productId)).toEqual([GAME,BUNDLE]);
+ // The Bundle root is Game, but its only child is a Durable add-on.
+ expect((await service.featured('US')).products.map(p=>p.productId)).toEqual([GAME]);
  expect((await service.search(DLC,'US')).products).toEqual([]);
  expect((await service.search(GAME,'US')).products.map(p=>p.productId)).toEqual([GAME]);
  expect(await service.gameDetails(DLC,'US')).toBeUndefined();

@@ -59,11 +59,25 @@ describe('Xbox people service boundary',()=>{
   await expect(api.changeRelationship('account','2','send-request')).rejects.toThrow('current player action');expect(reader).toHaveBeenCalledTimes(1);
   finish(reply('send-request',{xuid:'2',success:true}));await first;
  });
- it('keeps title history public and bounded without accepting arbitrary images or counters',async()=>{
+ it('keeps title history public and bounded while dropping unsafe artwork without hiding the title',async()=>{
   const game={titleId:'123',name:'E-Day',imageUrl:'https://store-images.s-microsoft.com/game.png',lastPlayed:'2026-10-23T12:00:00Z',currentGamerscore:0,achievementsUnlocked:0};
   const api=new XboxSocial(connect,async()=>reply('games',{items:[{...game,authorization:'private'}],continuation:null,truncated:false}));
   expect(await api.games('2')).toEqual({items:[game],continuation:null,truncated:false});
-  for(const invalid of [{...game,imageUrl:'https://private@store-images.s-microsoft.com/game.png'},{...game,titleId:'4294967296'},{...game,achievementsUnlocked:-1}]){
+  for(const imageUrl of ['https://store-images.microsoft.com/game.png','https://images-eds.xboxlive.com/game.png','https://images-assets-ssl.xboxlive.com/game.png']){
+   expect((await new XboxSocial(connect,async()=>reply('games',{items:[{...game,imageUrl}]})).games('2')).items[0].imageUrl).toBe(imageUrl);
+  }
+  const {imageUrl:_ignored,...withoutArt}=game;
+  for(const invalid of [
+   {...game,imageUrl:'https://private@store-images.s-microsoft.com/game.png'},
+   {...game,imageUrl:'https://example.test/game.png'},
+   {...game,imageUrl:'http://store-images.s-microsoft.com/game.png'},
+   {...game,imageUrl:'not a url'},
+   {...game,imageUrl:'https://store-images.s-microsoft.com/'+'a'.repeat(8192)},
+   {...game,imageUrl:42},
+  ]){
+   expect((await new XboxSocial(connect,async()=>reply('games',{items:[invalid]})).games('2')).items[0]).toEqual(withoutArt);
+  }
+  for(const invalid of [{...game,titleId:'4294967296'},{...game,achievementsUnlocked:-1}]){
    await expect(new XboxSocial(connect,async()=>reply('games',{items:[invalid]})).games('2')).rejects.toThrow();
   }
  });

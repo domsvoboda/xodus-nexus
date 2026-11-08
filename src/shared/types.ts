@@ -1,4 +1,4 @@
-import type {RuntimeFamily,GameRuntimeSelection,InstalledRuntimeFamily,RuntimeBuildApproval,RuntimePrefixAnchors} from './runtime-selection.js';
+import type {RuntimeFamily,GameRuntimeSelection,InstalledRuntimeFamily,RuntimeBuildApproval,RuntimePrefixAnchors,RuntimePrefixIdentity} from './runtime-selection.js';
 export type Page = 'home' | 'store' | 'library' | 'downloads' | 'settings' | 'social';
 
 export interface BackendCapabilities {
@@ -70,7 +70,6 @@ export interface BackendStatus {
   updating: boolean;
   externalRoot: string;
   capabilities: BackendCapabilities;
-  prerequisites: { git: boolean; cargo: boolean; rustc: boolean; protoc: boolean };
   blockReason?: string;
   linuxRunPatch?: string;
   recipeSha256?: string;
@@ -142,7 +141,11 @@ export interface Game {
   runtime?: GameRuntimeSelection;
   runtimeSeparatePrefix?: boolean;
   runtimeBuild?: RuntimeBuildApproval; // Old prefix origin only, never a launch pin.
-  runtimePrefixes?: RuntimePrefixAnchors;
+  runtimePrefixes?: RuntimePrefixAnchors; // Legacy per-family path metadata, never a launch pin.
+  /** Backend-owned durable prefix location. Captured from the persisted state
+   * before a selection change; it survives family switches and reloads and is
+   * never accepted from the renderer. */
+  runtimePrefixIdentity?: RuntimePrefixIdentity;
   launchArgs?: string;
   launchTools?: GameLaunchTools;
   locale?: string;
@@ -159,6 +162,9 @@ export interface Game {
     encryptedTarget: boolean;
   };
   addedAt: string;
+  /** Completion of a genuine new installation. Older profiles and imports have
+   * no value, so presentation must not treat `addedAt` as proof of installation. */
+  installedAt?: string;
 }
 
 export interface GameLaunchOptions {
@@ -460,6 +466,16 @@ export interface CatalogSearchResult {
   source: 'Microsoft Store';
 }
 
+/** Public presence in the official PC Game Pass recent collection.
+ * This is not an owned Library page and grants no account access. */
+export interface RecentGamePassShelf {
+  market: string;
+  products: CatalogProduct[];
+  fetchedAt: string;
+  source: 'Microsoft Game Pass catalog';
+  stale?: boolean;
+}
+
 export type LibraryAccess = 'owned' | 'gamepass' | 'other';
 export interface StoreAccess {
   configuredMarket: string;
@@ -626,7 +642,6 @@ export interface LauncherApi {
   refreshBackend(): Promise<BackendStatus>;
   checkBackendUpdate(): Promise<BackendStatus>;
   updateBackend(): Promise<void>;
-  rebuildBackend(): Promise<void>;
   refreshRuntime(): Promise<RuntimeStatus>;
   getRuntimeFamilies(): Promise<InstalledRuntimeFamily[]>;
   checkRuntimeUpdate(): Promise<RuntimeStatus>;
@@ -665,6 +680,8 @@ export interface LauncherApi {
   setOfflinePermissions(enabled: boolean): Promise<OfflinePermissions>;
   searchCatalog(query: string, cursor?: string): Promise<CatalogSearchResult>;
   getFeaturedCatalog(): Promise<CatalogSearchResult>;
+  browseCatalog(cursor?: string): Promise<CatalogSearchResult>;
+  getRecentGamePassShelf(): Promise<RecentGamePassShelf>;
   getStoreAccess(): Promise<StoreAccess>;
   getAccountLibrary(kind: AccountLibraryPage['kind'], cursor?: string, refresh?: boolean, sort?: AccountLibraryPage['sort']): Promise<AccountLibraryPage>;
   startInstall(request: InstallRequest): Promise<string>;

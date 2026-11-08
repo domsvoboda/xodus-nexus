@@ -4,7 +4,7 @@ import fs from 'node:fs/promises';
 import {createHash} from 'node:crypto';
 import {validateBackendSource} from '../build-backend.mjs';
 const digest=bytes=>createHash('sha256').update(bytes).digest('hex');
-test('backend pin owns no patch overlay and keeps the released compatible version usable',async()=>{
+test('backend pin owns no patch overlay and delegates recipe validation to the real source boundary',async()=>{
   const lock=JSON.parse(await fs.readFile('assets/backend-source.lock.json','utf8'));
   assert.equal(lock.schema,2);
   assert.equal(lock.repository,'https://github.com/domsvoboda/nexus-backend.git');
@@ -14,7 +14,16 @@ test('backend pin owns no patch overlay and keeps the released compatible versio
   assert.equal(lock.minimumVersion,'0.2.14');
   assert.ok(!(await fs.readdir('assets')).some(file=>/^xodus-.*\.patch$/.test(file)));
   const manager=await fs.readFile('src/main/backend.ts','utf8');
-  assert.match(manager,/buildConfigSha256/);assert.doesNotMatch(manager,/backendLock\.patches|'apply'/);
+  const packageSource=await fs.readFile('src/main/backend-package.ts','utf8');
+  const builder=await fs.readFile('scripts/build-backend.mjs','utf8');
+  // The maintainer build validates the exact source recipe at the real clone boundary.
+  assert.match(packageSource,/export const backendRecipeSha256 = backendLock\.buildConfigSha256;/);
+  assert.ok(builder.indexOf('validateBackendSource(lock,') >= 0);
+  assert.ok(builder.indexOf('validateBackendSource(lock,') < builder.indexOf("path.join(source,'scripts/build-backend.mjs')"));
+  // The user-facing manager stays prebuilt-only: discover and install, never compile.
+  assert.match(manager,/discoverBackend\(this\.fetcher\)/);
+  assert.match(manager,/installBackend\(this\.managedRoot/);
+  assert.doesNotMatch(manager,/async rebuild\s*\(|buildConfigSha256|backendLock\.patches|'apply'/);
 });
 test('delegated builds reject a different source or build recipe before executing it',()=>{
   const cargo=Buffer.from('locked dependencies');

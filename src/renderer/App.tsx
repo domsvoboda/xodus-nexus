@@ -1,27 +1,28 @@
 import {useComponentUpdates} from './ComponentUpdates';
 import {ManagedRuntimeSettings} from './ManagedRuntimeSettings';
+import {DefaultRuntimeSettings} from './DefaultRuntimeSettings';
 import {StatusDot} from './StatusDot';
 import {useGameRuntimeReady} from './useGameRuntimeReady';
 import {useStoreAccess} from './store-access';
 import {GameRuntimeFields} from './GameRuntimeFields';
-import {type InstalledRuntimeFamily,type GameRuntimeSelection} from '../shared/runtime-selection';
+import {runtimeFamilyLabels,type InstalledRuntimeFamily,type GameRuntimeSelection} from '../shared/runtime-selection';
 import { CloudSaveWarning } from './CloudSaveWarning';
 import { CheckField } from './CheckField';
 import { useDialogFocus } from './use-dialog-focus';
 import { lazy, Suspense, useEffect, useLayoutEffect, useMemo, useRef, useState, type FormEvent } from 'react';
 import {
   ArrowDownToLine, Check, ChevronRight, CircleAlert, CircleUserRound,
-  Clock3, Cog, Download, FolderOpen, Gamepad2, Github, HardDrive, Home, Library,
+  Clock3, Cog, Download, FolderOpen, Gamepad2, HardDrive, Home, Library,
   LoaderCircle, LogIn, MoreHorizontal, PackageCheck, Pause, Play, Plus, RefreshCw, Rocket, Search, Settings2,
   Store, Terminal, Trash2, Copy, PanelLeft, X,
 } from 'lucide-react';
 import type { AccountLibraryPage, AppSnapshot, CatalogProduct, CatalogSearchResult, DiagnosticLog, Game, GameContentPlan, GameLaunchOptions, Page, Settings, XboxProfileRequest } from '../shared/types';
 import {OverlayShortcutRecorder} from './OverlayShortcutRecorder';
-import {reconcileSettingsDraft} from './settings-draft';
+import {reconcileSettingsDraft, storageSettingsPatch} from './settings-draft';
 import {xboxOverlaySettings} from '../shared/xbox-overlay-settings';
 import './xbox-desktop-social.css';
-import { estimateTimeRemaining } from '../shared/utils';
-import { nexusRuntimeUpdateAvailable, runtimeDisplay, activeRuntimeIsCachyos } from '../shared/runtime-display';
+import { estimateTimeRemaining, isNewerVersion } from '../shared/utils';
+import { nexusRuntimeUpdateAvailable } from '../shared/runtime-display';
 import { subscriptionBadge } from '../shared/subscription';
 import { defaultLaunchTools, normalizeLaunchTools } from '../shared/launch-tools';
 import { DEFAULT_SHADER_CACHE_GIB, shaderCacheLimits } from '../shared/shader-cache';
@@ -34,7 +35,10 @@ import { requestTextKeyboard } from './touch-keyboard';
 import { ConfirmationProvider, useConfirmation } from './Confirmation';
 import { GameRemovalContents } from './GameRemovalContents';
 import { GameDetails } from './GameDetails';
-import {CatalogGameDetails,catalogGameInstalled} from './CatalogGameDetails';
+import { CatalogGameDetails,catalogGameInstalled,publicStorePrice } from './CatalogGameDetails';
+import { appendStoreProducts, storePageState, storeRequested, type StoreListPage } from './store-pagination';
+import {HomeGamePassSection,useRecentGamePassShelf} from './HomeGamePass';
+import {recentlyInstalledGames} from './home-shelves';
 import { GameLanguage } from './GameLanguage';
 import { DownloadCancelDialog } from './DownloadCancelDialog';
 import { OfflinePermissionsCard } from './OfflinePermissions';
@@ -61,7 +65,6 @@ const emptySnapshot: AppSnapshot = {
     available: false, source: 'none', updateAvailable: false, checking: false, updating: false,
     externalRoot: '',
     capabilities: { commands: [], account: false, login: false, logout: false, download: false, streaming: false, run: false },
-    prerequisites: { git: false, cargo: false, rustc: false, protoc: false },
   },
   runtime: {
     installed: false, checking: false, updating: false,
@@ -127,21 +130,37 @@ function AccountAvatar({ auth, large = false, license = false }: { auth: AppSnap
   </div>;
 }
 
+/** The top bar only carries a real component-update (or restart) action. A
+ * permanent readied/offline badge and a second global Settings shortcut would
+ * duplicate the sidebar and the existing Settings, Home and launch surfaces.
+ * Discovery only reads authoritative snapshot fields here: a managed family is
+ * an update only when it is installed and its verified candidate differs, and
+ * an uninstalled optional family is never advertised or checked on render. */
 export function TopStatus({ data, go, openFriends }: { data: AppSnapshot; go: (page: Page) => void; openFriends?: () => void }) {
   const restart = data.launcherUpdate?.restartRequired;
+  // The default-runtime notice and the managed Standard family describe the
+  // same runtime family, so one entry survives the deduplication below.
+  const managed = (data.runtime.managedFamilies ?? []).filter(family =>
+    Boolean(family.installed) && Boolean(family.available) && family.updateAvailable === true);
+  const runtimeUpdates = new Map<string, string>();
+  if (nexusRuntimeUpdateAvailable(data.runtime) && !managed.some(family => family.id === 'nexus'))
+    runtimeUpdates.set('nexus', ui('home.runtime_update', { version: data.runtime.nexusVersion?.replace(/^runtime-/, '') ?? '' }).trim());
+  for (const family of managed) {
+    const candidate = family.available;
+    if (!candidate || runtimeUpdates.has(family.id)) continue;
+    const version = candidate.version.replace(/^runtime-/, '').replace(/^cachyos-/, '');
+    runtimeUpdates.set(family.id, ui('home.runtime_update', { version: `${runtimeFamilyLabels[family.id]} ${version}` }).trim());
+  }
+  const latest = data.launcherUpdate?.latestVersion;
   const updates = [
-    data.launcherUpdate?.latestVersion && !restart ? ui("ui.launcher_ba8971d", { version: data.launcherUpdate.latestVersion }) : '',
+    latest && !restart && isNewerVersion(latest, data.launcherUpdate?.currentVersion ?? '') ? ui("ui.launcher_ba8971d", { version: latest }) : '',
     data.backend.releaseAvailable && data.backend.updateAvailable ? ui("ui.backend_35f8dc4", { version: data.backend.releaseVersion ?? '' }).trim() : '',
-    nexusRuntimeUpdateAvailable(data.runtime) ? ui('home.runtime_update', { version: data.runtime.nexusVersion?.replace(/^runtime-/, '') ?? '' }).trim() : '',
+    ...runtimeUpdates.values(),
   ].filter(Boolean);
   const updateTitle = [restart ? ui('home.restart_update') : '', updates.length ? ui('home.available_updates', { updates: updates.join(', ') }) : ''].filter(Boolean).join(' ');
-  const offline = data.backend.available && data.connectivity?.state === 'offline';
+  if (!restart && !updates.length) return null;
   return <div className="top-status">
-    {updates.length || restart ? <button className="update-notice" title={updateTitle} aria-label={updateTitle} onClick={() => go('settings')}><ArrowDownToLine /><strong>{restart ? ui("ui.restart_available_cad1527") : ui("ui.update_available_ff8b555")}</strong></button> : null}
-    <StatusDot tone={!data.backend.available ? 'red' : offline ? 'amber' : 'green'} />
-    <span title={offline ? `${uiText(data.connectivity?.reason) ?? ui('offline.unreachable')} ${ui('offline.header_hint')}` : undefined}>
-      {!data.backend.available ? ui("ui.backend_offline_5904a63") : offline ? ui('offline.header') : ui("ui.xodus_ready_b131015")}
-    </span><button title={ui("ui.settings_74a883a")} onClick={() => go('settings')}><Settings2 /></button>
+    <button className="update-notice" title={updateTitle} aria-label={updateTitle} onClick={() => go('settings')}><ArrowDownToLine /><strong>{restart ? ui("ui.restart_available_cad1527") : ui("ui.update_available_ff8b555")}</strong></button>
   </div>;
 }
 
@@ -213,12 +232,12 @@ function useGameLaunchOptions(game: Game | undefined, data: AppSnapshot): GameLa
       .then((value) => { if (!cancelled) setOptions(value); })
       .catch((error) => { if (!cancelled) setOptions({ cloudSaves: false, cloudReason: errorMessage(error), vcInstall: false, vcReason: errorMessage(error) }); });
     return () => { cancelled = true; };
-  }, [game?.id, game?.runtime, game?.runtimeSeparatePrefix, game?.runtimeBuild?.buildId, game?.runtimeBuild?.manifestSha256, JSON.stringify(game?.runtimePrefixes), data.runtime.variants?.map(item=>item.id+':'+item.buildId).join(','), data.settings.winePath, data.settings.runtimeRoot, data.runtime.winePath, data.backend.binaryPath, data.backend.commit, data.backend.available]);
+  }, [game?.id, game?.runtime, game?.runtimeSeparatePrefix, game?.runtimePrefixIdentity, game?.runtimeBuild?.buildId, game?.runtimeBuild?.manifestSha256, JSON.stringify(game?.runtimePrefixes), data.runtime.variants?.map(item=>item.id+':'+item.buildId).join(','), data.settings.winePath, data.settings.runtimeRoot, data.runtime.winePath, data.backend.binaryPath, data.backend.commit, data.backend.available]);
   return options;
 }
 
-export function HomePage({ data, go, action, openGame, returnFocusKey }: {
-  data: AppSnapshot; go: (page: Page) => void; action: (fn: () => Promise<unknown>, success?: string) => void; openGame?: (id: string, returnKey: string) => void; returnFocusKey?: string;
+export function HomePage({ data, go, action, openGame, returnFocusKey, toast }: {
+  data: AppSnapshot; go: (page: Page) => void; action: (fn: () => Promise<unknown>, success?: string) => void; openGame?: (id: string, returnKey: string) => void; returnFocusKey?: string; toast?: (value: Toast) => void;
 }) {
   const featured = data.games[0];
   const featuredRuntimeReady=useGameRuntimeReady(featured,data);
@@ -227,11 +246,42 @@ export function HomePage({ data, go, action, openGame, returnFocusKey }: {
   const spotlightArt = featured?.heroUrl ?? featured?.coverUrl;
   const home = useRef<HTMLElement>(null);
   const initialFocusKey = useRef(returnFocusKey);
+  const recentInstalled = recentlyInstalledGames(data.games, data.downloads);
+  const gamePass = useRecentGamePassShelf();
+  const [gamePassProduct, setGamePassProduct] = useState<CatalogProduct>();
+  const [gamePassOpen, setGamePassOpen] = useState(false);
+  const gamePassAccess = useStoreAccess(data, gamePassOpen);
+  const homeScroll = useRef(0);
+  const gamePassWasOpen = useRef(false);
   useBrowserLayoutEffect(() => {
     if (document.activeElement?.closest('.sidebar')) return;
     const returnTarget = [...home.current?.querySelectorAll<HTMLElement>('[data-gamepad-key]') ?? []].find(element => element.dataset.gamepadKey === initialFocusKey.current);
     (returnTarget ?? home.current?.querySelector<HTMLElement>('[data-gamepad-home-primary]'))?.focus({ preventScroll: true });
   }, []);
+  useBrowserLayoutEffect(() => {
+    const scroll = home.current?.closest('.page-scroll');
+    if (gamePassOpen && gamePassProduct) {
+      if (scroll) scroll.scrollTop = 0;
+      focusDetailEntry(home.current);
+    } else if (gamePassWasOpen.current) {
+      if (scroll) scroll.scrollTop = homeScroll.current;
+      [...home.current?.querySelectorAll<HTMLElement>('[data-gamepad-key]') ?? []]
+        .find(element => element.dataset.gamepadKey === `home-gamepass:${gamePassProduct?.productId}`)?.focus({ preventScroll: true });
+    }
+    gamePassWasOpen.current = gamePassOpen && Boolean(gamePassProduct);
+  }, [gamePassOpen, gamePassProduct?.productId]);
+
+  function openGamePass(product: CatalogProduct) {
+    homeScroll.current = home.current?.closest('.page-scroll')?.scrollTop ?? 0;
+    setGamePassProduct(product);
+    setGamePassOpen(true);
+  }
+
+  if (gamePassOpen && gamePassProduct) return <main ref={home} className="page home-page library-detail-open">
+    <CatalogGameDetails key={`${gamePassProduct.productId}:${data.auth.username}:${data.auth.player}:${data.auth.stored}:${data.auth.running}:${data.backend.binaryPath}:${data.settings.market}`}
+      product={gamePassProduct} data={data} storeMode storeAccess={gamePassAccess}
+      back={() => setGamePassOpen(false)} backLabel={ui('game.back_to_home')} toast={toast ?? (() => {})}/>
+  </main>;
 
   return <main ref={home} className="page home-page">
     <div className={`home-highlights${data.games.length>1?' has-secondary':''}`}>
@@ -256,12 +306,15 @@ export function HomePage({ data, go, action, openGame, returnFocusKey }: {
     </button>)}</div>:null}
     </div>
 
-    <SectionTitle title={ui("ui.recently_added_96ec5d3")} action={ui("ui.see_all_d7a8c44")} onClick={() => go('library')} />
-    {data.games.length > 0 ? <div className="poster-row">
-      {data.games.slice(0, 6).map((game) => <button className="poster-card" key={game.id} data-gamepad-key={`home-poster:${game.id}`} onClick={() => openGame ? openGame(game.id, `home-poster:${game.id}`) : go('library')}>
+    <SectionTitle title={ui("ui.recently_installed_d12be06")} action={ui("ui.see_all_d7a8c44")} onClick={() => go('library')} />
+    {recentInstalled.length > 0 ? <div className="poster-row">
+      {recentInstalled.slice(0, 6).map((game) => <button className="poster-card" key={game.id} data-gamepad-key={`home-poster:${game.id}`} onClick={() => openGame ? openGame(game.id, `home-poster:${game.id}`) : go('library')}>
         <Cover game={game} /><GameTitle title={game.title} /><span>{game.publisher ?? (game.storeId ? ui("ui.microsoft_store_installation_99bfa99") : ui("ui.local_installation_e5d8322"))}</span>
       </button>)}
-    </div> : <div className="empty-strip"><Gamepad2 /><div><strong>{ui("ui.no_games_imported_0bbcb51")}</strong><span>{ui("ui.your_library_is_built_only_from_real_local_manif_1513d78")}</span></div><button className="secondary" onClick={() => go('library')}>{ui("ui.import_folder_b849e38")}</button></div>}
+    </div> : data.games.length === 0 ? <div className="empty-strip"><Gamepad2 /><div><strong>{ui("ui.no_games_imported_0bbcb51")}</strong><span>{ui("ui.your_library_is_built_only_from_real_local_manif_1513d78")}</span></div><button className="secondary" onClick={() => go('library')}>{ui("ui.import_folder_b849e38")}</button></div>
+      : <div className="empty-strip"><Gamepad2 /><div><strong>{ui("ui.no_completed_installations_yet_c0d583a")}</strong><span>{ui("ui.your_library_is_built_only_from_real_local_manif_1513d78")}</span></div><button className="secondary" onClick={() => go('library')}>{ui("ui.view_library_108eb25")}</button></div>}
+
+    <HomeGamePassSection {...gamePass} open={openGamePass}/>
 
     <div className="support-bar"><CircleAlert /><div><strong>{ui("ui.compatibility_status_65cfaa2")}</strong><span>{ui("ui.package_ownership_and_installation_do_not_guaran_af576d1")}</span></div></div>
   </main>;
@@ -276,12 +329,13 @@ export function StoreProductCard({ product, selected, disabled, label, select, i
   product: CatalogProduct; selected: boolean; disabled: boolean; label: string; licensed?: boolean;
   select: (product: CatalogProduct,openDetails?:boolean) => void; install: (product: CatalogProduct) => void;
 }) {
+  const price=publicStorePrice(product);
   return <article className={`catalog-card ${selected ? 'selected' : ''}`} data-gamepad-card>
     <button className="catalog-card-main" data-gamepad-auto-select="focus" data-gamepad-detail-target={product.productId}
       onFocus={() => select(product,false)} onClick={() => select(product,true)}>
       {product.posterUrl ? <img src={product.posterUrl} alt={ui("ui.cover_47bbe4b", { game: product.title })} /> : <div className="catalog-cover-placeholder"><Gamepad2 /></div>}
       <CatalogSupportBadge product={product} />
-      <div><GameTitle title={product.title} /><small>{product.publisher ?? product.productId}</small><span>{product.purchasePrice ?? ui("ui.price_unavailable_6a9e657")}{product.includedWith ? ` · ${product.includedWith}` : ''}</span></div>
+      <div><GameTitle title={product.title} /><small>{product.publisher ?? product.productId}</small><span title={price ? ui('store.us_price_context') : undefined}>{product.purchasePrice ?? ui("ui.price_unavailable_6a9e657")}{price ? ` · ${ui('store.us_price_short')}` : ''}{product.includedWith ? ` · ${product.includedWith}` : ''}</span></div>
     </button>
     {licensed ? <button className="catalog-card-install" data-gamepad-skip data-gamepad-card-action disabled={disabled} onClick={() => install(product)}>
       {label === 'Preparing…' ? <LoaderCircle className="spin" /> : label === 'Installed' ? <Check /> : <Download />}{label}
@@ -289,40 +343,103 @@ export function StoreProductCard({ product, selected, disabled, label, select, i
   </article>;
 }
 
+export function StorePagination({ page, loading, error, load }: { page?: StoreListPage; loading: boolean; error?: string; load: () => void }) {
+  if (!page && !error) return null;
+  if (page && !loading && !page.hasMore && !page.stalled && !error) return null;
+  return <div className="load-more store-pagination" data-gamepad-library-footer>
+    {error ? <div className="alert amber" role="alert"><CircleAlert /><span>{uiText(error)}</span><button className="secondary" data-gamepad-skip disabled={loading} onClick={load}>{loading ? <LoaderCircle className="spin" /> : <RefreshCw />}{ui("ui.try_again_d8b839")}</button></div> : null}
+    {page?.stalled && !error ? <p className="account-library-note" role="status">{ui('store.no_more_pages')}</p> : null}
+    {page?.hasMore ? <button className="secondary" aria-disabled={loading} aria-busy={loading} onClick={() => { if (!loading) load(); }}>{loading ? <LoaderCircle className="spin" /> : <Plus />}{ui("ui.load_more_results_e03f1e4")}</button> : null}
+    {loading && !page?.hasMore ? <span className="library-loading" role="status"><LoaderCircle className="spin" />{ui("ui.loading_live_store_collection_20763b0")}</span> : null}
+  </div>;
+}
+
 export function StorePage({ data, toast, go, initialQuery }: { data: AppSnapshot; toast: (value: Toast) => void; go: (page: Page) => void; initialQuery: string }) {
   const startPackageInstall = usePackageInstall();
   const access = useStoreAccess(data);
-  const [catalog, setCatalog] = useState<CatalogSearchResult>();
+  // The Store shows one paged list at a time: public search results, or the
+  // featured landing page continued by the same collection feed.
+  const [search, setSearch] = useState<(StoreListPage & { query: string })>();
+  const [searching, setSearching] = useState(false);
+  const [searchError, setSearchError] = useState<string>();
+  const [searchPageError, setSearchPageError] = useState<string>();
+  const [searchPageLoading, setSearchPageLoading] = useState(false);
+  // A page request belongs to the search generation that started it. A newer
+  // query owns its own in-flight marker and busy state, so a late answer from
+  // an older generation can neither block nor clear the visible one.
+  const searchGeneration = useRef(0), searchPageInFlight = useRef<number>();
+  const [browseAvailable] = useState(() => typeof window !== 'undefined' && typeof window.launcher?.browseCatalog === 'function');
+  const [browse, setBrowse] = useState<StoreListPage>(() => ({ products: [], hasMore: false, stalled: false, requested: [] }));
+  const [browseLoading, setBrowseLoading] = useState(false);
+  const [browseError, setBrowseError] = useState<string>();
+  const browseInFlight = useRef(false);
   const [featured, setFeatured] = useState<CatalogSearchResult>();
   const [featuredLoading, setFeaturedLoading] = useState(true);
   const [featuredError, setFeaturedError] = useState<string>();
+  const [featuredRevision, setFeaturedRevision] = useState(0);
   const [selected, setSelected] = useState<CatalogProduct>();
   const [detailOpen,setDetailOpen]=useState(false);
-  const pageRef=useRef<HTMLElement>(null),savedScroll=useRef(0),wasOpen=useRef(false);
+  const pageRef=useRef<HTMLElement>(null),savedScroll=useRef(0),wasOpen=useRef(false),sentinel=useRef<HTMLDivElement>(null);
   useBrowserLayoutEffect(()=>{
     const scroll=pageRef.current?.closest('.page-scroll');
     if(detailOpen&&selected){if(scroll)scroll.scrollTop=0;focusDetailEntry(pageRef.current);}
     else if(wasOpen.current){if(scroll)scroll.scrollTop=savedScroll.current;[...pageRef.current?.querySelectorAll<HTMLElement>('[data-gamepad-detail-target]')??[]].find(card=>card.getAttribute('data-gamepad-detail-target')===selected?.productId)?.focus({preventScroll:true});}
     wasOpen.current=detailOpen&&Boolean(selected);
   },[detailOpen,selected?.productId]);
-  const [loadingMore, setLoadingMore] = useState(false);
   const [busy, setBusy] = useState<string>();
+
+  /** Drops every page-scoped search value instead of leaving it to a stale
+   * request, so a later feed never inherits the previous query's state. */
+  function resetSearchState() {
+    searchGeneration.current += 1;
+    searchPageInFlight.current = undefined;
+    setSearch(undefined); setSearchError(undefined); setSearching(false);
+    setSearchPageError(undefined); setSearchPageLoading(false);
+  }
+  // First page of a public search. A newer query always invalidates the older
+  // request so a slow answer can never replace the visible results.
+  async function runSearch(query: string) {
+    const generation = ++searchGeneration.current;
+    searchPageInFlight.current = undefined;
+    setSearch(undefined); setSearching(true); setSearchError(undefined);
+    setSearchPageError(undefined); setSearchPageLoading(false);
+    try {
+      const next = await window.launcher.searchCatalog(query);
+      if (generation !== searchGeneration.current) return;
+      setSearch({ ...storePageState([], next, []), query: next.query });
+      setSelected(undefined);
+    } catch (error) {
+      if (generation === searchGeneration.current) setSearchError(errorMessage(error));
+    } finally {
+      if (generation === searchGeneration.current) setSearching(false);
+    }
+  }
   useEffect(() => {
-    if (initialQuery.trim().length < 2) return;
-    let cancelled = false;
-    window.launcher.searchCatalog(initialQuery).then((result) => {
-      if (!cancelled) { setCatalog(result); setSelected(undefined); }
-    }).catch((error) => { if (!cancelled) toast({ kind: 'error', message: errorMessage(error) }); });
-    return () => { cancelled = true; };
+    const query = initialQuery.trim();
+    if (query.length < 2) { resetSearchState(); return; }
+    void runSearch(query);
+    return () => { searchGeneration.current += 1; };
   }, [initialQuery]);
   useEffect(() => {
     let cancelled = false;
     window.launcher.getFeaturedCatalog()
-      .then((result) => { if (!cancelled) setFeatured(result); })
-      .catch((error) => { if (!cancelled) setFeaturedError(errorMessage(error)); })
+      .then((result) => {
+        if (cancelled) return;
+        setFeatured(result); setFeaturedError(undefined);
+        // The landing continuation is the exact next page of the read that
+        // really happened, never an assumed page number.
+        setBrowse(current => current.products.length ? current : { products: [], cursor: result.cursor, hasMore: Boolean(result.hasMore && result.cursor && browseAvailable), stalled: false, requested: [] });
+      })
+      .catch((error) => {
+        if (cancelled) return;
+        setFeaturedError(errorMessage(error));
+        // A failed landing is not a dead end: the first paid page is an honest
+        // recovery path with the same public policy.
+        setBrowse(current => current.products.length ? current : { products: [], cursor: undefined, hasMore: browseAvailable, stalled: false, requested: [] });
+      })
       .finally(() => { if (!cancelled) setFeaturedLoading(false); });
     return () => { cancelled = true; };
-  }, []);
+  }, [featuredRevision]);
 
   function installDestination(product: CatalogProduct): string {
     const folder = product.title.normalize('NFKD').replace(/[^\p{L}\p{N}]+/gu, '-').replace(/^-+|-+$/g, '').slice(0, 80) || product.productId;
@@ -334,15 +451,77 @@ export function StorePage({ data, toast, go, initialQuery }: { data: AppSnapshot
     if(openDetails){savedScroll.current=pageRef.current?.closest('.page-scroll')?.scrollTop??0;setDetailOpen(true);}
   }
 
-  async function loadMore() {
-    if (!catalog?.cursor) return;
-    setLoadingMore(true);
+  async function loadMoreSearch() {
+    const cursor = search?.cursor;
+    const generation = searchGeneration.current;
+    if (!search || !cursor || !search.hasMore) return;
+    if (searchPageInFlight.current === generation) return;
+    searchPageInFlight.current = generation; setSearchPageError(undefined); setSearchPageLoading(true);
     try {
-      const next = await window.launcher.searchCatalog(catalog.query, catalog.cursor);
-      setCatalog({ ...next, products: [...catalog.products, ...next.products] });
-    } catch (error) { toast({ kind: 'error', message: errorMessage(error) }); }
-    finally { setLoadingMore(false); }
+      const next = await window.launcher.searchCatalog(search.query, cursor);
+      if (generation !== searchGeneration.current) return;
+      setSearch(current => {
+        if (!current || current.query !== search.query) return current;
+        return { ...storePageState(current.products, next, storeRequested(current, cursor)), query: current.query };
+      });
+    } catch (error) {
+      if (generation === searchGeneration.current) setSearchPageError(errorMessage(error));
+    } finally {
+      // Only the generation that owns the marker may release it or clear the
+      // busy state, so a late finish never clobbers a newer page request.
+      if (searchPageInFlight.current === generation) searchPageInFlight.current = undefined;
+      if (generation === searchGeneration.current) setSearchPageLoading(false);
+    }
   }
+
+  async function loadMoreBrowse() {
+    if (!browse.hasMore || browseInFlight.current) return;
+    const cursor = browse.cursor;
+    browseInFlight.current = true; setBrowseLoading(true); setBrowseError(undefined);
+    try {
+      const next = await window.launcher.browseCatalog(cursor);
+      setBrowse(current => storePageState(current.products, next, storeRequested(current, cursor)));
+    } catch (error) {
+      setBrowseError(errorMessage(error));
+    } finally {
+      browseInFlight.current = false; setBrowseLoading(false);
+    }
+  }
+
+  function retryFeatured() { setFeaturedRevision(value => value + 1); }
+
+  // The landing grid and the paged collection are one list; the featured cards
+  // stay first and every later page appends after them.
+  const landingProducts = appendStoreProducts(featured?.products.slice(3) ?? [], browse.products);
+  const featuredRail = featured?.products.slice(0, 3) ?? [];
+  // Scrolling near the end of the real scroll container continues the list. A
+  // failure is never retried automatically; the visible control retries.
+  // Only the feed that is actually displayed gates auto-load: an old search
+  // error or a browse failure must never block the other feed.
+  const autoLoad = useRef<() => void>(() => {});
+  autoLoad.current = () => {
+    if (search) {
+      if (searchPageError || searchPageLoading || !search.hasMore) return;
+      void loadMoreSearch();
+      return;
+    }
+    if (browseError || browseLoading || !browse.hasMore) return;
+    void loadMoreBrowse();
+  };
+  const autoKey = search
+    ? `search:${search.cursor ?? ''}:${search.hasMore}:${searchPageError ?? ''}:${searchPageLoading}`
+    : `browse:${browse.cursor ?? ''}:${browse.hasMore}:${browseError ?? ''}:${browseLoading}`;
+  // The sentinel only exists once a list is on screen, so its arrival must
+  // re-create the observer even when the cursor did not change.
+  const listOnScreen = Boolean(search) || Boolean(featured?.products.length) || Boolean(featuredError);
+  useEffect(() => {
+    const node = sentinel.current, root = pageRef.current?.closest('.page-scroll');
+    if (!node || !root || typeof IntersectionObserver !== 'function') return;
+    if (!(search ?? browse).hasMore) return;
+    const observer = new IntersectionObserver((entries) => { if (entries.some(entry => entry.isIntersecting)) autoLoad.current(); }, { root, rootMargin: '400px 0px' });
+    observer.observe(node);
+    return () => { observer.disconnect(); };
+  }, [autoKey, listOnScreen, detailOpen]);
 
   async function install(product: CatalogProduct, target = installDestination(product)) {
     if (!access.canInstall(product)) return;
@@ -369,11 +548,30 @@ export function StorePage({ data, toast, go, initialQuery }: { data: AppSnapshot
       select={selectProduct} install={install} />;
   })}</div>;
   if(detailOpen&&selected)return <main ref={pageRef} className="page store-page library-detail-open"><CatalogGameDetails key={`${selected.productId}:${data.auth.username}:${data.auth.player}:${data.auth.stored}:${data.auth.running}:${data.backend.binaryPath}:${data.settings.market}`} product={selected} data={data} storeMode storeAccess={access} back={()=>setDetailOpen(false)} backLabel={ui('game.back_to_store')} toast={toast}/></main>;
+  // Only the product grid renders a price. The first three featured tiles are
+  // artwork-only, and all catalog results render in the price-bearing grid.
   return <main ref={pageRef} className="page store-page">
     <header className="page-header"><div><h1>{ui("ui.store_ee7da93")}</h1></div><span className="catalog-source"><StatusDot />Microsoft Store</span></header>
-    {!catalog ? <section className="featured-catalog"><SectionTitle title={ui("ui.featured_c533caf")} />{featuredLoading ? <div className="catalog-loading"><LoaderCircle className="spin" /><span>{ui("ui.loading_live_store_collection_20763b0")}</span></div> : featured?.products.length ? <><div className="featured-rail">{featured.products.slice(0, 3).map((product) => <button className="featured-tile" key={product.productId} data-gamepad-detail-target={product.productId} onClick={() => selectProduct(product)}>{product.heroUrl || product.posterUrl ? <img src={product.heroUrl ?? product.posterUrl} alt="" /> : <div className="featured-tile-placeholder"><Gamepad2 /></div>}<span className="featured-tile-copy"><GameTitle title={product.title} /><small>{product.publisher ?? 'Microsoft Store'} · {product.installability === 'supported' ? ui('store.verified_pc') : ui("ui.check_package_support_79592da")}</small></span></button>)}</div><SectionTitle title={ui("ui.top_paid_games_8040f77")} />{productGrid(featured.products.slice(3))}</> : <div className="catalog-empty"><Store /><h2>{ui("ui.featured_games_are_temporarily_unavailable_3901a69")}</h2><p>{featuredError ?? ui("ui.search_still_works_with_live_microsoft_store_dat_b3eeb72")}</p></div>}</section> : null}
+    {!search && !searching && !searchError ? <section className="featured-catalog"><SectionTitle title={ui("ui.featured_c533caf")} />
+      {featuredLoading ? <div className="catalog-loading"><LoaderCircle className="spin" /><span>{ui("ui.loading_live_store_collection_20763b0")}</span></div> : <>
+        {featuredError && landingProducts.length ? <div className="empty-strip"><CircleAlert /><div><strong>{ui("ui.featured_games_are_temporarily_unavailable_3901a69")}</strong><span>{uiText(featuredError)}</span></div><button className="secondary" onClick={retryFeatured}><RefreshCw />{ui("ui.try_again_d8b839")}</button></div> : null}
+        {featuredRail.length ? <div className="featured-rail">{featuredRail.map((product) => <button className="featured-tile" key={product.productId} data-gamepad-detail-target={product.productId} onClick={() => selectProduct(product)}>{product.heroUrl || product.posterUrl ? <img src={product.heroUrl ?? product.posterUrl} alt="" /> : <div className="featured-tile-placeholder"><Gamepad2 /></div>}<span className="featured-tile-copy"><GameTitle title={product.title} /><small>{product.publisher ?? 'Microsoft Store'} · {product.installability === 'supported' ? ui('store.verified_pc') : ui("ui.check_package_support_79592da")}</small></span></button>)}</div> : null}
+        {landingProducts.length ? <><SectionTitle title={ui("ui.top_paid_games_8040f77")} />{productGrid(landingProducts)}</> : null}
+        {featuredError && !landingProducts.length ? <div className="catalog-empty"><Store /><h2>{ui("ui.featured_games_are_temporarily_unavailable_3901a69")}</h2><p>{uiText(featuredError)}</p><button className="secondary" onClick={retryFeatured}><RefreshCw />{ui("ui.try_again_d8b839")}</button></div> : null}
+        {!featuredError && !landingProducts.length ? <div className="catalog-empty"><Store /><h2>{ui("ui.featured_games_are_temporarily_unavailable_3901a69")}</h2><p>{ui("ui.search_still_works_with_live_microsoft_store_dat_b3eeb72")}</p></div> : null}
+      </>}
+    </section> : null}
 
-    {catalog ? <><SectionTitle title={ui("ui.results_for_343a212", { query: catalog.query })} />{productGrid(catalog.products)}{catalog.products.length === 0 ? <div className="empty-state compact"><div><Search /></div><h2>{ui("ui.no_games_found_6da4c04")}</h2><p>{ui("ui.try_a_different_title_or_a_microsoft_store_produ_326af8c")}</p></div> : null}{catalog.hasMore ? <div className="load-more" data-gamepad-library-footer><button className="secondary" aria-disabled={loadingMore} aria-busy={loadingMore} onClick={() => { if (!loadingMore) void loadMore(); }}>{loadingMore ? <LoaderCircle className="spin" /> : <Plus />}{ui("ui.load_more_results_e03f1e4")}</button></div> : null}</> : null}
+    {search || searching || searchError ? <><SectionTitle title={search ? ui("ui.results_for_343a212", { query: search.query }) : ui("ui.results_for_343a212", { query: initialQuery.trim() })} />
+      {searchError ? <div className="alert amber" role="alert"><CircleAlert /><span>{uiText(searchError)}</span><button className="secondary" disabled={searching} onClick={() => void runSearch(initialQuery.trim())}><RefreshCw />{ui("ui.try_again_d8b839")}</button></div> : null}
+      {searching && !search ? <div className="catalog-loading"><LoaderCircle className="spin" /><span>{ui("ui.loading_live_store_collection_20763b0")}</span></div> : null}
+      {search ? productGrid(search.products) : null}
+      {search && search.products.length === 0 && !search.hasMore ? <div className="empty-state compact"><div><Search /></div><h2>{ui("ui.no_games_found_6da4c04")}</h2><p>{ui("ui.try_a_different_title_or_a_microsoft_store_produ_326af8c")}</p></div> : null}
+      {search ? <div ref={sentinel} /> : null}
+      <StorePagination page={search} loading={searchPageLoading} error={searchPageError} load={() => void loadMoreSearch()} />
+    </> : null}
+
+    {!search && !searching && !searchError && !featuredLoading ? <><div ref={sentinel} /><StorePagination page={browse} loading={browseLoading} error={browseError} load={() => void loadMoreBrowse()} /></> : null}
 
   </main>;
 }
@@ -638,7 +836,6 @@ export function LibraryPage({ data, toast, filters, onFiltersChange, selection, 
   const [editTitle, setEditTitle] = useState('');
   const [editLocale, setEditLocale] = useState('');
   const [editRuntime,setEditRuntime]=useState<GameRuntimeSelection>('default');
-  const [editSeparatePrefix,setEditSeparatePrefix]=useState(false);
   const [runtimeChoices,setRuntimeChoices]=useState<InstalledRuntimeFamily[]>(data.runtime.variants??[]);
   const runtimeChoicesKey=JSON.stringify(data.runtime.variants??[]);
   useEffect(()=>setRuntimeChoices(data.runtime.variants??[]),[runtimeChoicesKey]);
@@ -720,7 +917,6 @@ export function LibraryPage({ data, toast, filters, onFiltersChange, selection, 
     setEditTitle(game.title);
     setEditLocale(game.locale ?? '');
     setEditRuntime(game.runtime ?? 'default');
-    setEditSeparatePrefix(game.runtimeSeparatePrefix===true);
     setEditTools({ ...defaultLaunchTools, ...game.launchTools });
     setLocaleOptions([]);
     const request = ++localeRequest.current;
@@ -736,7 +932,7 @@ export function LibraryPage({ data, toast, filters, onFiltersChange, selection, 
     if (!dialogGame) return;
     setDialogBusy(true);
     try {
-      await window.launcher.updateGame(dialogGame.id, { title: editTitle.trim(), locale: editLocale, launchTools: normalizeLaunchTools(editTools), runtime:editRuntime, runtimeSeparatePrefix:editSeparatePrefix });
+      await window.launcher.updateGame(dialogGame.id, { title: editTitle.trim(), locale: editLocale, launchTools: normalizeLaunchTools(editTools), runtime:editRuntime });
       toast({ kind: 'success', message: ui("ui.game_settings_saved_7f466a5") });
       setDialogGame(undefined);
     } catch (error) { toast({ kind: 'error', message: errorMessage(error) }); }
@@ -847,7 +1043,7 @@ export function LibraryPage({ data, toast, filters, onFiltersChange, selection, 
         <h2>{ui("ui.game_settings_fece860")}</h2>
         <label>{ui("ui.display_name_2b7f6a8")}<input data-gamepad-initial required value={editTitle} onChange={(event) => setEditTitle(event.target.value)} /></label>
         <GameLanguage value={editLocale} locales={localeOptions} onChange={setEditLocale} />
-        <GameRuntimeFields value={editRuntime} separate={editSeparatePrefix} installed={runtimeChoices} change={value=>{setEditRuntime(value);setEditSeparatePrefix(value===(modalGame.runtime??'default')?modalGame.runtimeSeparatePrefix===true:Boolean(value!=='default'&&modalGame.runtimePrefixes?.[value]));}} changeSeparate={setEditSeparatePrefix}/>
+        <GameRuntimeFields value={editRuntime} installed={runtimeChoices} change={setEditRuntime}/>
         <GameLaunchToolFields value={editTools} change={setEditTools} />
         <div className="dialog-actions"><button type="button" className="secondary" disabled={dialogBusy} data-gamepad-cancel onClick={() => setDialogGame(undefined)}>{ui("ui.cancel_19766ed")}</button><button className="primary" disabled={dialogBusy || !editTitle.trim()}><Check />{ui("ui.save_1509f56")}</button></div>
       </form>}
@@ -927,10 +1123,6 @@ export function DownloadsPage({ data, toast }: { data: AppSnapshot; toast: (valu
   </main>;
 }
 
-function ToggleStatus({ ok, label }: { ok: boolean; label: string }) {
-  return <span className={`dependency ${ok ? 'ok' : ''}`}>{ok ? <Check /> : <X />}{label}</span>;
-}
-
 export function SettingsPage({ data, toast }: { data: AppSnapshot; toast: (value: Toast) => void }) {
   const confirm = useConfirmation();
   const [form, setForm] = useState<Settings>(data.settings);
@@ -951,7 +1143,6 @@ export function SettingsPage({ data, toast }: { data: AppSnapshot; toast: (value
     setAccountManagement(enabled);
     setForm(current => ({ ...current, multiAccountEnabled: enabled }));
   }
-  const [logs, setLogs] = useState<string[]>([]);
   const [runtimeLogs, setRuntimeLogs] = useState<string[]>([]);
   useEffect(() => {
     const previous = previousSettings.current;
@@ -959,7 +1150,6 @@ export function SettingsPage({ data, toast }: { data: AppSnapshot; toast: (value
     setForm(current => reconcileSettingsDraft(current, previous, data.settings));
   }, [data.settings]);
   useEffect(() => window.launcher.onOperationLog(({ scope, line }) => {
-    if (scope === 'backend') setLogs((items) => [...items.slice(-199), line]);
     if (scope === 'runtime') setRuntimeLogs((items) => [...items.slice(-199), line]);
   }), []);
 
@@ -970,18 +1160,16 @@ export function SettingsPage({ data, toast }: { data: AppSnapshot; toast: (value
     finally { setBusy(undefined); }
   }
 
-  async function pick(kind: 'install' | 'backend' | 'runtime' | 'wine') {
+  async function pick(kind: 'install' | 'runtime' | 'wine') {
     const selected = kind === 'wine'
       ? await window.launcher.chooseFile(form.winePath)
-      : await window.launcher.chooseDirectory(kind === 'install' ? form.installRoot : kind === 'backend' ? form.externalXodusRoot : form.runtimeRoot);
-    if (selected) setForm((current) => ({ ...current, [kind === 'install' ? "installRoot" : kind === 'backend' ? "externalXodusRoot" : kind === 'runtime' ? "runtimeRoot" : "winePath"]: selected }));
+      : await window.launcher.chooseDirectory(kind === 'install' ? form.installRoot : form.runtimeRoot);
+    if (selected) setForm((current) => ({ ...current, [kind === 'install' ? "installRoot" : kind === 'runtime' ? "runtimeRoot" : "winePath"]: selected }));
   }
 
   const caps = data.backend.capabilities;
   let cacheLimitValid = true;
   try { shaderCacheLimits(form.shaderCacheLimitGiB ?? DEFAULT_SHADER_CACHE_GIB); } catch { cacheLimitValid = false; }
-  const runtimeInfo = runtimeDisplay(data.runtime);
-  const activeCachyos = activeRuntimeIsCachyos(data.runtime);
   const overlay=xboxOverlaySettings(form);
   const savedOverlay=xboxOverlaySettings(data.settings);
   const overlayDirty=overlay.overlayEnabled!==savedOverlay.overlayEnabled||overlay.overlaySide!==savedOverlay.overlaySide||(form.overlayShortcut??savedOverlay.overlayShortcut)!==savedOverlay.overlayShortcut;
@@ -1069,18 +1257,9 @@ export function SettingsPage({ data, toast }: { data: AppSnapshot; toast: (value
       <div className="button-row end"><button className="secondary" disabled={Boolean(busy) || data.backend.checking || data.backend.updating} onClick={() => invoke('backend-check', () => window.launcher.checkBackendUpdate())}>{busy === 'backend-check' || data.backend.checking ? <LoaderCircle className="spin" /> : <RefreshCw />}{ui("ui.check_for_updates_f26f327")}</button>{data.backend.releaseAvailable && data.backend.updateAvailable ? <button className="primary" disabled={Boolean(busy) || data.backend.updating || data.backend.checking} onClick={() => invoke('backend-update', () => window.launcher.updateBackend(), ui("ui.the_nexus_backend_was_verified_installed_and_act_62d374e"))}>{busy === 'backend-update' || data.backend.updating ? <LoaderCircle className="spin" /> : <ArrowDownToLine />}{data.backend.available ? ui("ui.update_backend_bddcd8b") : ui("ui.install_backend_73e7239")}</button> : null}</div>
     </section>
 
-    <section className="settings-card">
-      <div className="settings-heading"><div className="settings-icon"><Gamepad2 /></div><div><h2>{ui("runtime.default_title")}</h2><p>{data.runtime.installed ? ui("ui.active_ae2c40a", { runtime: runtimeInfo.title, version: runtimeInfo.version }) : ui("ui.no_runtime_selected_b8e7445")}</p></div><span className={`status-label ${data.runtime.installed && runtimeInfo.source === 'Nexus runtime' ? 'ready' : 'unknown'}`}><StatusDot tone={data.runtime.installed && runtimeInfo.source === 'Nexus runtime' ? 'green' : 'amber'} />{!data.runtime.installed ? ui("ui.missing_8af1d32") : runtimeInfo.source === 'Nexus runtime' ? ui("ui.ready_c2e3ac4") : ui("ui.other_runtime_ce6adfb")}</span></div>
-      {data.runtime.nexusError ? <div className="alert amber"><CircleAlert /><span>{data.runtime.nexusError}</span></div> : null}
-      {data.runtime.error ? <div className="alert amber"><CircleAlert /><span>{uiText(data.runtime.error)}</span></div> : null}{data.runtime.phase ? <div className="runtime-phase"><LoaderCircle className={data.runtime.updating ? 'spin' : ''} /><span>{uiText(data.runtime.phase)}</span></div> : null}
-      {activeCachyos ? null : <div className="button-row end">
-        <button className="secondary" disabled={Boolean(busy) || data.runtime.nexusChecking} onClick={() => invoke('runtime-check', () => window.launcher.checkNexusRuntime())}>{busy === 'runtime-check' || data.runtime.nexusChecking ? <LoaderCircle className="spin" /> : <RefreshCw />}{ui("ui.check_for_updates_f26f327")}</button>
-        {nexusRuntimeUpdateAvailable(data.runtime) ? <button className="primary" disabled={Boolean(busy) || data.runtime.updating} onClick={() => invoke('runtime-install-nexus', () => window.launcher.installNexusRuntime(), ui("ui.nexus_runtime_was_verified_installed_and_selecte_51b0ff1"))}>{busy === 'runtime-install-nexus' || data.runtime.updating ? <LoaderCircle className="spin" /> : <ArrowDownToLine />}{ui("ui.install_nexus_runtime_2cf3608")}{data.runtime.nexusVersion ? ` ${data.runtime.nexusVersion.replace(/^runtime-/, '')}` : ''}</button> : null}
-      </div>}
-      {data.runtime.updating || runtimeLogs.length > 0 ? <pre className="build-log">{runtimeLogs.join('\n') || ui("ui.waiting_for_output_f05fefe")}</pre> : null}
-    </section>
+    <DefaultRuntimeSettings data={data} busy={busy} disabled={componentUpdatesDisabled} runtimeLogs={runtimeLogs} invoke={invoke}/>
 
-    <ManagedRuntimeSettings data={data} disabled={Boolean(busy)||data.componentUpdates?.running===true||data.auth.running||data.backend.updating||data.runtime.updating||Boolean(data.launcherUpdate?.updating)||Boolean(data.gameOperation&&['preparing','running','stopping'].includes(data.gameOperation.status))||data.downloads.some(task=>['queued','running','paused'].includes(task.status))} onBusyChange={value=>setBusy(value?'managed-runtime':undefined)}/>
+    <ManagedRuntimeSettings data={data} disabled={componentUpdatesDisabled} onBusyChange={value=>setBusy(value?'managed-runtime':undefined)}/>
 
     <div className="settings-storage">
       <section className="settings-card compact">
@@ -1093,7 +1272,7 @@ export function SettingsPage({ data, toast }: { data: AppSnapshot; toast: (value
         <div className="form-grid"><label>{ui("ui.download_speed_limit_mib_s_1b1cf51")}<input type="number" min="0" max="1024" step="0.1" value={form.downloadLimitMiB ?? 0} onChange={event => setForm({...form, downloadLimitMiB:Number(event.target.value)})} /></label></div>
         <div className="save-row"><span>{ui("ui.0_unlimited_applies_to_active_and_future_game_do_2374ba9")}</span><button className="primary" disabled={Boolean(busy) || Boolean((form.downloadLimitMiB ?? 0) > 0 && !data.backend.capabilities.streamingBandwidthLimit)} onClick={() => invoke('save-bandwidth', () => window.launcher.updateSettings({downloadLimitMiB:form.downloadLimitMiB ?? 0}), ui("ui.download_speed_limit_saved_8fd9160"))}>{busy === 'save-bandwidth' ? <LoaderCircle className="spin" /> : <Check />}{ui("ui.save_download_limit_8abf702")}</button></div>
       </section>
-      <section className="settings-card compact"><div className="settings-heading"><div className="settings-icon"><HardDrive /></div><div><h2>{ui("ui.storage_and_launch_paths_d3c8c4d")}</h2></div></div><div className="form-grid"><label>{ui("ui.default_game_location_5e830cb")}<div className="input-action"><input value={form.installRoot} onChange={(event) => setForm({ ...form, installRoot: event.target.value })} /><button type="button" aria-label={ui('ui.browse_3227aa9')} onClick={() => pick('install')}><FolderOpen /></button></div></label><label>{ui("ui.market_5238d9b")}<input value={form.market} onChange={(event) => setForm({ ...form, market: event.target.value })} /></label><label>{ui("ui.parallel_streams_e81513c")}<input type="number" min="1" max="16" value={form.parallelDownloads} onChange={(event) => setForm({ ...form, parallelDownloads: Number(event.target.value) })} /></label><label>{ui("ui.external_xodus_source_ef00493")}<div className="input-action"><input value={form.externalXodusRoot} onChange={(event) => setForm({ ...form, externalXodusRoot: event.target.value })} /><button type="button" aria-label={ui('ui.browse_3227aa9')} onClick={() => pick('backend')}><FolderOpen /></button></div></label><label>{ui("ui.versioned_runtime_directory_3764480")}<div className="input-action"><input value={form.runtimeRoot} onChange={(event) => setForm({ ...form, runtimeRoot: event.target.value })} /><button type="button" aria-label={ui('ui.browse_3227aa9')} onClick={() => pick('runtime')}><FolderOpen /></button></div></label><label>{ui("ui.wine_proton_binary_2b08a4a")}<div className="input-action"><input value={form.winePath} onChange={(event) => setForm({ ...form, winePath: event.target.value })} placeholder={ui("ui.selected_automatically_by_the_runtime_manager_0722211")} /><button type="button" aria-label={ui('ui.browse_3227aa9')} onClick={() => pick('wine')}><FolderOpen /></button></div></label></div><div className="save-row"><button className="primary" disabled={busy === 'save'} onClick={() => invoke('save', () => window.launcher.updateSettings(form), ui("ui.settings_saved_ae493e2"))}>{busy === 'save' ? <LoaderCircle className="spin" /> : <Check />}{ui("ui.save_1509f56")}</button></div></section>
+      <section className="settings-card compact"><div className="settings-heading"><div className="settings-icon"><HardDrive /></div><div><h2>{ui("ui.storage_and_launch_paths_d3c8c4d")}</h2></div></div><div className="form-grid"><label>{ui("ui.default_game_location_5e830cb")}<div className="input-action"><input value={form.installRoot} onChange={(event) => setForm({ ...form, installRoot: event.target.value })} /><button type="button" aria-label={ui('ui.browse_3227aa9')} onClick={() => pick('install')}><FolderOpen /></button></div></label><label>{ui("ui.market_5238d9b")}<input value={form.market} onChange={(event) => setForm({ ...form, market: event.target.value })} /></label><label>{ui("ui.parallel_streams_e81513c")}<input type="number" min="1" max="16" value={form.parallelDownloads} onChange={(event) => setForm({ ...form, parallelDownloads: Number(event.target.value) })} /></label><label>{ui("ui.versioned_runtime_directory_3764480")}<div className="input-action"><input value={form.runtimeRoot} onChange={(event) => setForm({ ...form, runtimeRoot: event.target.value })} /><button type="button" aria-label={ui('ui.browse_3227aa9')} onClick={() => pick('runtime')}><FolderOpen /></button></div></label><label>{ui("ui.wine_proton_binary_2b08a4a")}<div className="input-action"><input value={form.winePath} onChange={(event) => setForm({ ...form, winePath: event.target.value })} placeholder={ui("ui.selected_automatically_by_the_runtime_manager_0722211")} /><button type="button" aria-label={ui('ui.browse_3227aa9')} onClick={() => pick('wine')}><FolderOpen /></button></div></label></div><div className="save-row"><button className="primary" disabled={busy === 'save'} onClick={() => invoke('save', () => window.launcher.updateSettings(storageSettingsPatch(form)), ui("ui.settings_saved_ae493e2"))}>{busy === 'save' ? <LoaderCircle className="spin" /> : <Check />}{ui("ui.save_1509f56")}</button></div></section>
     </div>
     <details className="settings-card settings-guide" aria-label={ui('settings.guide_title')}>
       <summary><PanelLeft aria-hidden="true"/><span className="guide-summary-text"><strong>{ui('settings.guide_title')}</strong><small>{ui('settings.guide_summary')}</small></span><span className={`guide-state${savedOverlay.overlayEnabled?' on':''}`}>{savedOverlay.overlayEnabled?ui('settings.guide_on'):ui('settings.guide_off')}</span><ChevronRight aria-hidden="true"/></summary>
@@ -1112,9 +1291,6 @@ export function SettingsPage({ data, toast }: { data: AppSnapshot; toast: (value
       <div className="diagnostics-content">
         <DiagnosticReportButton games={data.games} />
         <section><h3>{ui("ui.game_logging_6cb644e")}</h3><div className="toggle-row"><CheckField className="toggle" label={ui("ui.verbose_game_logs_58e750b")} description={ui("ui.writes_full_wine_vkd3d_proton_and_xodus_diagnost_dfa1fa3")} checked={form.verboseLogs} onChange={(event) => setForm({ ...form, verboseLogs: event.target.checked })} /></div><div className="button-row"><button className="secondary" disabled={Boolean(busy)} onClick={() => invoke('save-diagnostics', () => window.launcher.updateSettings({ verboseLogs: form.verboseLogs }), ui("ui.logging_settings_saved_5a9dd67"))}>{ui("ui.save_diagnostics_52fe7bd")}</button></div></section>
-        <section><h3>{ui("ui.backend_details_522061f")}</h3><p className="diagnostic-path mono">{data.backend.binaryPath ?? ui("ui.no_backend_selected_e322189")}</p><div className="meta-grid"><div><span>{ui("ui.source_56ccd01")}</span><strong>{data.backend.source === 'external' ? ui("ui.external_installation_read_only_9cedb28") : data.backend.delivery === 'release' ? ui("ui.nexus_github_release_44f7ae9") : data.backend.source === 'managed' ? ui("ui.local_versioned_build_284259d") : '—'}</strong></div><div><span>{ui("ui.commit_79663c1")}</span><strong className="mono">{data.backend.commit?.slice(0, 12) ?? '—'}</strong></div></div><div className="button-row"><button className="secondary" disabled={Boolean(busy) || data.backend.updating || data.backend.checking} onClick={() => invoke('backend-rebuild', () => window.launcher.rebuildBackend(), ui("ui.pinned_backend_source_was_built_and_activated_70c1519"))}><Github />{ui("ui.build_backend_from_source_e654dac")}</button></div>{data.backend.updating || logs.length > 0 ? <pre className="build-log">{logs.join('\n') || ui("ui.waiting_for_backend_output_1ad8939")}</pre> : null}</section>
-        <section><h3>{ui("ui.runtime_details_77fa868")}</h3><p className="diagnostic-path mono">{data.runtime.winePath ?? ui("ui.no_runtime_selected_b8e7445")}</p><div className="meta-grid"><div><span>{ui("ui.source_56ccd01")}</span><strong>{runtimeInfo.source}</strong></div><div><span>{ui("ui.build_3053677")}</span><strong className="mono">{data.runtime.commit ?? '—'}</strong></div></div></section>
-        <section><h3>{ui("ui.build_dependencies_8926e84")}</h3><div className="dependency-grid"><ToggleStatus ok={data.backend.prerequisites.git} label="Git" /><ToggleStatus ok={data.backend.prerequisites.cargo} label="Cargo" /><ToggleStatus ok={data.backend.prerequisites.rustc} label="Rust 1.99" /><ToggleStatus ok={data.backend.prerequisites.protoc} label="protoc" /></div><p className="fine-print">{ui("ui.building_xodus_also_requires_a_c_c_toolchain_cma_a847b06")}</p></section>
       </div>
     </details>
   </main>;
@@ -1309,7 +1485,7 @@ export default function App() {
     <section className="content-shell">
       <header className="topbar" ref={inertRef(socialOpen)}><GlobalSearch games={data.games} page={page} query={search} change={setSearch} submit={value => { setSubmittedSearch(value); go('store'); }} select={openLibraryGame} /><TopStatus data={data} go={go} /></header>
       <CloudSaveWarning operation={data.gameOperation} openGame={openLibraryGame} disabled={socialOpen} />
-      <div data-gamepad-page={page} ref={inertRef(socialOpen)} className={'page-scroll'+(page==='social'?' social-full-page':'')}>{page === 'home' ? <HomePage data={data} go={go} action={action} openGame={openLibraryGame} returnFocusKey={homeReturnKey} /> : null}{page === 'store' ? <StorePage data={data} toast={setToast} go={go} initialQuery={submittedSearch} /> : null}{page === 'library' ? <LibraryPage data={data} toast={setToast} filters={libraryFilters} onFiltersChange={changeLibraryFilters} selection={librarySelection} onSelectionHandled={request => setLibrarySelection(current => current === request ? undefined : current)} returnHome={key => { setHomeReturnKey(key); go('home'); }} /> : null}{page === 'downloads' ? <DownloadsPage data={data} toast={setToast} /> : null}{page === 'settings' ? <SettingsPage data={data} toast={setToast} /> : null}{page === 'social' ? <div className="nexus-social-page"><Suspense fallback={<SocialLoading/>}><XboxSocial key={JSON.stringify([data.auth.player??data.auth.username,data.backend.binaryPath])} auth={data.auth} api={window.launcher.nativeSocial} voice={data.backend.available&&data.backend.capabilities.nativeSocial?window.launcher:undefined} runtimeInvites={data.social} runtimeApi={window.launcher} expanded active={!socialOpen} readKeys={notifications.readKeys} onViewed={notifications.viewed} showProfile={desktopProfile}/></Suspense></div> : null}</div>
+      <div data-gamepad-page={page} ref={inertRef(socialOpen)} className={'page-scroll'+(page==='social'?' social-full-page':'')}>{page === 'home' ? <HomePage data={data} go={go} action={action} openGame={openLibraryGame} returnFocusKey={homeReturnKey} toast={setToast} /> : null}{page === 'store' ? <StorePage data={data} toast={setToast} go={go} initialQuery={submittedSearch} /> : null}{page === 'library' ? <LibraryPage data={data} toast={setToast} filters={libraryFilters} onFiltersChange={changeLibraryFilters} selection={librarySelection} onSelectionHandled={request => setLibrarySelection(current => current === request ? undefined : current)} returnHome={key => { setHomeReturnKey(key); go('home'); }} /> : null}{page === 'downloads' ? <DownloadsPage data={data} toast={setToast} /> : null}{page === 'settings' ? <SettingsPage data={data} toast={setToast} /> : null}{page === 'social' ? <div className="nexus-social-page"><Suspense fallback={<SocialLoading/>}><XboxSocial key={JSON.stringify([data.auth.player??data.auth.username,data.backend.binaryPath])} auth={data.auth} api={window.launcher.nativeSocial} voice={data.backend.available&&data.backend.capabilities.nativeSocial?window.launcher:undefined} runtimeInvites={data.social} runtimeApi={window.launcher} expanded active={!socialOpen} readKeys={notifications.readKeys} onViewed={notifications.viewed} showProfile={desktopProfile}/></Suspense></div> : null}</div>
       {socialOpen?<button className="nexus-social-scrim" aria-label={ui("social.close_social_shelf_09c6eb")} onClick={()=>setSocialOpen(false)}/>:null}
       <aside id="nexus-social-shelf" role="dialog" aria-modal={socialOpen || undefined} data-gamepad-layer data-gamepad-social-shelf className={'nexus-social-shelf'+(socialOpen?' is-open':'')} aria-label={ui("social.xbox_social_shelf_bb6aaf")} aria-hidden={!socialOpen}
         ref={inertRef(!socialOpen)}>

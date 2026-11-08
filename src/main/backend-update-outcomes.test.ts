@@ -19,15 +19,18 @@ afterEach(async () => { await fs.rm(root, { recursive: true, force: true }); });
 function manager() { const result = new BackendManager(root, '', () => {}, () => false); vi.spyOn(result, 'externalDownloadRunning').mockResolvedValue(false); return result; }
 function refreshSelected(m: BackendManager) { return vi.spyOn(m, 'refresh').mockImplementation(async () => { expect(m.current.available).toBe(false); expect(m.current.capabilities.login).toBe(false); Object.assign((m as unknown as { status: object }).status, { available: true }); return m.current; }); }
 describe('backend mutation boundaries', () => {
-  it.each(['update', 'rebuild'] as const)('reserves %s before activity await and excludes both mutations', async operation => {
+  it('reserves update before activity await and excludes a second mutation', async () => {
     const m = manager(), gate = deferred<boolean>(); vi.mocked(m.externalDownloadRunning).mockReturnValue(gate.promise);
-    const pending = m[operation](() => {}).catch(e => e); expect(m.current.updating).toBe(true);
-    await expect(m.update(() => {})).rejects.toThrow('already running'); await expect(m.rebuild(() => {})).rejects.toThrow('already running');
-    gate.resolve(true); expect(await pending).toMatchObject({ committed: false, operation }); expect(m.current.updating).toBe(false); expect(installBackend).not.toHaveBeenCalled();
+    const pending = m.update(() => {}).catch(e => e); expect(m.current.updating).toBe(true);
+    await expect(m.update(() => {})).rejects.toThrow('already running');
+    gate.resolve(true); expect(await pending).toMatchObject({ committed: false, operation: 'update' }); expect(m.current.updating).toBe(false); expect(installBackend).not.toHaveBeenCalled();
   });
-  it.each(['update', 'rebuild'] as const)('releases %s reservation when first notification throws', async operation => {
-    const m = manager(); const error = await m[operation](() => { throw Error('notify'); }).catch(e => e);
-    expect(error).toBeInstanceOf(BackendMutationError); expect(error).toMatchObject({ committed: false, operation }); expect(m.current.updating).toBe(false); expect(discoverBackend).not.toHaveBeenCalled();
+  it('releases update reservation when first notification throws', async () => {
+    const m = manager(); const error = await m.update(() => { throw Error('notify'); }).catch(e => e);
+    expect(error).toBeInstanceOf(BackendMutationError); expect(error).toMatchObject({ committed: false, operation: 'update' }); expect(m.current.updating).toBe(false); expect(discoverBackend).not.toHaveBeenCalled();
+  });
+  it('does not expose a source-build backend mutation', () => {
+    expect((manager() as unknown as {rebuild?: unknown}).rebuild).toBeUndefined();
   });
   it('preserves the old pointer when installation fails', async () => {
     const m = manager(), pointer = path.join(root, 'xodus-backends/current.json'); await fs.writeFile(pointer, 'old-pointer'); vi.mocked(installBackend).mockRejectedValue(Error('download failed'));

@@ -1,11 +1,11 @@
 import { execFile as execFileCallback } from 'node:child_process';
 import { createHash } from 'node:crypto';
-import { chmod, mkdir, mkdtemp, readFile, readlink, rm, stat, symlink, writeFile } from 'node:fs/promises';
+import { chmod, mkdir, mkdtemp, readFile, readlink, realpath, rm, stat, symlink, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { promisify } from 'node:util';
 import { afterEach, describe, expect, it } from 'vitest';
-import { fexEnvironment, managedUnrealCultureGameIni, prefixUserLocale, prepareProtonRunner, protonOptionalComponentNotices, syncPrefixUserLocale, syncUnrealCultureGameIni } from './proton.js';
+import { fexEnvironment, managedUnrealCultureGameIni, prefixUserLocale, prepareProtonRunner, protonOptionalComponentNotices, steamCompatLocation, syncPrefixUserLocale, syncUnrealCultureGameIni } from './proton.js';
 import { prepareGameWrapper } from './game-wrapper.js';
 import { defaultLaunchTools, parseLaunchOptions } from '../shared/launch-tools.js';
 import { preparedGameWine } from './game-launch.js';
@@ -82,8 +82,44 @@ describe('fexEnvironment', () => {
   });
 });
 
-describe('prepareProtonRunner', () => {
-  it('runs an arm64 runtime from its own loader, prefix and ARM64X component checksums', async () => {
+describe('steamCompatLocation', () => {
+  it('reports only a real install directory and ignores unusable input', async () => {
+    const root = await mkdtemp(path.join(tmpdir(), 'nexus-location-')); created.push(root);
+    const install = path.join(root, 'installs', 'Game');
+    await mkdir(install, { recursive: true });
+    expect(await steamCompatLocation(install)).toEqual({ installPath: await realpath(install) });
+    expect(await steamCompatLocation(path.join(root, 'missing'))).toBeUndefined();
+    expect(await steamCompatLocation('relative/Game')).toBeUndefined();
+    expect(await steamCompatLocation('')).toBeUndefined();
+    const file = path.join(root, 'file'); await writeFile(file, 'data');
+    expect(await steamCompatLocation(file)).toBeUndefined();
+  });
+
+  it('reports a real Steam library only when the install is genuinely inside one', async () => {
+    const root = await mkdtemp(path.join(tmpdir(), 'nexus-location-library-')); created.push(root);
+    const steamapps = path.join(root, 'library', 'steamapps');
+    const game = path.join(steamapps, 'common', 'a', 'b', 'Game');
+    await mkdir(game, { recursive: true });
+    expect(await steamCompatLocation(game)).toEqual({
+      installPath: await realpath(game), libraryPaths: await realpath(steamapps),
+    });
+    // A plain Nexus installation outside a Steam library gets no invented one.
+    const plain = path.join(root, 'nexus', 'Game'); await mkdir(plain, { recursive: true });
+    expect(await steamCompatLocation(plain)).toEqual({ installPath: await realpath(plain) });
+  });
+
+  it('never reports a steamapps path whose real directory has another name', async () => {
+    const root = await mkdtemp(path.join(tmpdir(), 'nexus-location-link-')); created.push(root);
+    const real = path.join(root, 'real'); await mkdir(path.join(real, 'common', 'Game'), { recursive: true });
+    await mkdir(path.join(root, 'library'), { recursive: true });
+    await symlink(real, path.join(root, 'library', 'steamapps'));
+    // The runtime requires the real path basename to be `steamapps`.
+    expect(await steamCompatLocation(path.join(root, 'library', 'steamapps', 'common', 'Game')))
+      .toEqual({ installPath: await realpath(path.join(root, 'library', 'steamapps', 'common', 'Game')) });
+  });
+});
+
+describe('prepareProtonRunner', () => {  it('runs an arm64 runtime from its own loader, prefix and ARM64X component checksums', async () => {
     const root = await mkdtemp(path.join(tmpdir(), 'nexus-arm64-prefix-')); created.push(root);
     const runtime = path.join(root, 'runtime'), compat = path.join(root, 'compat');
     const wine = path.join(runtime, 'files/bin-arm64/wine');
@@ -165,6 +201,15 @@ describe('prepareProtonRunner', () => {
     expect(launchScript).toContain(`export STEAM_COMPAT_DATA_PATH='${compat}'`);
     expect(launchScript).toContain("export UMU_ID='xodus-nexus'");
     expect(launchScript).toContain('nexus_game_command="Z:$1"');
+    // Proton's local shader cache root is part of the Play environment only.
+    const shaderPathLine = launchScript.split('\n').find(line => line.startsWith('export STEAM_COMPAT_SHADER_PATH='));
+    expect(shaderPathLine).toBeDefined();
+    const shaderExport = shaderPathLine!.slice('export STEAM_COMPAT_SHADER_PATH='.length);
+    expect(shaderExport.startsWith("'") && shaderExport.endsWith("'")).toBe(true);
+    const shaderPath = shaderExport.slice(1, -1);
+    expect(shaderPath.endsWith('/shadercache/steamapp')).toBe(true);
+    expect((await stat(shaderPath)).isDirectory()).toBe(true);
+    expect(await readFile(runner.command, 'utf8')).not.toContain('STEAM_COMPAT_SHADER_PATH');
     // Internal prefix operations and Stop keep the bare Wine command.
     const setup=await execFile(runner.command,['setup']);
     expect(setup.stdout).not.toContain('fps'); expect(setup.stdout).not.toContain('--launcher-skip');
@@ -195,6 +240,68 @@ describe('prepareProtonRunner', () => {
     }
     expect(runner.stopPrefix.command).toBe(runner.command);
     await execFile(runner.stopPrefix.command,runner.stopPrefix.args);
+  });
+
+  it('reports the genuine install location to the Proton session and never fabricates a Steam library', async () => {
+    const root = await mkdtemp(path.join(tmpdir(), 'nexus-proton-location-')); created.push(root);
+    const runtime = path.join(root, 'runtime'), wine = path.join(runtime, 'files/bin/wine');
+    const compat = path.join(root, 'compat'), system32 = path.join(compat, 'pfx/drive_c/windows/system32');
+    await mkdir(path.dirname(wine), { recursive: true });
+    await mkdir(path.join(runtime, 'files/share/default_pfx'), { recursive: true });
+    await mkdir(system32, { recursive: true });
+    for (const name of ['libvkd3d-utils-1.dll', 'dxgi.dll', 'd3d12.dll']) await writeFile(path.join(system32, name), 'ready');
+    // The fixture Proton session reports the location environment it received.
+    await writeFile(path.join(runtime, 'proton'), '#!/bin/sh\nprintf \'install=<%s>\\nlibrary=<%s>\\n\' "${STEAM_COMPAT_INSTALL_PATH-unset}" "${STEAM_COMPAT_LIBRARY_PATHS-unset}"\n', { mode: 0o700 });
+    await writeFile(wine, '#!/bin/sh\nexit 0\n', { mode: 0o700 });
+    await writeFile(path.join(runtime, 'files/bin/wineserver'), '#!/bin/sh\nexit 0\n', { mode: 0o700 });
+    // A parent Steam/launcher process may already export these managed values.
+    const staleEnvironment = { ...process.env, STEAM_COMPAT_INSTALL_PATH: '/stale/install', STEAM_COMPAT_LIBRARY_PATHS: '/stale/library' };
+    const generated = async (installPath?: string) => {
+      const runner = (await prepareProtonRunner(wine, compat, path.join(root, 'steam'), 4, installPath ? { installPath } : {}))!;
+      const { stdout } = await execFile(runner.launchCommand, ['game.exe'], { env: staleEnvironment });
+      const playEnvironment = Object.fromEntries(stdout.trim().split('\n').map((line) => {
+        const equals = line.indexOf('=');
+        return [line.slice(0, equals), line.slice(equals + 1)];
+      }));
+      return {
+        launch: await readFile(runner.launchCommand, 'utf8'),
+        stop: await readFile(runner.command, 'utf8'),
+        playEnvironment,
+        // The launch notice reuses this captured result instead of querying again.
+        location: runner.compatibilityLocation,
+      };
+    };
+    // A Store installation outside a Steam library reports only its real
+    // directory and removes the inherited library value from the Play command.
+    const plainInstall = path.join(root, 'installs', 'Game'); await mkdir(plainInstall, { recursive: true });
+    const plain = await generated(plainInstall);
+    expect(plain.launch).toContain(`export STEAM_COMPAT_INSTALL_PATH='${await realpath(plainInstall)}'`);
+    expect(plain.launch).toContain('unset STEAM_COMPAT_LIBRARY_PATHS');
+    expect(plain.playEnvironment).toEqual({ install: `<${await realpath(plainInstall)}>`, library: '<unset>' });
+    expect(plain.location).toEqual({ installPath: await realpath(plainInstall) });
+    // Internal prefix work and Stop keep their environment unchanged.
+    expect(plain.stop).not.toContain('STEAM_COMPAT_INSTALL_PATH');
+    expect(plain.stop).not.toContain('STEAM_COMPAT_LIBRARY_PATHS');
+    expect(plain.stop).not.toContain('unset STEAM_COMPAT_');
+    // A game genuinely installed inside a Steam library replaces both values.
+    const libraryGame = path.join(root, 'library/steamapps/common/Game'); await mkdir(libraryGame, { recursive: true });
+    const library = await generated(libraryGame);
+    expect(library.launch).toContain(`export STEAM_COMPAT_LIBRARY_PATHS='${await realpath(path.join(root, 'library/steamapps'))}'`);
+    expect(library.playEnvironment).toEqual({
+      install: `<${await realpath(libraryGame)}>`,
+      library: `<${await realpath(path.join(root, 'library/steamapps'))}>`,
+    });
+    expect(library.location).toEqual({
+      installPath: await realpath(libraryGame),
+      libraryPaths: await realpath(path.join(root, 'library/steamapps')),
+    });
+    // Without a verified install directory both inherited values are removed so
+    // the Play environment matches the captured (empty) location context.
+    const missing = await generated(path.join(root, 'absent'));
+    expect(missing.launch).toContain('unset STEAM_COMPAT_INSTALL_PATH');
+    expect(missing.launch).toContain('unset STEAM_COMPAT_LIBRARY_PATHS');
+    expect(missing.playEnvironment).toEqual({ install: '<unset>', library: '<unset>' });
+    expect(missing.location).toBeUndefined();
   });
 
   // The Proton session owns large-address-aware on Play: it enables that flag by

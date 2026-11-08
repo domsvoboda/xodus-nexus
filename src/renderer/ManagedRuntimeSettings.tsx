@@ -1,9 +1,8 @@
 import {useEffect,useRef,useState} from 'react';
-import {ArrowDownToLine,CircleAlert,Gamepad2,LoaderCircle,RefreshCw} from 'lucide-react';
 import type {AppSnapshot,ManagedFamilyStatus,ManagedRuntimeOptions} from '../shared/types';
 import type {RuntimeFamily} from '../shared/runtime-selection';
 import {activeRuntimeIsCachyos,runtimeDisplay} from '../shared/runtime-display';
-import {StatusDot} from './StatusDot';
+import {RuntimeFamilyCard} from './RuntimeFamilyCard';
 import {ui} from './i18n';
 
 const family:RuntimeFamily='nexus-cachyos';
@@ -63,20 +62,20 @@ export function ManagedRuntimeSettings({data,disabled,onBusyChange}:{data:AppSna
   }
   const version=item?.version??item?.installed?.sourceCommit.slice(0,12)??'';
   const summary=installed?ui('runtime.families_version',{version}):activeLocal?ui('runtime.cachyos_active',{version:activeVersion}):undefined;
-  return <section className="settings-card managed-runtime-settings" aria-label={ui('runtime.cachyos_title')}>
-    <div className="settings-heading">
-      <div className="settings-icon"><Gamepad2 /></div>
-      <div><h2>{ui('runtime.cachyos_title')}</h2>{summary?<p>{summary}</p>:null}</div>
-      <span className={`status-label ${installed||activeLocal?'ready':'unknown'}`}><StatusDot tone={installed||activeLocal?'green':'amber'} />{installed?ui('ui.ready_c2e3ac4'):activeLocal?ui('runtime.cachyos_active_label'):ui('ui.not_installed_d177cdc')}</span>
-    </div>
-    {notice?.scope===scope?<p role={notice.error?'alert':'status'} className={notice.error?'alert amber':'runtime-phase'}>{notice.text}</p>:null}
-    {item?.error?<div className="alert amber" role="alert"><CircleAlert /><span>{item.error}</span></div>:null}
-    {busy&&item?.phase?<div className="runtime-phase"><LoaderCircle className="spin" /><span>{item.phase}</span></div>:null}
-    {available&&item?.updateAvailable===false?<p role="status">{ui('runtime.cachyos_current')}</p>:null}
-    {available&&item?.updateAvailable!==false?<p>{ui('runtime.families_available',{version:available.version})}<br/><small>{ui('runtime.families_requires',{backend:available.requiresBackendVersion,launcher:available.requiresLauncherVersion})}</small></p>:null}
-    <div className="button-row end">
-      <button className="secondary" disabled={active||!apiReady} onClick={()=>void perform(false)}>{pending==='check'||pending===undefined&&item?.checking?<LoaderCircle className="spin" />:<RefreshCw />}{ui('ui.check_for_updates_f26f327')}</button>
-      {available&&item?.updateAvailable!==false?<button className="primary" disabled={active||!apiReady} onClick={()=>void perform(true)}>{pending==='install'||pending===undefined&&item?.installing?<LoaderCircle className="spin" />:<ArrowDownToLine />}{installed?ui('runtime.families_update',{name:ui('runtime.cachyos_title')}):ui('runtime.families_install',{name:ui('runtime.cachyos_title')})}</button>:null}
-    </div>
-  </section>;
+  const title=ui('runtime.cachyos_title');
+  return <RuntimeFamilyCard family={family} title={title}
+    status={installed||activeLocal?{tone:'green',label:installed?ui('ui.ready_c2e3ac4'):ui('runtime.cachyos_active_label')}:{tone:'amber',label:ui('ui.not_installed_d177cdc')}}
+    summary={summary}
+    errors={item?.error?[item.error]:undefined}
+    phase={busy&&item?.phase?item.phase:undefined}
+    notice={notice?.scope===scope?notice:undefined}
+    available={available&&item?.updateAvailable!==false?ui('runtime.families_available',{version:available.version}):undefined}
+    requires={available&&item?.updateAvailable!==false?ui('runtime.families_requires',{backend:available.requiresBackendVersion,launcher:available.requiresLauncherVersion}):undefined}
+    current={Boolean(available&&item?.updateAvailable===false)}
+    checking={pending==='check'||pending===undefined&&Boolean(item?.checking)}
+    installing={pending==='install'||pending===undefined&&Boolean(item?.installing)}
+    installLabel={available&&item?.updateAvailable!==false?(installed?ui('runtime.families_update',{name:title}):ui('runtime.families_install',{name:title})):undefined}
+    onCheck={()=>void perform(false)}
+    onInstall={()=>void perform(true)}
+    disabled={active||!apiReady}/>;
 }

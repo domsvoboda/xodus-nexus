@@ -2,8 +2,6 @@
   "runtime.game_runtime": "Ambiente del gioco",
   "runtime.use_default": "Usa l’ambiente predefinito",
   "runtime.unavailable": "{{name}} (non disponibile)",
-  "runtime.separate_prefix": "Usa un prefisso separato per questa famiglia di ambienti",
-  "runtime.prefix_warning": "Gli aggiornamenti di questa famiglia riutilizzano lo stesso prefisso e i salvataggi locali. Cambiare famiglia usa un prefisso separato. I salvataggi esistenti restano nel vecchio prefisso e non vengono copiati o trasferiti automaticamente.",
   "auth.browser": "Continua nel browser",
   "auth.browser_error": "Impossibile aprire il browser per accedere. Google Chrome deve essere installato. Prova di nuovo o scegli un altro metodo.",
   "auth.cancel_passkey": "Annulla la richiesta di passkey",

@@ -1,6 +1,7 @@
 import { randomUUID } from 'node:crypto';
 import type { ComponentUpdateBatchResult, ComponentUpdateItemResult, ComponentUpdatePlan, ComponentUpdatePlanItem, ComponentUpdatesStatus } from '../shared/types.js';
 import { ComponentUpdateAdmission, type ComponentUpdateOwner } from './component-update-admission.js';
+import { backendDiagnostic } from './backend-diagnostics.js';
 export interface PreparedComponentUpdate {
     readonly item: ComponentUpdatePlanItem;
     /** Compare installed identity and context, never silently substitute latest. */
@@ -29,12 +30,32 @@ export class ComponentUpdates {
             return { running: this.state.running };
         return structuredClone(this.state);
     }
+    /** A rejected plan entry is an orchestration blocker, never an install. */
+    private assertPlanAllowed(): void {
+        try {
+            this.admission.assertAllowed();
+        }
+        catch (error) {
+            backendDiagnostic({ operation: 'component-update', event: 'failure', stage: 'plan-blocked' });
+            throw error;
+        }
+    }
+    /** A rejected apply entry keeps another operation's reservation untouched. */
+    private reserveForApply(): ComponentUpdateOwner {
+        try {
+            return this.admission.reserve();
+        }
+        catch (error) {
+            backendDiagnostic({ operation: 'component-update', event: 'failure', stage: 'apply-blocked' });
+            throw error;
+        }
+    }
     async plan(): Promise<ComponentUpdatePlan> {
-        this.admission.assertAllowed();
+        this.assertPlanAllowed();
         const generation = ++this.generation;
         const context = this.currentContext();
         const prepared = await this.discover();
-        this.admission.assertAllowed();
+        this.assertPlanAllowed();
         if (context !== this.currentContext())
             throw Error('The component update context changed. Check again.');
         if (generation !== this.generation)
@@ -56,7 +77,7 @@ export class ComponentUpdates {
     }
     async apply(planId: string, retryItemId?: string): Promise<ComponentUpdateBatchResult> {
         // Synchronous reservation closes the first-await window for all child operations.
-        const owner = this.admission.reserve();
+        const owner = this.reserveForApply();
         try {
             if (!this.state.plan || typeof planId !== 'string' || planId !== this.state.plan.id)
                 throw Error('The component update plan is stale. Check again.');

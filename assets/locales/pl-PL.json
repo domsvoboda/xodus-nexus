@@ -2,8 +2,6 @@
   "runtime.game_runtime": "Środowisko gry",
   "runtime.use_default": "Użyj domyślnego środowiska",
   "runtime.unavailable": "{{name}} (niedostępne)",
-  "runtime.separate_prefix": "Użyj osobnego prefiksu dla tej rodziny środowisk",
-  "runtime.prefix_warning": "Aktualizacje tej rodziny używają tego samego prefiksu i lokalnych zapisów. Zmiana rodziny używa osobnego prefiksu. Istniejące zapisy pozostają w starym prefiksie i nie są automatycznie kopiowane ani przenoszone.",
   "common.view_all": "Pokaż wszystkie ({{count}})",
   "downloads.active_summary": "Kolejka instalacji, instalacje w toku: {{count}}, {{state}}, {{game}}",
   "downloads.current": "{{state}} ({{current}}/{{total}})",

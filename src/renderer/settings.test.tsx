@@ -29,11 +29,13 @@ describe('Settings diagnostics', () => {
     const details = html.match(/<details\b[^>]*class="settings-card settings-diagnostics"[^>]*>[\s\S]*?<\/details>/)?.[0];
     expect(details).toBeDefined();
     expect(details?.split('>')[0]).not.toMatch(/\bopen\b/);
-    expect(details).toContain('Build dependencies');
-    expect(details).toContain('COMMIT');
+    expect(details).not.toContain('COMMIT');
+    expect(details).not.toContain('Backend details');
+    expect(details).not.toContain('Runtime details');
     expect(details).toContain('Detailed game logs');
     expect(details).toContain('Save diagnostics');
-    expect(details).toContain('Build backend from source');
+    expect(details).not.toContain('Build dependencies');
+    expect(details).not.toContain('Build backend from source');
     expect(details).not.toContain('Install upstream snapshot');
     expect(details).not.toContain('Check upstream snapshot');
     const main = html.replace(details!, '');
@@ -45,6 +47,8 @@ describe('Settings diagnostics', () => {
     expect(main).not.toContain('Build backend from source');
     expect(main).not.toContain('Rebuild backend');
     expect(main).not.toContain('Install / update backend');
+    expect(html).not.toContain('External Xodus source');
+    expect(html).not.toContain('CachyOS binary');
     expect(main).toContain('Nexus runtime');
     expect(main).toContain('Open backend diagnostic log');
     expect(main).toContain('No passwords, tokens or account contents');
@@ -69,7 +73,7 @@ describe('Settings diagnostics', () => {
   it('keeps actionable errors visible and unsupported sign-in disabled', () => {
     const data = demoSnapshot();
     data.backend.capabilities.login = false;
-    data.backend.blockReason = 'Cargo is missing. Install it before building.';
+    data.backend.blockReason = 'The prebuilt backend could not start on this system.';
     data.runtime.error = 'SHA-512 verification failed.';
     const html = renderToStaticMarkup(<SettingsPage data={data} toast={() => {}} />);
     const main = html.replace(/<details\b[^>]*>[\s\S]*?<\/details>/, '');
@@ -79,6 +83,92 @@ describe('Settings diagnostics', () => {
   });
 });
 
+
+it('shows the default and CachyOS runtime cards with one identical structure and no binary path detail',()=>{
+  const data = demoSnapshot();
+  data.runtime.nexusAvailable = false;
+  data.runtime.managedFamilies = [
+    { id: 'nexus', checking: false, installing: false, version: 'runtime-10.0', channel: 'stable', updateAvailable: false,
+      installed: { id: 'nexus', label: 'Standard', buildId: 'a'.repeat(64), sourceCommit: 'b'.repeat(40), manifestSha256: 'c'.repeat(64), displayWinePath: '/managed/standard/files/bin/wine' } },
+    { id: 'nexus-cachyos', checking: false, installing: false, version: 'runtime-cachyos-10.0', channel: 'stable', updateAvailable: true,
+      installed: { id: 'nexus-cachyos', label: 'CachyOS', buildId: 'd'.repeat(64), sourceCommit: 'e'.repeat(40), manifestSha256: 'f'.repeat(64), displayWinePath: '/managed/cachyos/files/bin/wine' },
+      available: { version: 'runtime-cachyos-11.0', candidateSha256: 'a'.repeat(64), sourceCommit: 'b'.repeat(40), archiveName: 'nexus-runtime-cachyos-x86_64.tar.xz', requiresBackendVersion: '0.2.3', requiresLauncherVersion: '0.5.0' } },
+  ];
+  const html = renderToStaticMarkup(<SettingsPage data={data} toast={() => {}} />);
+  const cards = [...html.matchAll(/<section class="settings-card managed-runtime-settings"[\s\S]*?<\/section>/g)].map(match => match[0]);
+  expect(cards).toHaveLength(2);
+  expect(cards[0]).toContain('data-runtime-family="default"');
+  expect(cards[1]).toContain('data-runtime-family="nexus-cachyos"');
+  for (const card of cards) {
+    expect(card).toContain('class="settings-heading"');
+    expect(card).toContain('class="status-label');
+    expect(card).toContain('class="button-row end"');
+    expect(card).toContain('Check for updates');
+    expect(card).not.toContain('managed-runtime-binary');
+  }
+  expect(cards[0]).toContain('Default runtime');
+  expect(cards[1]).toContain('CachyOS runtime');
+  expect(cards[1]).toContain('Update CachyOS runtime');
+  expect(html).not.toContain('/managed/cachyos/files/bin/wine');
+  expect(html).not.toContain('/managed/standard/files/bin/wine');
+  expect(html).not.toContain('Read-only path');
+});
+
+it('presents a Standard runtime candidate in the same available line as a managed family',()=>{
+  const data = demoSnapshot();
+  data.runtime.nexusAvailable = true;
+  data.runtime.nexusName = 'nexus-runtime-11.0-x86_64.tar.xz';
+  data.runtime.nexusVersion = 'runtime-11.0';
+  data.runtime.managedFamilies = [
+    { id: 'nexus-cachyos', checking: false, installing: false, updateAvailable: true,
+      available: { version: 'runtime-cachyos-11.0', candidateSha256: 'a'.repeat(64), sourceCommit: 'b'.repeat(40), archiveName: 'nexus-runtime-cachyos-x86_64.tar.xz', requiresBackendVersion: '0.2.3', requiresLauncherVersion: '0.5.0' } },
+  ];
+  const html = renderToStaticMarkup(<SettingsPage data={data} toast={() => {}} />);
+  const cards = [...html.matchAll(/<section class="settings-card managed-runtime-settings"[\s\S]*?<\/section>/g)].map(match => match[0]);
+  expect(cards[0]).toContain('Available: 11.0');
+  expect(cards[0]).toContain('Install Nexus runtime');
+  expect(cards[1]).toContain('Available: runtime-cachyos-11.0');
+  expect(cards[1]).toContain('Install CachyOS runtime');
+});
+
+it('keeps both ready runtime cards free of an idle phase panel while keeping real progress and errors',()=>{
+  const data = demoSnapshot();
+  data.runtime.phase = 'Runtime is ready.';
+  const family = () => ({
+    id: 'nexus-cachyos' as const, checking: false, installing: false, version: 'runtime-cachyos-10.0', channel: 'stable' as const, updateAvailable: false,
+    installed: { id: 'nexus-cachyos' as const, label: 'CachyOS', buildId: 'a'.repeat(64), sourceCommit: 'b'.repeat(40), manifestSha256: 'c'.repeat(64) },
+  });
+  data.runtime.managedFamilies = [{ ...family(), phase: 'Runtime is ready.' }];
+  const cards = (html: string) => [...html.matchAll(/<section class="settings-card managed-runtime-settings"[\s\S]*?<\/section>/g)].map(match => match[0]);
+  const ready = renderToStaticMarkup(<SettingsPage data={data} toast={() => {}} />);
+  const readyCards = cards(ready);
+  expect(readyCards).toHaveLength(2);
+  for (const card of readyCards) {
+    expect(card).toContain('class="status-label ready"');
+    expect(card).not.toContain('runtime-phase');
+  }
+  expect(ready).not.toContain('Runtime is ready.');
+
+  data.runtime.phase = 'Checking the selected Standard runtime update.';
+  data.runtime.nexusChecking = true;
+  data.runtime.managedFamilies = [{ ...family(), checking: true, phase: 'Checking the CachyOS runtime release.' }];
+  const busy = renderToStaticMarkup(<SettingsPage data={data} toast={() => {}} />);
+  const busyCards = cards(busy);
+  expect(busyCards[0]).toContain('runtime-phase');
+  expect(busyCards[0]).toContain('Checking the selected Standard runtime update.');
+  expect(busyCards[1]).toContain('runtime-phase');
+  expect(busyCards[1]).toContain('Checking the CachyOS runtime release.');
+
+  data.runtime.nexusChecking = false;
+  data.runtime.phase = 'Runtime is ready.';
+  data.runtime.error = 'SHA-512 verification failed.';
+  data.runtime.managedFamilies = [{ ...family(), phase: 'Runtime is ready.', error: 'Backend 0.3.0 or newer is required' }];
+  const failed = renderToStaticMarkup(<SettingsPage data={data} toast={() => {}} />);
+  expect(failed).not.toContain('Runtime is ready.');
+  for (const card of cards(failed)) expect(card).not.toContain('runtime-phase');
+  expect(failed).toContain('SHA-512 verification failed.');
+  expect(failed).toContain('Backend 0.3.0 or newer is required');
+});
 
 it('shows close-to-tray as an optional desktop preference',()=>{
  const data=demoSnapshot();data.settings.closeToTray=true;

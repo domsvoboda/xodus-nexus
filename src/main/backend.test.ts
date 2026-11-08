@@ -175,7 +175,10 @@ describe('prebuilt backend', () => {
         expect(pointer.delivery).toBe('release');
         expect(pointer.recipeSha256).toBe(backendRecipeSha256);
         expect(manager.current.available).toBe(true);
-        expect(manager.current.prerequisites.cargo).toBe(false);
+        // No source-build toolchain version probes. Git remains only for the
+        // optional legacy external backend commit metadata.
+        expect(vi.mocked(run).mock.calls.some(([command, args]) => command === 'cargo' || command === 'rustc' || command === 'protoc'
+          || command === 'git' && args.includes('--version'))).toBe(false);
         expect((await manager.checkUpdate()).updateAvailable).toBe(false);
         await manager.update(() => {}); // Reinstall identical bytes safely.
       } else {

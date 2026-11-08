@@ -1,7 +1,7 @@
 import { expect,it,vi } from 'vitest';
 import { renderToStaticMarkup } from 'react-dom/server';
 import { FriendAvatar, Friends, preloadFriends } from './Friends';
-import { TopStatus } from './App';
+import { TopStatus, Sidebar } from './App';
 import { demoSnapshot } from '../shared/demo-data';
 it('warms reads only after explicit intent with a supported signed-in account',async()=>{
   const data=demoSnapshot(),load=vi.fn(async()=>{});
@@ -27,9 +27,11 @@ it('keeps the dock without an overlay, manual refresh button or permanent explan
   expect(html).not.toMatch(/desktop overlay|Ctrl\+Shift\+F10|Refresh friends|Refresh conversation|friends-limitation|Chat does not change/);
   expect(html).not.toMatch(/Invitation sent\.|<iframe|<webview/);
 });
-it('keeps friends out of the top bar and preserves existing navigation',()=>{
+it('keeps friends and the duplicate global settings shortcut out of the top bar',()=>{
   const html=renderToStaticMarkup(<TopStatus data={demoSnapshot()} go={()=>{}} openFriends={()=>{}} />);
-  expect(html).not.toContain('Xbox friends and chat');expect(html).toContain('Settings');
+  expect(html).toBe('');
+  const sidebar=renderToStaticMarkup(<Sidebar data={demoSnapshot()} page="home" go={()=>{}} />);
+  expect(sidebar).toContain('Settings');
 });
 it('preserves the bottom-right dock and uses a photo or an honest fallback icon',()=>{
   const data=demoSnapshot();

@@ -79,6 +79,29 @@ it('supports MangoHud directly and gamescope with mangoapp, never wrapping a lau
   expect(result.output).not.toContain('\nMANGO\n'); expect(result.code).toBe(7);
   expect(await readFile(scope.command,'utf8')).not.toContain('xodus-cli');
 });
+it('passes a Proton compat-config launch option as literal data and never evaluates it', async () => {
+  const { root, wine, env } = await setup();
+  const marker = path.join(root, 'executed-by-a-shell');
+  await writeFile(wine, '#!/bin/sh\nprintf "config=<%s>\\n" "$STEAM_COMPAT_CONFIG"\nprintf "arg=<%s>\\n" "$@"; exit 7');
+  const value = `cmdlineappend:--flag=$(touch ${marker}) \`touch ${marker}\`;x,wined3d`;
+  const wrapper = await prepareGameWrapper(wine, { ...defaultLaunchTools,
+    launchOptions: `STEAM_COMPAT_CONFIG="${value}" %command%` }, path.join(root, 'wrappers'), env);
+  const result = await run(wrapper.command, ['game.exe'], { env });
+  expect(result.code).toBe(7);
+  expect(result.output).toContain(`config=<${value}>`);
+  expect(result.output).toContain('arg=<game.exe>');
+  // The assignment was not interpreted by a shell: only the literal value
+  // reached the command environment and no attempt was made to run its content.
+  expect(await readFile(wrapper.command, 'utf8')).toContain("'STEAM_COMPAT_CONFIG=");
+  await expect(stat(marker)).rejects.toThrow();
+  // The same rule holds for a value that itself contains a single quote.
+  const quoted = "cmdlineappend:it's,localshadercache";
+  const second = await prepareGameWrapper(wine, { ...defaultLaunchTools,
+    launchOptions: `STEAM_COMPAT_CONFIG="${quoted}" %command%` }, path.join(root, 'other'), env);
+  expect((await run(second.command, ['game.exe'], { env })).output).toContain(`config=<${quoted}>`);
+  await wrapper.cleanup(); await second.cleanup();
+});
+
 it('fails clearly before starting a configured missing tool',async()=>{
   const {root,wine}=await setup();
   await expect(prepareGameWrapper(wine,{...defaultLaunchTools,mangoHud:true},path.join(root,'wrappers'),{PATH:root})).rejects.toThrow('mangohud');

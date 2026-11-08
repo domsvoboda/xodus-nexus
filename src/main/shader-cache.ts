@@ -22,8 +22,16 @@ async function privateDirectory(directory: string, create = false): Promise<File
   } catch (error) { await handle.close(); throw error; }
 }
 
+export interface ShaderCachePaths {
+  vkd3d: string;
+  nvidia: string;
+  mesa: string;
+  /** Per-game root for Proton's own `PROTON_LOCAL_SHADER_CACHE` layout. */
+  steamapp: string;
+}
+
 /** Only owned cache directories are managed. Never clear cache files or follow links. */
-export async function prepareShaderCache(compatibilityDataPath: string): Promise<{ vkd3d: string; nvidia: string; mesa: string }> {
+export async function prepareShaderCache(compatibilityDataPath: string): Promise<ShaderCachePaths> {
   if (!path.isAbsolute(compatibilityDataPath)) throw Error('The shader cache prefix path must be absolute.');
   const root = await privateDirectory(compatibilityDataPath);
   try {
@@ -31,7 +39,7 @@ export async function prepareShaderCache(compatibilityDataPath: string): Promise
     // Anchor creation to checked directory handles, not a replaceable parent path.
     const cache = await privateDirectory(`/proc/self/fd/${root.fd}/shadercache`, true);
     try {
-      for (const name of ['vkd3d-proton', 'nvidia', 'mesa']) {
+      for (const name of ['vkd3d-proton', 'nvidia', 'mesa', 'steamapp']) {
         const child = await privateDirectory(`/proc/self/fd/${cache.fd}/${name}`, true);
         await child.close();
       }
@@ -42,7 +50,12 @@ export async function prepareShaderCache(compatibilityDataPath: string): Promise
       const directory = path.join(await fs.realpath(compatibilityDataPath), 'shadercache');
       const top = await fs.lstat(directory), checked = await cache.stat();
       if (top.isSymbolicLink() || top.dev !== checked.dev || top.ino !== checked.ino) throw Error('The shader cache directory changed during preparation.');
-      return { vkd3d: path.join(directory, 'vkd3d-proton'), nvidia: path.join(directory, 'nvidia'), mesa: path.join(directory, 'mesa') };
+      return {
+        vkd3d: path.join(directory, 'vkd3d-proton'),
+        nvidia: path.join(directory, 'nvidia'),
+        mesa: path.join(directory, 'mesa'),
+        steamapp: path.join(directory, 'steamapp'),
+      };
     } finally { await cache.close(); }
   } finally { await root.close(); }
 }

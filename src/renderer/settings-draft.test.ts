@@ -1,7 +1,7 @@
 import {expect,it} from 'vitest';
 import {demoSnapshot} from '../shared/demo-data';
 import type {Settings} from '../shared/types';
-import {reconcileSettingsDraft} from './settings-draft';
+import {reconcileSettingsDraft,storageSettingsPatch} from './settings-draft';
 
 it('preserves the recorded shortcut and other unsaved edits through cloned status snapshots',()=>{
  const saved={...demoSnapshot().settings,overlayShortcut:'Super+G',overlaySide:'left' as const};
@@ -32,6 +32,18 @@ it('reflects normalized saved paths while preserving a different pending field',
  const saved=demoSnapshot().settings;
  const draft={...saved,installRoot:'/games/../new-games',overlayShortcut:'Control+Shift+H'};
  expect(reconcileSettingsDraft(draft,saved,{...saved,installRoot:'/new-games'})).toEqual({...draft,installRoot:'/new-games'});
+});
+
+it('saves only visible storage fields and never re-applies the hidden external source',()=>{
+ const saved={...demoSnapshot().settings,externalXodusRoot:'/legacy/external-xodus',verboseLogs:true,overlayShortcut:'Super+G'};
+ const draft={...saved,installRoot:'/games/../new-games',market:'DE',parallelDownloads:3,runtimeRoot:'/new/runtime',winePath:'/new/wine',shaderCacheLimitGiB:8};
+ const patch=storageSettingsPatch(draft);
+ expect(patch).toEqual({installRoot:'/games/../new-games',market:'DE',parallelDownloads:3,runtimeRoot:'/new/runtime',winePath:'/new/wine'});
+ expect(patch).not.toHaveProperty('externalXodusRoot');
+ expect(patch).not.toHaveProperty('verboseLogs');
+ expect(patch).not.toHaveProperty('shaderCacheLimitGiB');
+ expect(patch).not.toHaveProperty('overlayShortcut');
+ expect(saved.externalXodusRoot).toBe('/legacy/external-xodus');
 });
 
 it('removes deleted optional preferences without mutating any input',()=>{

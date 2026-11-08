@@ -199,8 +199,8 @@ export async function retainRuntimeFamilyBuild(runtimeRoot:string,selection:unkn
   }finally{await fs.unlink(temporary).catch(()=>undefined);}
 }
 export async function installedRuntimeFamilies(runtimeRoot:string,arch:string=process.arch):Promise<InstalledRuntimeFamily[]> {
-  const results=await Promise.all(runtimeFamilies.map(async id=>{
-    try{const value=await resolveRuntimeFamily(runtimeRoot,id,arch);return {id:value.id,label:value.label,buildId:value.buildId,sourceCommit:value.sourceCommit,manifestSha256:value.manifestSha256};}catch{return undefined;}
+  const results=await Promise.all(runtimeFamilies.map(async (id):Promise<InstalledRuntimeFamily|undefined>=>{
+    try{const value=await resolveRuntimeFamily(runtimeRoot,id,arch);return {id:value.id,label:value.label,buildId:value.buildId,sourceCommit:value.sourceCommit,manifestSha256:value.manifestSha256,displayWinePath:value.winePath};}catch{return undefined;}
   }));
   return results.filter((value):value is InstalledRuntimeFamily=>Boolean(value));
 }

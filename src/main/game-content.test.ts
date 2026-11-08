@@ -74,6 +74,19 @@ it('offers a real backend license check for a bundle child without manufacturing
   expect(result.packages.map(pkg=>pkg.productId)).toEqual([OWN]);
   expect(result.items[1].status).toBe('unlicensed');
 });
+it('marks bundle-included license-only add-ons as included, not unlicensed (#324)', () => {
+  const data = { Products: [
+    { ...product(BASE, 'Game'), DisplaySkuAvailabilities: [sku([{ ...pkg('Example.Base_hash'), MainPackageFamilyNameForDlc: '' }])] },
+    { ...product(OWN), DisplaySkuAvailabilities: [{ Sku: { Properties: { IsTrial: false, Packages: null, BundledSkus: [{ BigId: PAID }] } } }] },
+    { ...product(GP), DisplaySkuAvailabilities: [{ Sku: { Properties: { IsTrial: false, Packages: [] } } }] },
+    { ...product(PAID), DisplaySkuAvailabilities: [{ Sku: { Properties: { IsTrial: false, Packages: [] } } }] },
+  ] };
+  const result = contentOffers(contentManifest(baseXml), data, {}, [OWN, GP]);
+  expect(result.items.map(item => [item.productId, item.status, item.access])).toEqual([
+    [OWN, 'bundle', undefined], [GP, 'license-only', undefined], [PAID, 'unlicensed', undefined],
+  ]);
+  expect(result.packages).toEqual([]);
+});
 it('rejects unsupported architectures, formats, trial SKUs, ambiguous packages and foreign base families', () => {
   for (const change of [{ PackageFormat: 'APPX' }, { Architectures: ['arm64'] }, { PlatformDependencies: [] }, { MainPackageFamilyNameForDlc: 'Other.Base_hash' }, { ContentId: 'https://evil.invalid/download' }]) {
     const data = catalog(); Object.assign(data.Products[1].DisplaySkuAvailabilities[0].Sku.Properties.Packages[0], change);

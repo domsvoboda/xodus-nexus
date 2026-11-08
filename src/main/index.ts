@@ -2,13 +2,13 @@ import { ComponentUpdateAdmission, type ComponentUpdateOwner } from './component
 import { ComponentUpdates, type PreparedComponentUpdate } from './component-updates.js';
 import { prepareManagedComponentUpdates, prepareLegacyComponentUpdate } from './component-update-runtime.js';
 import {gameRuntimeReadiness} from './game-runtime-readiness.js';
-import {approvedRuntimeSettings,type RuntimeSettingsRequest} from './runtime-settings.js';
+import {guardedRuntimeSettings,type RuntimeSettingsRequest} from './runtime-settings.js';
 import {gameRuntimeSelection} from '../shared/runtime-selection.js';
-import {resolveGameRuntime,bindRuntimePrefix} from './runtime-prefix-binding.js';
+import {resolveGameRuntime,bindRuntimePrefix,gameRuntimeParameters} from './runtime-prefix-binding.js';
 import {desktopTrayAvailable} from './launcher-tray-desktop.js';
 import {LauncherTray} from './launcher-tray.js';
 import {SteamKeyboard} from './steam-keyboard.js';
-import type {XboxProfileRequest} from '../shared/types.js';
+import type {XboxProfileGames,XboxProfileRequest} from '../shared/types.js';
 import {XboxSocial as NativeXboxSocial} from './xbox-native-social.js';
 import {resetSocialTransport} from './xbox-social-transport.js';
 import { app, BrowserWindow, clipboard, dialog, globalShortcut, ipcMain, nativeImage, net, Notification, powerSaveBlocker, screen, shell, Tray, Menu } from 'electron';
@@ -35,16 +35,18 @@ import {XboxGuideParty} from './xbox-guide-party.js';
 import {XboxOverlayShortcut,ensureOverlayDesktopEntry} from './xbox-overlay-shortcut.js';
 import {xboxOverlaySettings,xboxOverlayPatch} from '../shared/xbox-overlay-settings.js';
 import { BackendManager } from './backend.js';
+import { backendHttpStatus } from './backend-releases.js';
 import { run, spawnTracked } from './process.js';
 import { inspectGameDirectory, StateStore } from './store.js';
 import { inspectStartupLibrary } from './startup-library.js';
 import { hasIncompleteUpdate, INCOMPLETE_UPDATE_MESSAGE } from './installation-state.js';
 import { RuntimeManager, type RuntimeSettingsReservation } from './runtime.js';
-import { prepareProtonRunner, protonOptionalComponentNotices, syncPrefixUserLocale, syncUnrealCultureGameIni } from './proton.js';
+import { prepareProtonRunner, protonLaunchFeatureNotices, protonOptionalComponentNotices, syncPrefixUserLocale, syncUnrealCultureGameIni } from './proton.js';
 import { layoutOfWine } from './proton-layout.js';
 import { accountCacheKey } from './offline-identity.js';
 import { applyOfflinePermissions, assertOfflineAccessReady, bindOfflineAccess, licenseCacheDirectory, offlineAccessRevoked, revokeOfflineAccess, type OfflineRevocation } from './offline-access.js';
 import { CatalogService } from './catalog.js';
+import {readXboxProfileGames} from './xbox-profile-games.js';
 import {catalogDetailMarket, publicStoreMarket} from './public-store-market.js';
 import {assertStoreOfferAccess} from './catalog-access.js';
 import { cloudSaveRuntime, gameInviteRuntime, offlineIdentityRuntime, selectedWinePath, startXodusService, storeContentRuntime, storeDiscoveryRuntime, unbridgedCloudSaveRuntime, type XodusServiceSession } from './xodus-service.js';
@@ -81,6 +83,8 @@ import { enableSavedAccounts, forgetSavedAccount, listSavedAccounts, useSavedAcc
 import { AccountRefresh, readAccount } from './account-refresh.js';
 import { AccountLibrary } from './account-library.js';
 import { RecentPcGamePass } from './gamepass-recent.js';
+import { HomeGamePassShelf } from './home-gamepass.js';
+import { newInstallationTime } from './install-time.js';
 import { GameActivities, installedTitleId } from './game-activity.js';
 import {gameDetailsTarget} from './game-details-target.js';
 import { GameAchievementsReader } from './game-achievements.js';
@@ -211,6 +215,7 @@ const catalog = new CatalogService();
 const gameActivities = new GameActivities();
 const gameAchievements = new GameAchievementsReader();
 const recentPcGamePass = new RecentPcGamePass();
+const homeGamePassShelf = new HomeGamePassShelf(recentPcGamePass, catalog);
 const accountLibrary = new AccountLibrary((ids, market) => catalog.licensedProducts(ids, market), undefined, market => recentPcGamePass.get(market));
 /** The longest a launch waits for owned bundles (a library read takes about 2 s) before its DLC hints. */
 const OWNED_ACCESS_WAIT_MS = 2_500;
@@ -534,8 +539,18 @@ function componentActivityRunning(): boolean {
         store.downloads.some(task => task.status === 'queued' || task.status === 'running');
 }
 
+async function discoverComponent<T>(component: 'backend' | 'runtime' | 'launcher', prepare: () => Promise<T>): Promise<T> {
+    try { return await prepare(); }
+    catch (error) {
+        // Read-only plan discovery failed before any installer entry point. Record
+        // the phase and component once, then let the original error reach the UI.
+        backendDiagnostic({ operation: 'component-update', event: 'failure', stage: 'plan-discovery', component, status: backendHttpStatus(error) });
+        throw error;
+    }
+}
+
 async function prepareComponentUpdates(): Promise<PreparedComponentUpdate[]> {
-    const backendPlan = await backend.prepareComponentUpdate(emitSnapshot);
+    const backendPlan = await discoverComponent('backend', () => backend.prepareComponentUpdate(emitSnapshot));
     const backendApply = backendPlan.apply, backendReconcile = backendPlan.reconcile;
     backendPlan.apply = async (owner) => {
         const result = await backendApply(owner);
@@ -550,9 +565,10 @@ async function prepareComponentUpdates(): Promise<PreparedComponentUpdate[]> {
     };
     if (backendReconcile)
         backendPlan.reconcile = async (owner) => { const result = await backendReconcile(owner); await refreshAccount(false); emitSnapshot(); return result; };
-    return [backendPlan, ...await prepareManagedComponentUpdates(runtime, emitSnapshot),
-        await prepareLegacyComponentUpdate(runtime, { configuredWine: () => store.settings.winePath, persistSelection: async (winePath) => { await store.setSettings({ winePath }); }, refreshAccount: async () => { await refreshAccount(false); } }, emitSnapshot),
-        await launcherUpdater.prepareComponentUpdate()];
+    return [backendPlan,
+        ...await discoverComponent('runtime', () => prepareManagedComponentUpdates(runtime, emitSnapshot)),
+        await discoverComponent('runtime', () => prepareLegacyComponentUpdate(runtime, { configuredWine: () => store.settings.winePath, persistSelection: async (winePath) => { await store.setSettings({ winePath }); }, refreshAccount: async () => { await refreshAccount(false); } }, emitSnapshot)),
+        await discoverComponent('launcher', () => launcherUpdater.prepareComponentUpdate())];
 }
 
 async function syncManagedWinePath(): Promise<void> {
@@ -854,8 +870,7 @@ async function gameContent(id: string) {
   if (authState.running || authState.stored !== true) throw Error('Sign in before checking game content.');
   const identity = `${authState.username}:${backend.current.binaryPath}:${currentMarket()}`;
   accountLibrary.select(authState.username, backend.current.capabilities.library ? backend.current.binaryPath : undefined, currentMarket());
-  const selectedRuntime=await resolveGameRuntime({runtimeRoot:store.settings.runtimeRoot,dataRoot:path.dirname(store.settings.runtimeRoot),gameId:game.id,
-    selection:game.runtime,separatePrefix:game.runtimeSeparatePrefix,approvedBuild:game.runtimeBuild,prefixAnchor:game.runtime&&game.runtime!=='default'?game.runtimePrefixes?.[game.runtime]:undefined,defaultWine:selectedWinePath(store.settings.winePath,store.settings.runtimeRoot,runtime.current.winePath)});
+  const selectedRuntime=await resolveGameRuntime({runtimeRoot:store.settings.runtimeRoot,dataRoot:path.dirname(store.settings.runtimeRoot),defaultWine:selectedWinePath(store.settings.winePath,store.settings.runtimeRoot,runtime.current.winePath),...gameRuntimeParameters(game)});
   const result = await contentManager().plan(game, () => accountLibrary.access(true), currentMarket());
   const wine = selectedRuntime.winePath;
   result.plan.runtimeSupported = Boolean(wine && await storeContentRuntime(wine));
@@ -1074,7 +1089,12 @@ async function runDownload(task: DownloadTask, binary: string, market: string, u
             delete gameUpdates[updateGame.id];
           }
         }
-        else await store.upsertGame({ ...inspected, licenseAccount: installAccount, offerProductId: /^[A-Z0-9]{12}$/.test(task.productId) ? task.productId : undefined });
+        else {
+          const installedAt = newInstallationTime(
+            store.games.find(entry => entry.id === inspected.id || entry.path === inspected.path),
+            task.status, inspected.installState, task.finishedAt);
+          await store.upsertGame({ ...inspected, ...(installedAt ? { installedAt } : {}), licenseAccount: installAccount, offerProductId: /^[A-Z0-9]{12}$/.test(task.productId) ? task.productId : undefined });
+        }
       } catch (error) {
         if (updateGame) await refreshIncompleteUpdate(updateGame).catch(() => {});
         if (updateGame && task.status === 'complete') {
@@ -1188,8 +1208,7 @@ async function gameLaunchOptions(id: string): Promise<GameLaunchOptions> {
   if (!game) throw new Error('Game not found.');
   let wine: string;
   try {
-    wine=(await resolveGameRuntime({runtimeRoot:store.settings.runtimeRoot,dataRoot:path.dirname(store.settings.runtimeRoot),gameId:game.id,
-      selection:game.runtime,separatePrefix:game.runtimeSeparatePrefix,approvedBuild:game.runtimeBuild,prefixAnchor:game.runtime&&game.runtime!=='default'?game.runtimePrefixes?.[game.runtime]:undefined,defaultWine:selectedWinePath(store.settings.winePath,store.settings.runtimeRoot,runtime.current.winePath)})).winePath;
+    wine=(await resolveGameRuntime({runtimeRoot:store.settings.runtimeRoot,dataRoot:path.dirname(store.settings.runtimeRoot),defaultWine:selectedWinePath(store.settings.winePath,store.settings.runtimeRoot,runtime.current.winePath),...gameRuntimeParameters(game)})).winePath;
   } catch(error) { const reason=(error as Error).message;return {cloudSaves:false,cloudReason:reason,vcInstall:false,vcReason:reason}; }
   if (!wine) return { cloudSaves: false, cloudReason: 'Select Xodus Runtime in Settings.', vcInstall: false, vcReason: 'Select Xodus Runtime in Settings.' };
   const wineAvailable = await fs.access(wine, constants.X_OK).then(() => true, () => false);
@@ -1271,8 +1290,7 @@ async function prepareGameLaunch(id: string, steam?: SteamGameContext): Promise<
   if (inspected.installState !== 'ready') throw new Error(inspected.installMessage ?? 'The installation is not ready for Xodus run.');
   const locale = supportedGameLocale(game.locale ?? '');
   const titleId = await gameTitleId(game).catch(() => undefined);
-  const runtimeContext = await resolveGameRuntime({runtimeRoot:store.settings.runtimeRoot,dataRoot:path.dirname(store.settings.runtimeRoot),gameId:game.id,
-    selection:game.runtime,separatePrefix:game.runtimeSeparatePrefix,approvedBuild:game.runtimeBuild,prefixAnchor:game.runtime&&game.runtime!=='default'?game.runtimePrefixes?.[game.runtime]:undefined,defaultWine:selectedWinePath(store.settings.winePath,store.settings.runtimeRoot,runtime.current.winePath)});
+  const runtimeContext = await resolveGameRuntime({runtimeRoot:store.settings.runtimeRoot,dataRoot:path.dirname(store.settings.runtimeRoot),defaultWine:selectedWinePath(store.settings.winePath,store.settings.runtimeRoot,runtime.current.winePath),...gameRuntimeParameters(game)});
   const wine = runtimeContext.winePath;
   await bindRuntimePrefix(runtimeContext);
   if (!wine) throw new Error('Select a Wine / Proton binary in Settings.');
@@ -1375,7 +1393,7 @@ async function prepareGameLaunch(id: string, steam?: SteamGameContext): Promise<
     const legacyPrefixRoot = runtimeContext.legacyPrefixRoot;
     const compatibilityDataPath = runtimeContext.compatibilityDataPath;
     const steamRoot = path.join(app.getPath('home'), '.steam', 'root');
-    const protonRunner = await prepareProtonRunner(wine, compatibilityDataPath, steamRoot, store.settings.shaderCacheLimitGiB);
+    const protonRunner = await prepareProtonRunner(wine, compatibilityDataPath, steamRoot, store.settings.shaderCacheLimitGiB, { installPath: game.path });
     const wineCommand = protonRunner?.command ?? wine;
     // Play goes through the runtime's Proton session when one is available, so
     // the runtime's own launch options (for example PROTON_USE_OPTISCALER) are
@@ -1389,6 +1407,11 @@ async function prepareGameLaunch(id: string, steam?: SteamGameContext): Promise<
       const launchOptionsEnvironment = parseLaunchOptions(game.launchTools?.launchOptions ?? '').environment;
       for (const notice of await protonOptionalComponentNotices({ ...launchEnvironment, ...launchOptionsEnvironment },
         protonRunner.protonRoot, compatibilityDataPath, offlineLaunch)) addGameLog(notice);
+      // Options that depend on context this launch does not provide are
+      // reported with their specific bound reason. No missing identity is
+      // invented and no global active/inactive state is claimed.
+      for (const notice of await protonLaunchFeatureNotices({ ...launchEnvironment, ...launchOptionsEnvironment },
+        protonRunner.protonRoot, protonRunner.compatibilityLocation)) addGameLog(notice);
     }
     if (inspected.vcRedistEncrypted) {
       if (!protonRunner) throw new Error('This encrypted VC++ prerequisite requires a Proton prefix. Select Xodus Runtime in Settings.');
@@ -1575,8 +1598,7 @@ async function installGameVcRuntime(id: string): Promise<void> {
   if (!game) throw new Error('Game not found.');
   const inspected = await inspectGameDirectory(game.path);
   if (inspected.installState !== 'ready') throw new Error(inspected.installMessage ?? 'The game installation is not ready.');
-  const runtimeContext = await resolveGameRuntime({runtimeRoot:store.settings.runtimeRoot,dataRoot:path.dirname(store.settings.runtimeRoot),gameId:game.id,
-    selection:game.runtime,separatePrefix:game.runtimeSeparatePrefix,approvedBuild:game.runtimeBuild,prefixAnchor:game.runtime&&game.runtime!=='default'?game.runtimePrefixes?.[game.runtime]:undefined,defaultWine:selectedWinePath(store.settings.winePath,store.settings.runtimeRoot,runtime.current.winePath)});
+  const runtimeContext = await resolveGameRuntime({runtimeRoot:store.settings.runtimeRoot,dataRoot:path.dirname(store.settings.runtimeRoot),defaultWine:selectedWinePath(store.settings.winePath,store.settings.runtimeRoot,runtime.current.winePath),...gameRuntimeParameters(game)});
   const wine = runtimeContext.winePath;
   await bindRuntimePrefix(runtimeContext);
   if (!wine) throw new Error('Select Xodus Runtime in Settings first.');
@@ -1676,6 +1698,14 @@ function currentMarket(): string {
   return configured.toLowerCase() === 'neutral' ? app.getLocaleCountryCode() || 'US' : configured;
 }
 
+// Title history artwork is optional: the native service omits an image when
+// the Xbox URL it received is not accepted. Fill only missing covers from the
+// verified public Store title-ID mapping; never replace service artwork and
+// never fail the player's history when Store metadata is unavailable.
+async function xboxProfileGames(xuid:string):Promise<XboxProfileGames>{
+  return readXboxProfileGames(xboxNativeSocial,xuid,titleIds=>catalog.artworkForXboxTitleIds(titleIds,currentMarket()));
+}
+
 // Fetch real covers and wide art even when an installation has a small logo.
 async function enrichDownloadCovers(tasks: readonly DownloadTask[], market: string): Promise<void> {
   const missing = tasks.filter(task => !task.coverUrl && ['queued', 'running', 'paused'].includes(task.status));
@@ -1731,7 +1761,6 @@ function registerDemoIpc(catalogMarket: () => string): void {
   ipcMain.handle('backend-refresh', () => snapshot().backend);
   ipcMain.handle('backend-check-update', () => snapshot().backend);
   ipcMain.handle('backend-update', () => {});
-  ipcMain.handle('backend-rebuild', () => {});
   ipcMain.handle('runtime-refresh', () => snapshot().runtime);
   ipcMain.handle('runtime-families', () => []);
   ipcMain.handle('runtime-check-update', () => snapshot().runtime);
@@ -1764,6 +1793,8 @@ function registerDemoIpc(catalogMarket: () => string): void {
   ipcMain.handle('set-offline-permissions', (_event, enabled: boolean) => ({ enabled: Boolean(enabled), requestSuccess: true, remainingToggles: 1, maxToggles: 3, periodDays: 365, checkedAt: new Date().toISOString() }));
   ipcMain.handle('catalog-search', (_event, query: string, cursor?: string) => catalog.search(query, publicStoreMarket(), cursor));
   ipcMain.handle('catalog-featured', () => catalog.featured(publicStoreMarket()));
+  ipcMain.handle('catalog-browse', (_event, cursor?: string) => catalog.browse(publicStoreMarket(), cursor));
+  ipcMain.handle('catalog-recent-gamepass', () => homeGamePassShelf.get(publicStoreMarket()));
   ipcMain.handle('store-access', () => ({configuredMarket:snapshot().settings.market,account:snapshot().auth.username??'demo',backend:snapshot().backend.binaryPath??'',market:catalogMarket(),checkedAt:new Date().toISOString(),expiresAt:new Date(Date.now()+60_000).toISOString(),accessByProductId:{}}));
   ipcMain.handle('account-library', (_event, kind: 'all' | 'owned' | 'gamepass') => demoAccountLibrary(kind, demoArtwork));
   ipcMain.handle('stop-game-update-check', () => {});
@@ -1877,7 +1908,7 @@ function registerIpc(): void {
   chatReads.viewed(account,binary,peer,ids);
  });
   ipcMain.handle('xbox-player-details',(event,xuid:string)=>{socialSender(event);return xboxNativeSocial.details(xuid);});
-  ipcMain.handle('xbox-player-games',(event,xuid:string)=>{socialSender(event);return xboxNativeSocial.games(xuid);});
+  ipcMain.handle('xbox-player-games',(event,xuid:string)=>{socialSender(event);return xboxProfileGames(xuid);});
   ipcMain.handle('xbox-social-people',(event,list:Parameters<NativeXboxSocial['people']>[0],query?:string)=>{socialSender(event);return xboxNativeSocial.people(list,query);});
   ipcMain.handle('xbox-social-relationship',(event,xuid:string)=>{socialSender(event);return xboxNativeSocial.relationship(xuid);});
   ipcMain.handle('xbox-social-relationship-change',(event,account:string,xuid:string,action:Parameters<NativeXboxSocial['changeRelationship']>[2])=>{socialSender(event);return xboxNativeSocial.changeRelationship(account,xuid,action);});
@@ -1905,7 +1936,6 @@ function registerIpc(): void {
     catch (error) { backendDiagnostic({ operation: 'update', event: 'failure', stage: 'update-blocked', committed: false }); throw error; }
     await backend.update(emitSnapshot); await refreshAccount();
   });
-  ipcMain.handle('backend-rebuild', async () => { ensureIdle(); await backend.rebuild(emitSnapshot); await refreshAccount(); });
   ipcMain.handle('runtime-refresh', async () => {
     ensureIdle();
     return runtime.refreshSelection(emitSnapshot, async () => {
@@ -2066,6 +2096,8 @@ function registerIpc(): void {
   });
   ipcMain.handle('save-diagnostic-report', (_event, content: unknown) => saveReviewedReport(content));
   ipcMain.handle('catalog-featured', () => catalog.featured(publicStoreMarket()));
+  ipcMain.handle('catalog-browse', (_event, cursor?: string) => catalog.browse(publicStoreMarket(), cursor));
+  ipcMain.handle('catalog-recent-gamepass', () => homeGamePassShelf.get(publicStoreMarket()));
   ipcMain.handle('start-install', (_event, request: InstallRequest) => startInstall(request));
   ipcMain.handle('install-plan', async (_event, raw: string, destination?: string) => {
     const binary = requireBackend('streaming');
@@ -2134,13 +2166,6 @@ function registerIpc(): void {
   ipcMain.handle('runtime-families', async () => {const families=await runtime.refreshFamilies();emitSnapshot();return families;});
   ipcMain.handle('update-game', async (_event, id: string, patch: Partial<Game>&RuntimeSettingsRequest) => {
     const allowed: Partial<Game> = {};
-    if ('runtime' in patch || 'runtimeSeparatePrefix' in patch) {
-      const current=store.games.find(game=>game.id===id);
-      if(!current)throw Error('Game not found.');
-      const selection=gameRuntimeSelection('runtime' in patch?patch.runtime:current.runtime);
-      if(selection!==(current.runtime??'default')||selection!=='default'&&patch.runtimeSeparatePrefix!==undefined&&patch.runtimeSeparatePrefix!==current.runtimeSeparatePrefix)ensureIdle();
-      Object.assign(allowed,await approvedRuntimeSettings(current,patch,store.settings.runtimeRoot));
-    }
     for (const key of ['title', 'executable', 'launchArgs'] as const) if (typeof patch[key] === 'string') allowed[key] = patch[key];
     if ('launchTools' in patch) allowed.launchTools = normalizeLaunchTools(patch.launchTools);
     if (typeof patch.locale === 'string') {
@@ -2148,7 +2173,23 @@ function registerIpc(): void {
       if (!game) throw new Error('Game not found.');
       allowed.locale = supportedGameLocale(patch.locale) ?? '';
     }
-    const game = await store.patchGame(id, allowed);
+    let game: Game;
+    if ('runtime' in patch || 'runtimeSeparatePrefix' in patch) {
+      const current=store.games.find(entry=>entry.id===id);
+      if(!current)throw Error('Game not found.');
+      const snapshot=structuredClone(current);
+      const changing=gameRuntimeSelection('runtime' in patch?patch.runtime:snapshot.runtime)!==gameRuntimeSelection(snapshot.runtime);
+      // A real family change holds the activity slot through verification and the
+      // persisted write, so no launch or component update can enter in between.
+      game=await guardedRuntimeSettings({current:snapshot,request:patch,
+        paths:{runtimeRoot:store.settings.runtimeRoot,dataRoot:path.dirname(store.settings.runtimeRoot)},changing,
+        reserve:()=>{
+          const owner=componentUpdateAdmission.reserve();
+          return {admit:()=>ensureIdle(undefined,undefined,owner),release:()=>componentUpdateAdmission.release(owner)};
+        },
+        read:()=>store.games.find(entry=>entry.id===id),
+        persist:(runtime)=>store.patchGame(id,{...allowed,...runtime})});
+    } else game=await store.patchGame(id, allowed);
     emitSnapshot();
     return game;
   });
@@ -2721,7 +2762,7 @@ app.whenReady().then(async () => {
     const text=(index:number)=>{const value=args[index];if(typeof value!=='string')throw Error('Invalid Guide request.');return value;};
     switch(method){
      case 'getXboxPlayerDetails':return xboxNativeSocial.details(text(0));
-     case 'getXboxPlayerGames':return xboxNativeSocial.games(text(0));
+     case 'getXboxPlayerGames':return xboxProfileGames(text(0));
      case 'getXboxPeople':return xboxNativeSocial.people(text(0) as Parameters<NativeXboxSocial['people']>[0],args[1]===undefined||args[1]===null?undefined:text(1));
      case 'getXboxRelationship':return xboxNativeSocial.relationship(text(0));
      case 'changeXboxRelationship':if(text(0)!=='current')throw Error('Xbox account changed.');return xboxNativeSocial.changeRelationship(nativeSocialConnection()!.account,text(1),text(2) as Parameters<NativeXboxSocial['changeRelationship']>[2]);

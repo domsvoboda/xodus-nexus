@@ -31,6 +31,38 @@ describe('progress parser', () => {
   it('strips terminal control codes', () => expect(stripAnsi('\u001b[32mok\u001b[0m\r')).toContain('ok'));
 });
 
+describe('stripAnsi', () => {
+  it('keeps visible text wrapped by ST-terminated OSC 8 hyperlinks', () => {
+    const link = '\u001b]8;;https://example.com\u001b\\link\u001b]8;;\u001b\\';
+    expect(stripAnsi(link)).toBe('link');
+  });
+
+  it('keeps text between adjacent and repeated ST-terminated OSC sequences', () => {
+    expect(stripAnsi('\u001b]8;;a\u001b\\one\u001b]8;;b\u001b\\two\u001b]8;;\u001b\\')).toBe('onetwo');
+    expect(stripAnsi('before\u001b]0;title\u001b\\middle\u001b]0;next\u001b\\after')).toBe('beforemiddleafter');
+  });
+
+  it('removes BEL-terminated OSC sequences and mixed terminators', () => {
+    expect(stripAnsi('\u001b]0;title\u0007visible')).toBe('visible');
+    expect(stripAnsi('\u001b]0;title\u0007a\u001b]8;;url\u001b\\b')).toBe('ab');
+  });
+
+  it('still strips CSI sequences and normalizes carriage returns', () => {
+    expect(stripAnsi('\u001b[32mok\u001b[0m\r')).toBe('ok\n');
+    expect(stripAnsi('\u001b[1;33mwarn\u001b[0m\rnext')).toBe('warn\nnext');
+  });
+
+  it('leaves plain text and unterminated OSC sequences untouched', () => {
+    expect(stripAnsi('plain text')).toBe('plain text');
+    expect(stripAnsi('\u001b]0;unfinished')).toBe('\u001b]0;unfinished');
+  });
+
+  it('treats embedded ESC without a backslash as OSC content', () => {
+    expect(stripAnsi('\u001b]0;ti\u001btle\u0007visible')).toBe('visible');
+    expect(stripAnsi('\u001b]8;;u\u001bXtext\u001b\\visible')).toBe('visible');
+  });
+});
+
 describe('version comparison', () => {
   it('detects newer published releases only', () => {
     expect(isNewerVersion('v0.5.25', '0.5.24')).toBe(true);
