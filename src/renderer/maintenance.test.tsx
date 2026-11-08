@@ -32,6 +32,11 @@ it('leaves the decluttered header empty while the backend is reachable, offline 
   data.backend.available = true; data.connectivity = { state: 'unknown' };
   expect(renderToStaticMarkup(<TopStatus data={data} go={() => {}} />)).toBe('');
 });
+const managedRuntimeUpdate = (id: 'nexus' | 'nexus-cachyos') => ({
+  id, checking: false, installing: false, version: 'runtime-10.0', channel: 'stable' as const, updateAvailable: true,
+  installed: { id, label: id === 'nexus' ? 'Standard' : 'CachyOS', buildId: 'a'.repeat(64), sourceCommit: 'b'.repeat(40), manifestSha256: 'c'.repeat(64) },
+  available: { version: id === 'nexus' ? 'runtime-11.0-new' : 'runtime-cachyos-11.0-new', candidateSha256: 'd'.repeat(64), sourceCommit: 'e'.repeat(40), archiveName: 'runtime.tar.xz', requiresBackendVersion: '0.2.3', requiresLauncherVersion: '0.5.0' },
+});
 it.each([
   [false, false, false], [true, false, false], [false, true, false], [false, false, true],
   [true, true, false], [true, false, true], [false, true, true], [true, true, true],
@@ -39,27 +44,23 @@ it.each([
   const data = demoSnapshot();
   if (launcher) data.launcherUpdate!.latestVersion = '0.3.9';
   data.backend.releaseAvailable = true; data.backend.updateAvailable = backend; data.backend.releaseVersion = '0.2.9';
-  data.runtime.nexusAvailable = true; data.runtime.nexusVersion = 'runtime-11.0-new';
-  data.runtime.nexusName = 'xodus-nexus-runtime-11.0-new-x86_64.tar.xz';
-  data.runtime.name = runtime ? 'xodus-nexus-runtime-11.0-old' : 'xodus-nexus-runtime-11.0-new';
+  data.runtime.managedFamilies = runtime ? [managedRuntimeUpdate('nexus')] : [];
   const html = renderToStaticMarkup(<TopStatus data={data} go={() => {}} />);
   expect(html.match(/class="update-notice"/g) ?? []).toHaveLength(launcher || backend || runtime ? 1 : 0);
-  for (const [available, label] of [[launcher, 'Launcher 0.3.9'], [backend, 'Backend 0.2.9'], [runtime, 'Runtime 11.0-new']] as const) {
+  for (const [available, label] of [[launcher, 'Launcher 0.3.9'], [backend, 'Backend 0.2.9'], [runtime, 'Standard 11.0-new']] as const) {
     if (available) expect(html).toContain(label); else expect(html).not.toContain(label);
   }
 });
-it('never advertises the Standard runtime release in the top notice while a CachyOS runtime is active', () => {
+it('advertises only managed family updates and never the legacy global pointer', () => {
   const data = demoSnapshot();
   data.runtime = { ...data.runtime, installed: true,
     name: 'nexus-runtime-cachyos-11.0-experimental-ge36f73cb-local',
     nexusAvailable: true, nexusVersion: 'runtime-11.0-new', nexusName: 'nexus-runtime-11.0-new-x86_64.tar.xz' };
+  expect(renderToStaticMarkup(<TopStatus data={data} go={() => {}} />)).not.toContain('update-notice');
+  data.runtime.managedFamilies = [managedRuntimeUpdate('nexus-cachyos')];
   const cachy = renderToStaticMarkup(<TopStatus data={data} go={() => {}} />);
-  expect(cachy).not.toContain('update-notice');
-  expect(cachy).not.toContain('Runtime 11.0-new');
-  data.runtime = { ...data.runtime, name: 'nexus-runtime-11.0-experimental-g5910703e-local' };
-  const standard = renderToStaticMarkup(<TopStatus data={data} go={() => {}} />);
-  expect(standard).toContain('update-notice');
-  expect(standard).toContain('Runtime 11.0-new');
+  expect(cachy).toContain('update-notice');
+  expect(cachy).toContain('CachyOS 11.0-new');
 });
 it('does not advertise failed, incomplete or already installed component releases', () => {
   const data = demoSnapshot();
@@ -73,10 +74,10 @@ it('does not advertise failed, incomplete or already installed component release
 it('preserves the launcher restart notice while listing pending backend and runtime updates', () => {
   const data = demoSnapshot(); data.launcherUpdate!.restartRequired = true;
   data.backend.updateAvailable = true; data.backend.releaseAvailable = true; data.backend.releaseVersion = '0.2.9';
-  data.runtime.nexusAvailable = true; data.runtime.nexusName = 'xodus-nexus-runtime-next-x86_64.tar.xz';
+  data.runtime.managedFamilies = [managedRuntimeUpdate('nexus')];
   const html = renderToStaticMarkup(<TopStatus data={data} go={() => {}} />);
   expect(html).toContain('Restart available'); expect(html).toContain('Restart to finish launcher update.');
-  expect(html).toContain('Backend 0.2.9'); expect(html).toContain('Runtime'); expect(html).not.toContain('undefined');
+  expect(html).toContain('Backend 0.2.9'); expect(html).toContain('Standard 11.0-new'); expect(html).not.toContain('undefined');
 });
 it('offers verified in-app install with independent backend version labels', () => {
   const data = demoSnapshot(); data.launcherUpdate = { currentVersion: '9.0.0', checking: false, latestVersion: '9.0.1', canInstall: true }; data.backend.version = '0.2.1';

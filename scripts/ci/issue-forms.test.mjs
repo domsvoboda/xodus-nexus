@@ -23,7 +23,7 @@ test('issue chooser disables blank issues and keeps every supported report route
   for (const link of config.contact_links) {
     assert.ok(link.name && link.about);
     assert.equal(new URL(link.url).origin, 'https://github.com');
-    assert.ok(new URL(link.url).pathname.startsWith('/domsvoboda/xodus-nexus/'));
+    assert.ok(new URL(link.url).pathname.startsWith('/domsvoboda/nexus-launcher/'));
   }
 });
 

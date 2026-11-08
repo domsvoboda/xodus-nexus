@@ -19,7 +19,7 @@ export function shortcutTitleStem(title: string): string {
     if (escapedBytes + cost > 150 || Buffer.byteLength(stem + char) > 120) break;
     stem += char; escapedBytes += cost;
   }
-  return stem.trimEnd() || 'Xodus Nexus game';
+  return stem.trimEnd() || 'Nexus Launcher game';
 }
 
 export function shortcutArguments(argv: string[]): { gameId?: string; profile?: string } {
@@ -193,7 +193,7 @@ export class GameShortcuts {
     if (!this.entry || !this.icon || !this.nexusEntry) throw new Error(this.reason);
     if (game && (game.installState !== 'ready' || !validId(game.id))) throw Error('Only installed, ready games can be added to Steam.');
     const entry = game ? this.entry : this.nexusEntry;
-    return { title: game ? game.title.replace(/[\x00-\x1f\x7f]/g, ' ').trim().slice(0, 256) || 'Xodus Nexus game' : 'Xodus Nexus',
+    return { title: game ? game.title.replace(/[\x00-\x1f\x7f]/g, ' ').trim().slice(0, 256) || 'Nexus Launcher game' : 'Nexus Launcher',
       executable: steamArgument('/bin/sh'), options: steamArgument(entry) + (game ? ' ' + steamArgument(game.id) : ''),
       directory: path.dirname(entry), identity: this.profileId + ':' + (game?.id ?? 'launcher'),
       icon: game ? await this.gameIcon(game.id, png) : this.icon };
@@ -217,7 +217,7 @@ export class GameShortcuts {
     const directory = this.locations[destination];
     await this.directory(directory);
     const icon = await this.gameIcon(game.id, png);
-    const title = game.title.replace(/[\0\r\n\t]/g, ' ').trim() || 'Xodus Nexus game';
+    const title = game.title.replace(/[\0\r\n\t]/g, ' ').trim() || 'Nexus Launcher game';
     // Keep the executable field constant: desktop loaders may check it before
     // expanding %% in arguments. /bin/sh runs a file, never a shell -c string.
     const body = `[Desktop Entry]\nType=Application\nVersion=1.0\nName=${desktopValue(title)}\nComment=Play with Nexus Launcher\nExec=/bin/sh ${desktopArgument(this.entry)} ${desktopArgument(game.id)}\nIcon=${desktopValue(icon)}\nTerminal=false\nCategories=Game;\nStartupNotify=false\n${this.marker}\n${this.gameMarker(game.id)}\n`;
@@ -233,7 +233,7 @@ export class GameShortcuts {
     const identity = `xodus-nexus-game-${this.profileId}-${game.id}`;
     const icon = await this.gameIcon(game.id, png);
     await this.directory(this.locations.applications);
-    const title = game.title.replace(/[\0\r\n\t]/g, ' ').trim() || 'Xodus Nexus game';
+    const title = game.title.replace(/[\0\r\n\t]/g, ' ').trim() || 'Nexus Launcher game';
     const body = `[Desktop Entry]\nType=Application\nName=${desktopValue(title)}\nExec=/bin/sh ${desktopArgument(this.entry)} ${desktopArgument(game.id)}\nIcon=${desktopValue(icon)}\nTerminal=false\nNoDisplay=true\nStartupNotify=false\nStartupWMClass=${identity}\nCategories=Game;\n${this.marker}\n${this.gameMarker(game.id)}\n`;
     await this.write(path.join(this.locations.applications, `${identity}.desktop`), body, 0o644,
       [this.marker, this.gameMarker(game.id)]);

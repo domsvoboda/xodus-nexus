@@ -40,7 +40,7 @@ releases="$runtime_root/releases"
 
 # Get the current runtime info
 if [[ ! -f "$pointer" ]]; then
-  echo 'No runtime is currently installed. Install a standard Xodus Runtime first.' >&2
+  echo 'No runtime is currently installed. Install a standard Nexus Runtime first.' >&2
   exit 1
 fi
 
@@ -129,5 +129,5 @@ staging=''
 # Do NOT activate automatically - let the user switch manually
 # via Settings -> Use previous runtime or by selecting this specific release
 echo "Installed $target_name (DLL SHA-256 $dll_sha). The active runtime is unchanged."
-echo "To activate: Select '$target_name' in Settings -> Xodus Runtime -> Use previous runtime,"
+echo "To activate: Select '$target_name' in Settings -> Nexus Runtime -> Use previous runtime,"
 echo "or manually set the runtime pointer to: $target"

@@ -33,7 +33,10 @@ export interface ManagedFamilyRelease {
 }
 export interface VerifiedManagedFamilyRelease extends ManagedFamilyRelease {
     readonly commit: string;
-    readonly runId: string;
+    readonly runId?: string;
+    /** Set only by the trusted local-import validation entrypoint. */
+    readonly local?: boolean;
+    readonly localBuildId?: string;
     readonly candidateSha256: string;
     readonly files: readonly Readonly<{
         name: string;
@@ -159,7 +162,7 @@ export function parseManagedFamilyRelease(family: unknown, value: unknown, optio
 /** Bind candidate metadata to already selected fixed release assets. The family
  * manifest is authenticated later through the verified archive bytes and full
  * payload validation; candidate.json does not contain its standalone hash. */
-export function verifyManagedFamilyCandidate(bytes: unknown, selected: unknown): Readonly<VerifiedManagedFamilyRelease> {
+function verifyManagedFamilyCandidateMode(bytes: unknown, selected: unknown, local: boolean): Readonly<VerifiedManagedFamilyRelease> {
     if (!selected || typeof selected !== 'object' || !selectedReleases.has(selected))
         throw Error('Candidate requires a locally verified release descriptor');
     const release = selected as Readonly<ManagedFamilyRelease>;
@@ -179,8 +182,22 @@ export function verifyManagedFamilyCandidate(bytes: unknown, selected: unknown):
         throw Error('Candidate differs from release target commit');
     if (!commit.startsWith(release.commitHint))
         throw Error('Candidate commit differs from release tag and archive');
-    const runId = text(candidate.runId, /^[1-9][0-9]*$/, 'candidate run ID', 16);
-    size(Number(runId), Number.MAX_SAFE_INTEGER, 'candidate run ID');
+    let runId: string | undefined, localBuildId: string | undefined;
+    if (local) {
+        // Provenance mode is selected by the trusted import entrypoint, never by
+        // these flags. They only prove that the candidate is an honest local,
+        // non-promotable build and must not claim a CI run.
+        if (candidate.localBuild !== true || candidate.diagnosticOnly !== true || candidate.promotable !== false)
+            throw Error('Local candidate requires localBuild=true, diagnosticOnly=true and promotable=false');
+        if (Object.hasOwn(candidate, 'runId'))
+            throw Error('Local candidate must not contain a CI run ID');
+        if (candidate.localBuildId !== undefined)
+            localBuildId = text(candidate.localBuildId, /^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/, 'local build ID', 128);
+    }
+    else {
+        runId = text(candidate.runId, /^[1-9][0-9]*$/, 'candidate run ID', 16);
+        size(Number(runId), Number.MAX_SAFE_INTEGER, 'candidate run ID');
+    }
     const graph = record(candidate.sourceGraph, 'candidate source graph');
     if (graph.proton !== commit)
         throw Error('Candidate Proton source graph mismatch');
@@ -224,6 +241,16 @@ export function verifyManagedFamilyCandidate(bytes: unknown, selected: unknown):
         nativeGateCount: 12 as const, treeSha256: sha(validation.treeSha256, 'validation tree hash'), resultsSha256: sha(validation.resultsSha256, 'validation results hash'), realGameTest: flag(validation.realGameTest, 'real-game metadata flag'), stableApproved: flag(validation.stableApproved, 'stable approval metadata flag')
     });
     return Object.freeze({
-        ...release, commit, runId, candidateSha256: createHash('sha256').update(raw).digest('hex'), files: Object.freeze(files), requiresLauncherVersion, requiresBackendVersion, sourceGraph, validation: evidence
+        ...release, commit, ...(local ? { local: true as const, localBuildId } : { runId }), candidateSha256: createHash('sha256').update(raw).digest('hex'), files: Object.freeze(files), requiresLauncherVersion, requiresBackendVersion, sourceGraph, validation: evidence
     });
+}
+/** Published-network entrypoint. It always requires a nonzero CI run ID and
+ * never switches to local validation because candidate JSON contains local flags. */
+export function verifyManagedFamilyCandidate(bytes: unknown, selected: unknown): Readonly<VerifiedManagedFamilyRelease> {
+    return verifyManagedFamilyCandidateMode(bytes, selected, false);
+}
+/** Trusted local-import entrypoint. The caller must set this mode explicitly;
+ * candidate JSON can only satisfy or fail the local provenance contract. */
+export function verifyLocalManagedFamilyCandidate(bytes: unknown, selected: unknown): Readonly<VerifiedManagedFamilyRelease> {
+    return verifyManagedFamilyCandidateMode(bytes, selected, true);
 }

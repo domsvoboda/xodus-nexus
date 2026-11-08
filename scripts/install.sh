@@ -2,7 +2,7 @@
 # Nexus Launcher user installer.
 #
 # One-liner (once the repository is public):
-#   curl -fsSL https://raw.githubusercontent.com/domsvoboda/xodus-nexus/main/scripts/install.sh | bash
+#   curl -fsSL https://raw.githubusercontent.com/domsvoboda/nexus-launcher/main/scripts/install.sh | bash
 #
 # What it does, without further input:
 #   1. Installs system prerequisites with your package manager (skip with
@@ -17,7 +17,7 @@
 #   XODUS_NEXUS_APPIMAGE=<file>   install a local AppImage instead of downloading
 set -euo pipefail
 
-REPO="domsvoboda/xodus-nexus"
+REPO="domsvoboda/nexus-launcher"
 PREFIX="${XODUS_NEXUS_PREFIX:-$HOME/.local}"
 APP_DIR="$PREFIX/opt/xodus-nexus"
 BIN_DIR="$PREFIX/bin"
@@ -153,11 +153,11 @@ cat <<'EOF'
 
 First run:
   1. Start Nexus Launcher from your application menu (or: xodus-nexus).
-  2. In Settings -> Xodus backend, click Install backend.
-     This downloads and verifies our patched, prebuilt Xodus backend; no compiler needed.
-  3. In Settings -> Nexus runtime, click Install Nexus runtime.
+  2. In Settings -> Nexus backend, click Install backend.
+     This downloads and verifies our patched, prebuilt Nexus backend; no compiler needed.
+  3. In Settings -> Nexus Runtime, click Install Nexus Runtime.
      This downloads our prebuilt runtime from GitHub Releases - no login,
      no compilation. The upstream snapshot and local source-build options are
      under Advanced / Diagnostics and are not needed for normal installation.
-  4. Sign in via Xodus, then browse the Store and install your games.
+  4. Sign in with your Microsoft account, then browse the Store and install your games.
 EOF

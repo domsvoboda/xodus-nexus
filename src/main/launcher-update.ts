@@ -6,13 +6,13 @@ import type { LauncherUpdate } from '../shared/types.js';
 import { isNewerVersion } from '../shared/utils.js';
 import { APPIMAGE_ARCH_SUFFIX, currentArch, isLinuxElf64, type NexusArch } from './arch.js';
 
-const REPO = 'domsvoboda/xodus-nexus';
+const REPO = 'domsvoboda/nexus-launcher';
 const API = `https://api.github.com/repos/${REPO}/releases?per_page=100`;
 interface Asset { name: string; browser_download_url: string; size: number }
 interface Release { tag_name: string; draft?: boolean; prerelease?: boolean; assets: Asset[] }
 export interface LauncherCandidate { version: string; image: Asset; checksum: Asset; releaseUrl: string }
 
-const REPOSITORIES=['domsvoboda/xodus-nexus','domsvoboda/nexus-launcher'] as const;
+const REPOSITORIES=['domsvoboda/nexus-launcher','domsvoboda/xodus-nexus'] as const;
 const ARTIFACT_FAMILIES=['Xodus-Nexus','Nexus-Launcher'] as const;
 export function launcherCandidate(releases: Release[], current: string, arch: NexusArch = currentArch()): LauncherCandidate | undefined {
   const stable = releases.filter(r => !r.draft && !r.prerelease && typeof r.tag_name === 'string' && /^v\d+\.\d+\.\d+$/.test(r.tag_name));

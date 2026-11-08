@@ -118,7 +118,7 @@ export class AccountLibrary {
   }
   private async load(cursor?: string, refresh = false): Promise<NonNullable<AccountLibrary['cached']>> {
     const identity = this.identity;
-    if (!identity) throw Error('Sign in and update the Xodus backend to load account games.');
+    if (!identity) throw Error('Sign in and update the Nexus backend to load account games.');
     if (refresh) { this.reset(); cursor = undefined; }
     const generation = this.generation;
     const current = () => { if (generation !== this.generation) throw Error('Account library changed. Refresh this page.'); };

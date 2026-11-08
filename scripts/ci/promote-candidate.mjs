@@ -52,9 +52,13 @@ try {
   // One new release per tag. Never edit an existing release or replace assets.
   try { command('gh', ['release', 'view', tag, '--repo', repo]); throw Error('Release already exists'); }
   catch (error) { if (!error.status) throw error; }
+  // Public release display title only. Tags, asset filenames and approvals stay unchanged.
+  const releaseTitle = kind === 'launcher'
+    ? `Nexus Launcher ${tag}`
+    : `Nexus Runtime ${tag.replace(/^runtime-/, '')}`;
   command('gh', ['release', 'create', tag, '--repo', repo, '--target', run.head_sha,
     ...manifest.files.map(file => path.join(directory, file.name)), path.join(directory, 'candidate.json'),
     ...(kind === 'launcher' ? [] : ['--latest=false']),
-    '--title', `Xodus Nexus ${kind} ${kind === 'backend' ? tag.slice('backend-v'.length) : tag}`, '--notes', notes]);
+    '--title', releaseTitle, '--notes', notes]);
   console.log(`Promoted tested ${kind} candidate ${runId} as ${tag}; no rebuild performed.`);
 } finally { await fs.rm(directory, { recursive: true, force: true }); }

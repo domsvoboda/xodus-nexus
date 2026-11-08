@@ -1,6 +1,6 @@
 import { ComponentUpdateAdmission, type ComponentUpdateOwner } from './component-update-admission.js';
 import { ComponentUpdates, type PreparedComponentUpdate } from './component-updates.js';
-import { prepareManagedComponentUpdates, prepareLegacyComponentUpdate } from './component-update-runtime.js';
+import { prepareManagedComponentUpdates } from './component-update-runtime.js';
 import {gameRuntimeReadiness} from './game-runtime-readiness.js';
 import {guardedRuntimeSettings,type RuntimeSettingsRequest} from './runtime-settings.js';
 import {gameRuntimeSelection} from '../shared/runtime-selection.js';
@@ -488,9 +488,9 @@ function emitLog(scope: string, line: string): void {
 
 function requireBackend(command: keyof typeof backend.current.capabilities): string {
   const status = backend.current;
-  if (!status.available || !status.binaryPath) throw new Error('The Xodus backend is unavailable.');
+  if (!status.available || !status.binaryPath) throw new Error('The Nexus backend is unavailable.');
   if (typeof status.capabilities[command] === 'boolean' && !status.capabilities[command]) {
-    throw new Error(`The active Xodus backend does not support the ${String(command)} command.`);
+    throw new Error(`The active Nexus backend does not support the ${String(command)} command.`);
   }
   return status.binaryPath;
 }
@@ -529,7 +529,7 @@ function ensureActivityIdle(mode?: 'install' | 'launch' | 'remove', ownRuntimeRe
     if (backend.current.updating)
         throw new Error('The backend is being updated.');
     if ((runtime.current.updating || runtime.busy) && !ownRuntimeReservation)
-        throw new Error('Xodus Runtime is being installed.');
+        throw new Error('Nexus Runtime is being installed.');
 }
 
 function componentActivityRunning(): boolean {
@@ -567,7 +567,6 @@ async function prepareComponentUpdates(): Promise<PreparedComponentUpdate[]> {
         backendPlan.reconcile = async (owner) => { const result = await backendReconcile(owner); await refreshAccount(false); emitSnapshot(); return result; };
     return [backendPlan,
         ...await discoverComponent('runtime', () => prepareManagedComponentUpdates(runtime, emitSnapshot)),
-        await discoverComponent('runtime', () => prepareLegacyComponentUpdate(runtime, { configuredWine: () => store.settings.winePath, persistSelection: async (winePath) => { await store.setSettings({ winePath }); }, refreshAccount: async () => { await refreshAccount(false); } }, emitSnapshot)),
         await discoverComponent('launcher', () => launcherUpdater.prepareComponentUpdate())];
 }
 
@@ -588,7 +587,7 @@ async function refreshAccount(emit = true, afterAuth = false): Promise<AuthStatu
   await accountRefresh.run(key, async signal => {
     let next: Pick<AuthStatus, 'stored' | 'username' | 'player' | 'note'>;
     if (!status.available || !status.binaryPath) {
-      next = { stored: null, username: undefined, note: 'Account status is unavailable because the Xodus backend is offline.' };
+      next = { stored: null, username: undefined, note: 'Account status is unavailable because the Nexus backend is offline.' };
     } else if (!status.capabilities.account) {
       next = {
         stored: null,
@@ -910,7 +909,7 @@ async function prepareInstall(request: InstallRequest, updateGame?: Game, conten
   const market = currentMarket();
   let selectedContentId: string | undefined;
   if (!content) {
-    if (!backend.current.capabilities.packageSelection) throw Error('Update the Xodus backend in Settings before installing games.');
+    if (!backend.current.capabilities.packageSelection) throw Error('Update the Nexus backend in Settings before installing games.');
     if (request.selectionMarket !== undefined && request.selectionMarket !== market) throw Error('Store market changed. Choose the installation package again.');
     if (request.selectedContentId !== undefined && request.selectionMarket !== market) throw Error('Invalid installation package selection.');
     const plan = await installPlans.get(binary, productId, market, Boolean(backend.current.capabilities.contentPackageSelection));
@@ -1210,7 +1209,7 @@ async function gameLaunchOptions(id: string): Promise<GameLaunchOptions> {
   try {
     wine=(await resolveGameRuntime({runtimeRoot:store.settings.runtimeRoot,dataRoot:path.dirname(store.settings.runtimeRoot),defaultWine:selectedWinePath(store.settings.winePath,store.settings.runtimeRoot,runtime.current.winePath),...gameRuntimeParameters(game)})).winePath;
   } catch(error) { const reason=(error as Error).message;return {cloudSaves:false,cloudReason:reason,vcInstall:false,vcReason:reason}; }
-  if (!wine) return { cloudSaves: false, cloudReason: 'Select Xodus Runtime in Settings.', vcInstall: false, vcReason: 'Select Xodus Runtime in Settings.' };
+  if (!wine) return { cloudSaves: false, cloudReason: 'Select Nexus Runtime in Settings.', vcInstall: false, vcReason: 'Select Nexus Runtime in Settings.' };
   const wineAvailable = await fs.access(wine, constants.X_OK).then(() => true, () => false);
   if (!wineAvailable) return { cloudSaves: false, cloudReason: 'The selected Wine binary is unavailable.', vcInstall: false, vcReason: 'The selected Wine binary is unavailable.' };
   const protonRoot = path.resolve(path.dirname(wine), '..', '..');
@@ -1223,7 +1222,7 @@ async function gameLaunchOptions(id: string): Promise<GameLaunchOptions> {
   const serviceAvailable = Boolean(servicePath) && await fs.access(servicePath, constants.X_OK).then(() => true, () => false);
   return {
     cloudSaves: previewRuntime && serviceAvailable,
-    cloudReason: !previewRuntime ? 'The selected Wine runtime does not include the cloud-save preview.' : !serviceAvailable ? 'This Xodus backend has no xodus-service.' : undefined,
+    cloudReason: !previewRuntime ? 'The selected Wine runtime does not include the cloud-save preview.' : !serviceAvailable ? 'This Nexus backend has no xodus-service.' : undefined,
     vcInstall: protonAvailable,
     vcReason: protonAvailable ? undefined : 'VC++ installation requires a full Proton runtime.',
   };
@@ -1295,7 +1294,7 @@ async function prepareGameLaunch(id: string, steam?: SteamGameContext): Promise<
   await bindRuntimePrefix(runtimeContext);
   if (!wine) throw new Error('Select a Wine / Proton binary in Settings.');
   try { await fs.access(wine, constants.X_OK); }
-  catch { throw new Error(`The selected Wine runtime is unavailable: ${wine}. Select or reinstall Xodus Runtime in Settings.`); }
+  catch { throw new Error(`The selected Wine runtime is unavailable: ${wine}. Select or reinstall Nexus Runtime in Settings.`); }
   const cloudRuntime = await cloudSaveRuntime(wine);
   if (await unbridgedCloudSaveRuntime(wine)) {
     throw new Error('The active runtime has cloud saves without the required service bridge. Update the active runtime in Settings.');
@@ -1414,7 +1413,7 @@ async function prepareGameLaunch(id: string, steam?: SteamGameContext): Promise<
         protonRunner.protonRoot, protonRunner.compatibilityLocation)) addGameLog(notice);
     }
     if (inspected.vcRedistEncrypted) {
-      if (!protonRunner) throw new Error('This encrypted VC++ prerequisite requires a Proton prefix. Select Xodus Runtime in Settings.');
+      if (!protonRunner) throw new Error('This encrypted VC++ prerequisite requires a Proton prefix. Select Nexus Runtime in Settings.');
       const installed = await installedVcRuntimeVersion(path.join(compatibilityDataPath, 'pfx'));
       if (!installed || !versionAtLeast(installed, VC_REDIST_VERSION)) {
         throw new Error(`VC++ runtime ${installed ?? 'not found'} is too old for this encrypted installer. Right-click the game and choose Install / update VC++, then press Play.`);
@@ -1601,7 +1600,7 @@ async function installGameVcRuntime(id: string): Promise<void> {
   const runtimeContext = await resolveGameRuntime({runtimeRoot:store.settings.runtimeRoot,dataRoot:path.dirname(store.settings.runtimeRoot),defaultWine:selectedWinePath(store.settings.winePath,store.settings.runtimeRoot,runtime.current.winePath),...gameRuntimeParameters(game)});
   const wine = runtimeContext.winePath;
   await bindRuntimePrefix(runtimeContext);
-  if (!wine) throw new Error('Select Xodus Runtime in Settings first.');
+  if (!wine) throw new Error('Select Nexus Runtime in Settings first.');
   await fs.access(wine, constants.X_OK);
 
   const operationId = `vc-${id}`;
@@ -1761,12 +1760,14 @@ function registerDemoIpc(catalogMarket: () => string): void {
   ipcMain.handle('backend-refresh', () => snapshot().backend);
   ipcMain.handle('backend-check-update', () => snapshot().backend);
   ipcMain.handle('backend-update', () => {});
+  ipcMain.handle('backend-import', () => {throw Error('Local backend import is unavailable in the synthetic demo.');});
   ipcMain.handle('runtime-refresh', () => snapshot().runtime);
   ipcMain.handle('runtime-families', () => []);
   ipcMain.handle('runtime-check-update', () => snapshot().runtime);
   ipcMain.handle('runtime-check-nexus', () => snapshot().runtime);
   ipcMain.handle('runtime-family-check', () => {throw Error('Managed runtime installation is unavailable in the synthetic demo.');});
   ipcMain.handle('runtime-family-install', () => {throw Error('Managed runtime installation is unavailable in the synthetic demo.');});
+  ipcMain.handle('runtime-family-import', () => {throw Error('Managed runtime installation is unavailable in the synthetic demo.');});
   ipcMain.handle('runtime-install', () => {});
   ipcMain.handle('runtime-install-nexus', () => {});
   ipcMain.handle('runtime-rollback-preview', () => {});
@@ -1936,6 +1937,12 @@ function registerIpc(): void {
     catch (error) { backendDiagnostic({ operation: 'update', event: 'failure', stage: 'update-blocked', committed: false }); throw error; }
     await backend.update(emitSnapshot); await refreshAccount();
   });
+  ipcMain.handle('backend-import', async (_event,directory:unknown) => {
+    if(typeof directory!=='string'||directory.length>4096)throw Error('Invalid local backend directory.');
+    try { ensureIdle(); }
+    catch (error) { backendDiagnostic({ operation: 'update', event: 'failure', stage: 'update-blocked', committed: false }); throw error; }
+    const value=await backend.importLocal(directory,emitSnapshot);await refreshAccount();return value;
+  });
   ipcMain.handle('runtime-refresh', async () => {
     ensureIdle();
     return runtime.refreshSelection(emitSnapshot, async () => {
@@ -1945,6 +1952,7 @@ function registerIpc(): void {
   });
   ipcMain.handle('runtime-family-check', (_event,family:unknown,options:unknown) => runtime.checkManagedRuntime(family,options,emitSnapshot));
   ipcMain.handle('runtime-family-install', (_event,family:unknown,expected:unknown,options:unknown) => {ensureIdle();return runtime.installManagedRuntime(family,expected,options,emitSnapshot);});
+  ipcMain.handle('runtime-family-import', (_event,family:unknown,directory:unknown,options:unknown) => {ensureIdle();return runtime.importManagedRuntime(family,directory,options,emitSnapshot);});
   ipcMain.handle('runtime-check-update', async () => { const value = await runtime.check(); emitSnapshot(); return value; });
   ipcMain.handle('runtime-check-nexus', async () => { const value = await runtime.checkNexus(); emitSnapshot(); return value; });
   ipcMain.handle('runtime-install', async () => {
@@ -2101,7 +2109,7 @@ function registerIpc(): void {
   ipcMain.handle('start-install', (_event, request: InstallRequest) => startInstall(request));
   ipcMain.handle('install-plan', async (_event, raw: string, destination?: string) => {
     const binary = requireBackend('streaming');
-    if (!backend.current.capabilities.packageSelection) throw Error('Update the Xodus backend in Settings to choose installation packages.');
+    if (!backend.current.capabilities.packageSelection) throw Error('Update the Nexus backend in Settings to choose installation packages.');
     const productId = safeProductId(raw), market = currentMarket();
     const availableBytes = destination === undefined ? undefined : await availableInstallBytes(destination);
     const plan = await installPlans.get(binary, productId, market, Boolean(backend.current.capabilities.contentPackageSelection));

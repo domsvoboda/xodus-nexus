@@ -1,15 +1,17 @@
 import {ui} from './i18n';
 import {runtimeFamilyLabels,type GameRuntimeSelection,type InstalledRuntimeFamily} from '../shared/runtime-selection';
 
-/** One explicit choice: the default runtime or an installed managed family.
- * The game keeps one stable prefix that its own runtime identity owns, so
- * choosing a family needs no separate prefix consent. */
+/** One explicit choice per game. Standard is the default for a game that has no
+ * selection. CachyOS is offered only after a verified installation. The
+ * selector never changes a global runtime pointer or a prefix location. */
 export function GameRuntimeFields({value,installed,change}:{value:GameRuntimeSelection;installed:InstalledRuntimeFamily[];change:(value:GameRuntimeSelection)=>void}) {
-  const current=installed.find(item=>item.id===value);
-  const missing=value!=='default'&&!current;
+  const explicitStandard=value==='nexus';
+  const available=installed.some(item=>item.id===value);
+  const missing=value!=='default'&&!available;
   return <label>{ui('runtime.game_runtime')}<select value={value} onChange={event=>change(event.target.value as GameRuntimeSelection)}>
-    <option value="default">{ui('runtime.use_default')}</option>
-    {installed.map(item=><option key={item.id} value={item.id}>{runtimeFamilyLabels[item.id]}</option>)}
+    <option value="default">{ui('runtime.family_standard_default')}</option>
+    {installed.filter(item=>item.id!=='nexus').map(item=><option key={item.id} value={item.id}>{runtimeFamilyLabels[item.id]}</option>)}
+    {explicitStandard&&available?<option value="nexus">{runtimeFamilyLabels.nexus}</option>:null}
     {missing?<option value={value} disabled>{ui('runtime.unavailable',{name:runtimeFamilyLabels[value as keyof typeof runtimeFamilyLabels]??String(value)})}</option>:null}
   </select></label>;
 }

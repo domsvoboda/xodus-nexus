@@ -5,7 +5,7 @@ set -euo pipefail
 # Usage: build-locale-runtime.sh WINE_SOURCE WORK_DIRECTORY
 #
 # The resulting DLL supports XPackageGetUserLocale via XODUS_PACKAGE_LOCALE
-# environment variable, enabling game language selection in Xodus Nexus.
+# environment variable, enabling game language selection in Nexus Launcher.
 
 script_root=$(realpath -e -- "$(dirname -- "$0")/..")
 if [[ $# -ne 2 ]]; then

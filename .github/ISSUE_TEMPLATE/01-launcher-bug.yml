@@ -5,10 +5,10 @@ body:
   - type: markdown
     attributes:
       value: |
-        This tracker is for **Xodus Nexus**, an independent, unofficial project, not upstream Xodus.
+        This tracker is for **Nexus Launcher**, an independent, unofficial project, not upstream Xodus.
         Report one problem per issue and search existing issues first.
 
-        **Logs are required.** Reproduce the problem, then open **Settings → Xodus backend → Open backend diagnostic log**.
+        **Logs are required.** Reproduce the problem, then open **Settings → Nexus backend → Open backend diagnostic log**.
         Use **Copy log**, save the text as `backend.txt`, and attach it below. For a download problem, also copy
         **Install Queue → Show log** (the terminal icon) into `download.txt` and attach it.
 
@@ -41,14 +41,14 @@ body:
     id: backend-version
     attributes:
       label: Nexus backend version
-      description: Settings → Xodus backend. This is updated separately from the launcher. If not installed, say so.
+      description: Settings → Nexus backend. This is updated separately from the launcher. If not installed, say so.
       placeholder: 0.2.8
     validations:
       required: true
   - type: input
     id: runtime-version
     attributes:
-      label: Nexus runtime version
+      label: Nexus Runtime version
       description: Copy the active runtime name/version from Settings. If not installed, say so.
       placeholder: Exact active runtime name/version
     validations:

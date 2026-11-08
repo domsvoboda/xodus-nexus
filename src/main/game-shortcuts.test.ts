@@ -68,7 +68,7 @@ it('creates Steam launch descriptions without unwanted desktop/menu entries and 
     expect((await execute('/bin/sh', [path.join(f.locations.userData, 'shortcuts/launch-game'), id])).stdout.trim())
       .toBe(`--nexus-profile ${f.locations.userData} --launch-game ${id}`);
     const nexus = await f.shortcuts.steamLaunch();
-    expect(nexus.title).toBe('Xodus Nexus');
+    expect(nexus.title).toBe('Nexus Launcher');
     expect(nexus.identity).not.toBe(steam.identity);
     expect((await execute('/bin/sh', [path.join(f.locations.userData, 'shortcuts/launch-nexus')])).stdout.trim())
       .toBe(`--nexus-profile ${f.locations.userData}`);
@@ -189,7 +189,7 @@ it('migrates a legacy hash entry and removes only its own old title after explic
 it('sanitizes path separators, controls and reserved punctuation and bounds UTF8 filenames', () => {
   expect(shortcutTitleStem('Shift At Midnight')).toBe('Shift At Midnight');
   expect(shortcutTitleStem('../../Game: A/B\\C?\n')).toBe('Game A B C');
-  expect(shortcutTitleStem('../\0')).toBe('Xodus Nexus game');
+  expect(shortcutTitleStem('../\0')).toBe('Nexus Launcher game');
   expect(shortcutTitleStem('Příliš žluťoučký kůň')).toBe('Příliš žluťoučký kůň');
   for(const title of ['A'.repeat(1000),'猫'.repeat(1000),'é'.repeat(1000)]) {
     const stem=shortcutTitleStem(title);

@@ -18,7 +18,7 @@ const digest=async(file:string)=>hash(await fs.readFile(file));
 const present=async(file:string)=>fs.access(file).then(()=>true,()=>false);
 async function approval(){const value=JSON.parse(await fs.readFile(path.join(root,'variants',family,'current.json'),'utf8'));return {buildId:value.buildId,manifestSha256:value.manifestSha256,sourceCommit:value.sourceCommit};}
 const family='nexus-cachyos',buildId='b'.repeat(64),sourceCommit='a'.repeat(40),sourceRepository='domsvoboda/nexus-runtime-cachyos';
-async function fixture() {
+async function fixture(install = true) {
   const files:Record<string,string>={};
   const payload=['proton','files/bin/wine','files/bin/wineserver','files/bin/wine.nexus-original',
     ...['PlayFabGameSave.dll','gaming-services-version.exe','package-registration.exe'].map(name=>'files/share/xodus-nexus/compat/'+name),
@@ -29,7 +29,7 @@ async function fixture() {
   await fs.writeFile(path.join(release,'XODUS_NEXUS_PATCH.json'),metadata);files['XODUS_NEXUS_PATCH.json']=hash(metadata);
   const manifest=JSON.stringify({schema:1,family,buildId,sourceRepository,sourceCommit,arch:'x64',prefixSchema:1,sourceLockSha256:'c'.repeat(64),files});
   await fs.writeFile(path.join(release,'nexus-family.json'),manifest);
-  await fs.writeFile(path.join(root,'variants',family,'current.json'),JSON.stringify({schema:1,family,buildId,sourceRepository,sourceCommit,manifestSha256:hash(manifest)}));
+  if(install)await fs.writeFile(path.join(root,'variants',family,'current.json'),JSON.stringify({schema:1,family,buildId,sourceRepository,sourceCommit,manifestSha256:hash(manifest)}));
 }
 /** Copies the verified fixture to the other managed family so both family
  * runners are installed and verifiable in the same data root. */
@@ -81,9 +81,19 @@ it('rejects executable symlink redirection even to matching bytes',async()=>{
  await fixture();const loader=path.join(release,'files/bin/wine');await fs.unlink(loader);await fs.symlink('wineserver',loader);
  await expect(resolveRuntimeFamily(root,family,'x64')).rejects.toThrow();
 });
-it('captures immutable independent sessions and preserves the default prefix path',async()=>{
- await fixture();const options={runtimeRoot:root,dataRoot:root,gameId:'test',defaultWine:'/default/wine',arch:'x64'};
+it('never uses an installed CachyOS family as the default runtime',async()=>{
+ await fixture();
+ await expect(resolveGameRuntime({runtimeRoot:root,dataRoot:root,gameId:'test',defaultWine:'/default/wine',arch:'x64',selection:'default'})).rejects.toThrow('Install the Standard runtime');
+});
+it('keeps the legacy default runner only while no managed family is installed',async()=>{
+ await fixture(false);
+ const context=await resolveGameRuntime({runtimeRoot:root,dataRoot:root,gameId:'test',defaultWine:'/default/wine',arch:'x64',selection:'default'});
+ expect(context.winePath).toBe('/default/wine');expect(context.managed).toBeUndefined();
+});
+it('captures immutable independent sessions and resolves the installed Standard family for a default game',async()=>{
+ await fixture();const standardRelease=await secondFamily('nexus');const options={runtimeRoot:root,dataRoot:root,gameId:'test',defaultWine:'/default/wine',arch:'x64'};
  const legacy=await resolveGameRuntime({...options,selection:undefined});
+ expect(legacy.winePath).toBe(standardRelease);
  const variant=await resolveGameRuntime({...options,selection:family});
  expect(legacy.compatibilityDataPath).toBe(path.join(root,'compatdata','test'));
  // A game without an existing prefix resolves the same per-game location for every family.
@@ -101,6 +111,7 @@ it('chooses a managed family without separate-prefix consent and never touches t
  const patch=await approve(game,{runtime:family,runtimeSeparatePrefix:false});
  expect(patch.runtimePrefixIdentity).toEqual({layout:'game'});
  expect(patch.runtimeSeparatePrefix).toBeUndefined();
+ Object.assign(game,patch);
  const context=await resolveGameRuntime({runtimeRoot:root,dataRoot:root,defaultWine:'/default/wine',arch:'x64',...gameRuntimeParameters(game)});
  expect(context.compatibilityDataPath).toBe(canonical);
  await bindRuntimePrefix(context);await bindRuntimePrefix(context);
@@ -131,7 +142,7 @@ it('keeps one stable per-game prefix and byte-identical saves across default, Ca
    expect((await fs.stat(save)).ino).toBe(inode);
    // The origin marker is never rewritten or invalidated by a family switch.
    expect(await fs.readFile(marker,'utf8')).toBe(markerBytes);
-   expect(current.winePath).toBe(choice==='default'?'/default/wine':choice==='nexus'?standardRelease:path.join(release,'files/bin/wine'));
+   expect(current.winePath).toBe(choice==='default'||choice==='nexus'?standardRelease:path.join(release,'files/bin/wine'));
  }
  expect(game.runtimePrefixIdentity).toEqual({layout:'game'});
  expect(await present(path.join(root,'runtime-prefixes'))).toBe(false);
@@ -154,7 +165,7 @@ it('keeps an existing legacy family prefix at its exact path and marker through 
  expect(other.compatibilityDataPath).toBe(legacy.compatibilityDataPath);expect(other.winePath).toBe(standardRelease);
  Object.assign(game,await approve(game,{runtime:'default'}));
  const canonical=await context();await bindRuntimePrefix(canonical);
- expect(canonical.compatibilityDataPath).toBe(legacy.compatibilityDataPath);expect(canonical.winePath).toBe('/default/wine');
+ expect(canonical.compatibilityDataPath).toBe(legacy.compatibilityDataPath);expect(canonical.winePath).toBe(standardRelease);
  Object.assign(game,await approve(game,{runtime:family}));
  const back=await context();await bindRuntimePrefix(back);
  expect(back.compatibilityDataPath).toBe(legacy.compatibilityDataPath);
@@ -168,7 +179,7 @@ it('keeps an existing legacy family prefix at its exact path and marker through 
  expect(loaded.games[0].runtimePrefixIdentity).toEqual({layout:'build',family,origin});
 });
 it('reuses the pre-0.5 legacy default prefix for a managed family without moving or rewriting it',async()=>{
- await fixture();const canonical=path.join(root,'compatdata','test');
+ await fixture();await secondFamily('nexus');const canonical=path.join(root,'compatdata','test');
  await fs.mkdir(path.join(canonical,'pfx'),{recursive:true});await fs.writeFile(path.join(canonical,'pfx/save'),'legacy progress');
  const originalBytes=await digest(path.join(canonical,'pfx/save'));
  const game=savedGame();
@@ -229,6 +240,7 @@ it('rejects legacy bindings with a missing, partial or malformed prefix contract
 });
 it('validates a recorded contract shape without pretending a default Wine runner verified it',async()=>{
  await fixture();const origin=await approval(),legacy=await legacyBuildPrefix('test',origin);
+ const pointerFile=path.join(root,'variants',family,'current.json'),pointerBytes=await fs.readFile(pointerFile);await fs.unlink(pointerFile);
  const marker=path.join(legacy.compatibilityDataPath,'.nexus-runtime-family.json');
  const base=JSON.parse(await fs.readFile(marker,'utf8'));
  const context=()=>resolveGameRuntime({runtimeRoot:root,dataRoot:root,defaultWine:'/default/wine',arch:'x64',gameId:'test',selection:'default',runtimeBuild:origin});
@@ -240,6 +252,7 @@ it('validates a recorded contract shape without pretending a default Wine runner
  await bindRuntimePrefix(await context());
  expect(await fs.readFile(marker,'utf8')).toBe(JSON.stringify(future));
  // A managed runner compares the recorded contract exactly.
+ await fs.writeFile(pointerFile,pointerBytes);
  const managed=await resolveGameRuntime({runtimeRoot:root,dataRoot:root,defaultWine:'/default/wine',arch:'x64',gameId:'test',selection:family,runtimeBuild:origin});
  await expect(bindRuntimePrefix(managed)).rejects.toThrow('mismatch');
 });
@@ -251,6 +264,7 @@ it('rejects prefix symlinks and never writes into their target',async()=>{
 });
 it('keeps experimental prefix protection when the game switches to the default runner',async()=>{
  await fixture();const origin=await approval(),legacy=await legacyBuildPrefix('test',origin);
+ const pointerFile=path.join(root,'variants',family,'current.json');await fs.unlink(pointerFile);
  const marker=path.join(legacy.compatibilityDataPath,'.nexus-runtime-family.json');
  // A symlinked binding is rejected even though the current runner is the default Wine.
  const real=path.join(root,'real-binding');await fs.writeFile(real,JSON.stringify({schema:1,family,buildId:origin.buildId,sourceCommit:origin.sourceCommit,manifestSha256:origin.manifestSha256,prefixSchema:1,arch:'x64'}));
@@ -314,7 +328,7 @@ it('adopts the single existing historical prefix and keeps it stable across defa
    const current=await context();await bindRuntimePrefix(current);
    expect(current.compatibilityDataPath).toBe(cached.compatibilityDataPath);
    expect(await digest(save)).toBe(originalBytes);
-   expect(current.winePath).toBe(choice==='default'?'/default/wine':choice==='nexus'?standardRelease:path.join(release,'files/bin/wine'));
+   expect(current.winePath).toBe(choice==='default'||choice==='nexus'?standardRelease:path.join(release,'files/bin/wine'));
  }
  expect(await present(path.join(root,'compatdata'))).toBe(false);
 });
@@ -344,6 +358,7 @@ it('fails closed on several existing prefixes that the current selection does no
 });
 it('keeps the unbound experimental prefix rejection when the default runner is selected',async()=>{
  await fixture();const legacy=await legacyFamilyPrefix('test',family);
+ const pointerFile=path.join(root,'variants',family,'current.json');await fs.unlink(pointerFile);
  const marker=path.join(legacy.compatibilityDataPath,'.nexus-runtime-family.json');
  const saveBytes=await digest(path.join(legacy.compatibilityDataPath,'save'));
  await fs.unlink(marker);
@@ -394,7 +409,7 @@ it('prefers the canonical prefix when a legacy family directory holds no prefix'
  expect(await fs.readdir(empty)).toEqual([]);
 });
 it('adopts a prefix that exists only as the legacy plain Wine root',async()=>{
- await fixture();
+ await fixture(false);
  await fs.mkdir(path.join(root,'prefixes','test'),{recursive:true});
  await fs.writeFile(path.join(root,'prefixes','test','save'),'plain wine progress');
  const game=savedGame();
@@ -439,7 +454,7 @@ it('does not gate a family choice on separate-prefix consent',()=>{
 });
 
 it('Stop uses its captured runtime and prefix after another launch is selected',async()=>{
- await fixture();
+ await fixture();await secondFamily('nexus');
  const server=path.join(release,'files/bin/wineserver');
  const stopLog=path.join(root,'captured-stop.log');
  await fs.writeFile(server,`#!/bin/sh\nprintf '%s\\n' "$WINEPREFIX" >> '${stopLog}'\n`,{mode:0o755});
@@ -528,7 +543,7 @@ it('rejects a same-bytes write during full verification and does not cache the r
 });
 
 it('rejects a default-runtime alias into a managed family but preserves ordinary default symlinks',async()=>{
- await fixture();const alias=path.join(root,'wine-alias');await fs.symlink(path.join(release,'files/bin/wine'),alias);
+ await fixture(false);const alias=path.join(root,'wine-alias');await fs.symlink(path.join(release,'files/bin/wine'),alias);
  const options={runtimeRoot:root,dataRoot:root,gameId:'test',selection:'default',arch:'x64'};
  await expect(resolveGameRuntime({...options,defaultWine:alias})).rejects.toThrow('cannot be the default Wine');
  await fs.unlink(alias);const legacy=path.join(root,'legacy-wine');await fs.writeFile(legacy,'synthetic');await fs.symlink(legacy,alias);
@@ -736,7 +751,7 @@ it('does not reserve activity for an unchanged runtime but still refuses a chang
  expect(reserved).toBe(0);
 });
 it('persists the captured identity atomically with the selection and survives reload',async()=>{
- await fixture();const {StateStore}=await import('./store');
+ await fixture();await secondFamily('nexus');const {StateStore}=await import('./store');
  const store=new StateStore(path.join(root,'profile'));
  await store.upsertGame(savedGame());
  const saved=await store.patchGame('test',await approve(store.games[0],{runtime:family}));

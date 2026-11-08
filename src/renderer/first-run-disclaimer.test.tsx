@@ -10,7 +10,7 @@ it('shows the upstream distinction and Nexus-only reporting before setup and sig
   expect(notice).toContain('Independent, unofficial project');
   expect(notice).toContain('not an official Xodus project');
   expect(notice).toContain('not developed or maintained by the upstream Xodus developers');
-  expect(notice).toContain('https://github.com/domsvoboda/xodus-nexus/issues');
+  expect(notice).toContain('https://github.com/domsvoboda/nexus-launcher/issues');
   expect(notice).toContain('target="_blank" rel="noopener noreferrer"');
   expect(notice).toContain('A problem in Nexus Launcher may not exist in upstream Xodus.');
   expect(html.indexOf('wizard-disclaimer')).toBeLessThan(html.indexOf('Games folder'));

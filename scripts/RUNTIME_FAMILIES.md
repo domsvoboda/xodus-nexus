@@ -1,10 +1,13 @@
 # Managed runtime families
 
 Per-game runtime selection accepts `default`, `nexus`, or `nexus-cachyos`.
-The default keeps the global runtime and existing prefix locations. The game
-settings selector lists other families only after installed payload verification.
-An absent or invalid selected family fails without falling back to the default.
-The selector does not download or install variants.
+`default` is the Standard family for an unconfigured game. A verified Standard
+receipt is used directly; if no managed family is installed yet, the legacy
+global runtime remains a migration fallback. An installed CachyOS family is
+never the default. The game settings selector lists CachyOS only after installed
+payload verification. An absent or invalid selected family fails without
+falling back to another family. The selector does not download or install
+variants.
 
 ## Installed receipt
 
@@ -29,6 +32,19 @@ match the family manifest. Required launch components include Proton, Wine,
 its original loader, wineserver, the runtime compatibility helpers, both Windows
 ABIs of XGameRuntime, WinHTTP and nghttp2, and the default prefix template.
 A receipt is an installer contract, not a substitute for native candidate gates.
+
+## Local build import
+
+A local build-output directory can be imported from the family card with
+**Install from archive**. The directory must contain `candidate.json`, the
+family binary archive, its `.sha512sum`, and the corresponding-source archive
+with its checksum. The importer verifies the candidate against the fixed family
+repository and main source, checks every listed SHA-256 and both SHA-512
+checksums, verifies the complete payload and manifest, and writes the normal
+family receipt and pointer. The recorded release tag is
+`runtime-local-g<commit>` or `runtime-cachyos-local-g<commit>`, so it is never
+presented as a published release. No separate profile, runtime root, data root
+or game environment is used.
 
 ## Family and prefix rules
 

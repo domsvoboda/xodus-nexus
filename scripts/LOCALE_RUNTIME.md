@@ -1,10 +1,10 @@
-# Locale-Enabled Xodus Runtime
+# Locale-Enabled Nexus Runtime
 
-This directory contains scripts for building and installing a locale-enabled version of the Xodus Proton runtime. The locale-enabled runtime supports the `XODUS_PACKAGE_LOCALE` environment variable, which allows Xodus Nexus to set the game language for titles that respect the Windows `XPackageGetUserLocale` API.
+This directory contains scripts for building and installing a locale-enabled version of the Xodus Proton runtime. The locale-enabled runtime supports the `XODUS_PACKAGE_LOCALE` environment variable, which allows Nexus Launcher to set the game language for titles that respect the Windows `XPackageGetUserLocale` API.
 
 ## Problem
 
-By default, the official Xodus Proton runtime does not implement `XPackageGetUserLocale` in xgameruntime. When a game (like Gears of War) calls this API, it returns `E_NOTIMPL`, causing the game to fall back to its default language (usually English), even when a different language is selected in Xodus Nexus.
+By default, the official Xodus Proton runtime does not implement `XPackageGetUserLocale` in xgameruntime. When a game (like Gears of War) calls this API, it returns `E_NOTIMPL`, causing the game to fall back to its default language (usually English), even when a different language is selected in Nexus Launcher.
 
 ## Solution
 
@@ -41,7 +41,7 @@ The script requires the Wine source to be at commit `b1dd32734a34472a28eb5be9922
 
 ### Step 2: Install the locale-enabled runtime
 
-First, install a standard Xodus Runtime through the Nexus Settings if you haven't already.
+First, install a standard Nexus Runtime through Settings if you haven't already.
 
 ```bash
 # Get the xgameruntime commit hash (check assets/xgameruntime-package-locale.patch for compatibility)
@@ -57,8 +57,8 @@ This creates a new runtime release with a `-locale-v1` suffix (e.g., `proton-xod
 
 The install script does **not** activate the new runtime automatically. To activate it:
 
-1. Open Xodus Nexus
-2. Go to Settings → Xodus Runtime
+1. Open Nexus Launcher
+2. Go to Settings → Nexus Runtime
 3. Click "Use previous runtime" to switch back to the base runtime, then the locale-enabled variant should be available
 4. **OR** manually set the runtime pointer:
    ```bash
@@ -71,7 +71,7 @@ The install script does **not** activate the new runtime automatically. To activ
 
 ## How It Works
 
-When you select a game language in Xodus Nexus (e.g., `cs-CZ`):
+When you select a game language in Nexus Launcher (e.g., `cs-CZ`):
 
 1. Nexus sets environment variables including `XODUS_PACKAGE_LOCALE=cs-CZ`
 2. The patched xgameruntime DLL reads this variable via `GetEnvironmentVariableA`
@@ -107,7 +107,7 @@ You can verify that the patch is working by:
 To return to the standard runtime:
 
 ```bash
-# In Xodus Nexus: Settings → Xodus Runtime → Use previous runtime
+# In Nexus Launcher: Settings → Nexus Runtime → Use previous runtime
 # Or manually:
 cp ~/.local/share/xodus-nexus/runtimes/releases/proton-xodus-*/current.json.backup \
    ~/.local/share/xodus-nexus/runtimes/current.json
@@ -124,7 +124,7 @@ cp ~/.local/share/xodus-nexus/runtimes/releases/proton-xodus-*/current.json.back
 ## Troubleshooting
 
 ### "The active runtime pointer has an unexpected release name"
-This error occurs if you don't have a standard Xodus Runtime installed first. Install one through Settings → Xodus Runtime → Check snapshot → Install Xodus Runtime.
+This error occurs if you don't have a standard Nexus Runtime installed first. Install one through Settings → Nexus Runtime → Check snapshot → Install Nexus Runtime.
 
 ### "A Xodus/game process is active"
 Close all Xodus, Wine, and game processes before running the install script.

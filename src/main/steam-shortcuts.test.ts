@@ -24,7 +24,7 @@ describe('Steam binary shortcut planning', () => {
     expect(next.bytes.subarray(0, first.bytes.length - 2)).toEqual(first.bytes.subarray(0, -2));
     expect(next.appid).not.toBe(first.appid);
     expect(first.bytes.toString()).toContain('AllowOverlay');
-    expect(first.bytes.toString()).toContain('Xodus Nexus');
+    expect(first.bytes.toString()).toContain('Nexus Launcher');
   });
   it('is idempotent and preserves user customizations on a matching shortcut', () => {
     const first = planSteamShortcut(undefined, launch);
