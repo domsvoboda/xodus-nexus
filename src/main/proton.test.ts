@@ -149,6 +149,33 @@ describe('prepareProtonRunner', () => {  it('runs an arm64 runtime from its own 
     await expect(prepareProtonRunner(wine, compat, path.join(root, 'steam'))).rejects.toThrow('libnghttp2.dll checksum');
   });
 
+  it('forces Python no-bytecode for Proton prefix init and the generated game session', async () => {
+    const root = await mkdtemp(path.join(tmpdir(), 'nexus-proton-python-cache-')); created.push(root);
+    const runtime = path.join(root, 'runtime'), compat = path.join(root, 'compat');
+    const wine = path.join(runtime, 'files/bin/wine'), proton = path.join(runtime, 'proton');
+    const flag = path.join(root, 'python-flag');
+    const quote = (value: string) => `'${value.replaceAll("'", `'"'"'`)}'`;
+    await mkdir(path.dirname(wine), { recursive: true });
+    await mkdir(path.join(runtime, 'files/share/default_pfx'), { recursive: true });
+    await writeFile(wine, '#!/bin/sh\nexit 0\n', { mode: 0o700 });
+    await writeFile(path.join(runtime, 'files/bin/wineserver'), '#!/bin/sh\nexit 0\n', { mode: 0o700 });
+    await writeFile(proton, `#!/bin/sh
+if [ "$1" = run ]; then
+  printf '%s:%s' "$2" "\${PYTHONDONTWRITEBYTECODE:-unset}" > ${quote(flag)}
+  if [ "$2" = cmd ]; then
+    mkdir -p "$STEAM_COMPAT_DATA_PATH/pfx/drive_c/windows/system32"
+    for name in libvkd3d-utils-1.dll dxgi.dll d3d12.dll; do : > "$STEAM_COMPAT_DATA_PATH/pfx/drive_c/windows/system32/$name"; done
+  fi
+fi
+exit 0
+`, { mode: 0o700 });
+    const runner = (await prepareProtonRunner(wine, compat, path.join(root, 'steam')))!;
+    expect(await readFile(flag, 'utf8')).toBe('cmd:1');
+    expect(await readFile(runner.launchCommand, 'utf8')).toContain("export PYTHONDONTWRITEBYTECODE='1'");
+    await execFile(runner.launchCommand, ['game.exe'], { env: { ...process.env, PYTHONDONTWRITEBYTECODE: '0' } });
+    expect(await readFile(flag, 'utf8')).toBe('game.exe:1');
+  });
+
   it('provisions every verified shared DXVK module, without modifying prior runtime symlinks', async () => {
     const root = await mkdtemp(path.join(tmpdir(), 'nexus-dxvk-prefix-')); created.push(root);
     const runtime = path.join(root, 'runtime'), compat = path.join(root, 'compat');
