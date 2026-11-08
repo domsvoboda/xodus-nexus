@@ -12,6 +12,8 @@
 .nexus-social-toggle.is-open>svg:last-child { transform:rotate(180deg); }
 @media(prefers-reduced-motion:reduce) { .nexus-social-shelf { transition:none; } }
 
+/* The scroll container owns the floating Social toggle clearance. Pages must
+   not add their own bottom padding here or the empty tail is doubled. */
 .content-shell>.page-scroll { padding-bottom:72px; }
 
 .settings-card.compact.settings-language { display:flex;align-items:flex-end;justify-content:space-between;gap:24px;flex-wrap:wrap;margin-bottom:14px; }

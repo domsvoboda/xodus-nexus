@@ -1,3 +1,4 @@
+import {readFileSync} from 'node:fs';
 import {renderToStaticMarkup} from 'react-dom/server';
 import {expect,it} from 'vitest';
 import type {CatalogProduct} from '../shared/types';
@@ -47,4 +48,21 @@ it('applies strict public Store eligibility without changing the existing Librar
  expect(library).toContain('>Install</button>');expect(library).toContain('Install location');expect(library).toContain(product.supportNote);
  const page=renderToStaticMarkup(<StorePage data={data} toast={()=>{}} go={()=>{}} initialQuery=""/>);
  expect(page).not.toContain('manual-install');expect(page).not.toContain('Install unlisted ID');
+});
+
+it('omits the generic direct-package sentence and activity disclaimer while keeping Install',()=>{
+ const direct={...product,supportNote:'A direct Windows.Desktop MSIXVC package was verified. Ownership is checked by Xodus when installation starts.'};
+ const html=renderToStaticMarkup(<CatalogGameDetails product={direct} data={demoSnapshot()} back={()=>{}} toast={()=>{}}/>);
+ expect(html).not.toContain(direct.supportNote);
+ expect(html).not.toContain('Xbox activity may be delayed or unavailable for some games. Local session time is not added to the Xbox total.');
+ expect(html).toContain('>Install</button>');
+ expect(html).toContain('Install location');
+});
+
+it('keeps the details Browse button and path input at the same 40px height without changing shared 44px controls',()=>{
+ const details=readFileSync('src/renderer/game-details.css','utf8'),controls=readFileSync('src/renderer/controls.css','utf8');
+ expect(details).toMatch(/\.gd-install-options input \{[^}]*height: 40px/);
+ expect(details).toContain('.gd-install-options .input-action { grid-template-columns: minmax(0,1fr) 40px; }');
+ expect(details).toMatch(/\.gd-install-options \.input-action button \{[^}]*width: 40px;[^}]*min-width: 40px;[^}]*height: 40px;[^}]*min-height: 40px;[^}]*padding: 0;/);
+ expect(controls).toContain('.input-action button { min-width: var(--control-height); min-height: var(--control-height); flex-shrink: 0; }');
 });

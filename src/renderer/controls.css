@@ -120,7 +120,7 @@ label.check-field.download-delete-confirm { padding: 12px; margin-top: 16px; bac
   .sidebar { padding-inline: 8px; }
 }
 @media (max-width: 820px) {
-  .page { padding: 20px 20px 64px; }
+  .page { padding: 20px 20px 0; }
   .page-header { flex-wrap: wrap; gap: 12px; }
   .page-header h1 { font-size: 28px; }
   .settings-card { padding: 20px; }

@@ -8,6 +8,7 @@ import {demoSnapshot} from '../shared/demo-data';
 import {freshStoreAccess,storeProductLicensed,useStoreAccess,type StoreAccessEvidence} from './store-access';
 vi.mock('./GameDetails',()=>({GameDetails:({play,notices}:{play:React.ReactNode;notices:React.ReactNode})=><main>{play}{notices}</main>}));
 const product={productId:'9AAAAAAAAAAA',installProductId:'9BBBBBBBBBBB',title:'Retail edition',description:'',categories:[],installability:'supported' as const,supportNote:'Supported',includedWith:'Game Pass Ultimate'};
+const planWith=(choice:Record<string,unknown>)=>({schema:1,rootProductId:product.productId,market:'US',status:'ready',choices:[{productId:product.productId,contentId:'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa',title:product.title,platform:'Windows.Desktop',packageFormat:'MSIXVC',kind:'Game',supported:true,...choice}]});
 const evidence=(data=demoSnapshot()):StoreAccessEvidence=>({account:data.auth.username!,backend:data.backend.binaryPath!,market:'US',configuredMarket:data.settings.market,checkedAt:new Date().toISOString(),expiresAt:new Date(Date.now()+60_000).toISOString(),accessByProductId:{[product.productId]:'owned'}});
 afterEach(()=>{vi.restoreAllMocks();vi.unstubAllGlobals();});
 it('accepts exact owned/Game Pass Store evidence and rejects marketing, other, stale, expired and wrong scope',()=>{
@@ -75,4 +76,62 @@ it('invalidates a held package confirmation when its owning Store surface unmoun
  const api={getInstallPlan:vi.fn(async()=>({status:'ready',market:'US'} as any)),startInstall:vi.fn(async()=> 'queued')};
  const pending=confirmedPackageInstall({productId:product.productId,title:product.title,destination:'/synthetic'},api,confirm,()=>true,()=>guard(product));
  await vi.waitFor(()=>expect(confirm).toHaveBeenCalled());await act(async()=>root.unmount());expect(guard(product)).toBe(false);choose('synthetic');await pending;expect(api.startInstall).not.toHaveBeenCalled();
+});
+
+it('shows the package install size and never relabels download-only bytes as required space',async()=>{
+ vi.stubGlobal('IS_REACT_ACT_ENVIRONMENT',true);
+ const data=demoSnapshot();data.games=[];data.downloads=[];data.backend.capabilities.packageSelection=true;
+ const mount=async(value:ReturnType<typeof planWith>)=>{
+  const getInstallPlan=vi.fn(async()=>value);
+  window.launcher={getInstallPlan} as unknown as Window['launcher'];
+  const node=document.createElement('div'),root=createRoot(node);
+  await act(async()=>root.render(<CatalogGameDetails product={product} data={data} back={()=>{}} toast={()=>{}}/>));
+  return {node,root,getInstallPlan};
+ };
+ let view=await mount(planWith({downloadBytes:2*1024**3,installBytes:4*1024**3}));
+ try{
+  await vi.waitFor(()=>expect(view.node.textContent).toContain('Estimated space: 4.0 GiB'));
+  expect(view.getInstallPlan).toHaveBeenCalledWith(product.productId);
+  expect(view.node.textContent).not.toContain('Estimated download: 2.0 GiB');
+ }finally{await act(async()=>view.root.unmount());}
+ view=await mount(planWith({downloadBytes:2*1024**3}));
+ try{
+  await vi.waitFor(()=>expect(view.node.textContent).toContain('Estimated download: 2.0 GiB'));
+  expect(view.node.textContent).not.toContain('Estimated space: 2.0 GiB');
+ }finally{await act(async()=>view.root.unmount());}
+});
+
+it('does not resolve package size for an unlicensed Store product',async()=>{
+ vi.stubGlobal('IS_REACT_ACT_ENVIRONMENT',true);
+ const data=demoSnapshot();data.games=[];data.downloads=[];data.backend.capabilities.packageSelection=true;
+ const getInstallPlan=vi.fn(async()=>planWith({downloadBytes:2*1024**3,installBytes:4*1024**3}));
+ window.launcher={getStoreAccess:vi.fn(async()=>undefined),getInstallPlan} as unknown as Window['launcher'];
+ const node=document.createElement('div'),root=createRoot(node);
+ try{
+  await act(async()=>root.render(<CatalogGameDetails storeMode product={product} data={data} back={()=>{}} toast={()=>{}}/>));
+  await act(async()=>{await Promise.resolve();});
+  expect(getInstallPlan).not.toHaveBeenCalled();
+  expect(node.textContent).not.toContain('Estimated space');
+ }finally{await act(async()=>root.unmount());}
+});
+
+it('ignores a package-size result after the account or backend scope changes',async()=>{
+ vi.stubGlobal('IS_REACT_ACT_ENVIRONMENT',true);
+ const data=demoSnapshot();data.games=[];data.downloads=[];data.backend.capabilities.packageSelection=true;
+ const pending:((value:ReturnType<typeof planWith>)=>void)[]=[];
+ const getInstallPlan=vi.fn(()=>new Promise<ReturnType<typeof planWith>>(resolve=>pending.push(resolve)));
+ window.launcher={getInstallPlan} as unknown as Window['launcher'];
+ const node=document.createElement('div'),root=createRoot(node);
+ const render=()=>act(async()=>root.render(<CatalogGameDetails product={product} data={data} back={()=>{}} toast={()=>{}}/>));
+ try{
+  await render();
+  await vi.waitFor(()=>expect(getInstallPlan).toHaveBeenCalledTimes(1));
+  data.auth={...data.auth,username:'other@example.test'};
+  await render();
+  await vi.waitFor(()=>expect(getInstallPlan).toHaveBeenCalledTimes(2));
+  await act(async()=>pending[0](planWith({downloadBytes:2*1024**3,installBytes:4*1024**3})));
+  expect(node.textContent).not.toContain('Estimated space: 4.0 GiB');
+  await act(async()=>pending[1](planWith({downloadBytes:3*1024**3,installBytes:5*1024**3})));
+  await vi.waitFor(()=>expect(node.textContent).toContain('Estimated space: 5.0 GiB'));
+ }finally{await act(async()=>root.unmount());}
 });
