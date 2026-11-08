@@ -9,6 +9,7 @@ import {defaultXboxOverlay,xboxOverlaySettings,xboxOverlayPatch} from '../shared
 import { DEFAULT_SHADER_CACHE_GIB, shaderCacheLimits } from '../shared/shader-cache.js';
 import { interfaceLanguagePreference } from '../shared/interface-language.js';
 import { resolvePackageFile } from './windows-path.js';
+import { legacyCachyosState } from './legacy-runtime-state.js';
 import { parsePackageXml, XmlNode } from './package-xml.js';
 import { hasIncompleteUpdate, INCOMPLETE_UPDATE_MESSAGE } from './installation-state.js';
 import { manifestAttr as attr, manifestText as text, manifestElements, manifestAttribute } from './manifest-xml.js';
@@ -17,6 +18,8 @@ interface PersistedState {
   games: Game[];
   downloads: DownloadTask[];
   settings: Settings;
+  /** One-time 0.5 migration marker. It is state metadata, never a UI setting. */
+  runtimeFamilyMigration?: number;
 }
 
 const defaultDataRoot = path.join(os.homedir(), '.local', 'share', 'xodus-nexus');
@@ -46,8 +49,10 @@ export class StateStore {
   }
 
   async load(): Promise<void> {
+    let loaded = false, migration: unknown;
     try {
       const parsed = JSON.parse(await fs.readFile(this.file, 'utf8')) as Partial<PersistedState>;
+      loaded = true; migration = parsed.runtimeFamilyMigration;
       let downloadLimitMiB = 0;
       try { downloadLimitKiB(parsed.settings?.downloadLimitMiB); downloadLimitMiB = parsed.settings?.downloadLimitMiB ?? 0; } catch { /* Ignore invalid saved preference; show the default in Settings. */ }
       let shaderCacheLimitGiB = DEFAULT_SHADER_CACHE_GIB;
@@ -66,9 +71,34 @@ export class StateStore {
             transferRate: undefined, phase: 'Paused — resume to reconnect and restore saved download checkpoints',
           } : task) : [],
         settings: Object.fromEntries(Object.entries({ ...defaultSettings, ...parsed.settings, ...xboxOverlaySettings(parsed.settings??{}), downloadLimitMiB, shaderCacheLimitGiB, closeToTray: parsed.settings?.closeToTray === true, multiAccountEnabled: parsed.settings?.multiAccountEnabled === true, interfaceLanguage: interfaceLanguagePreference(parsed.settings?.interfaceLanguage) }).filter(([key]) => key !== 'separateGameProcess')) as unknown as Settings,
+        runtimeFamilyMigration: parsed.runtimeFamilyMigration === 1 ? 1 : undefined,
       };
     } catch (error) {
       if ((error as NodeJS.ErrnoException).code !== 'ENOENT') console.warn('State could not be loaded', error);
+    }
+    if (loaded) await this.migrateRuntimeFamily(migration);
+  }
+
+  /** One-time preservation of the effective old global CachyOS choice. It is
+   * driven only by the strict verified legacy pointer, never by a guessed
+   * setting, and it changes no prefix, save or current pointer. */
+  private async migrateRuntimeFamily(migration: unknown): Promise<void> {
+    if (migration === 1) return;
+    try {
+      const legacy = await legacyCachyosState(this.state.settings.runtimeRoot, this.state.settings.winePath);
+      if (legacy) {
+        for (const game of this.state.games) {
+          if (game.runtime === undefined || game.runtime === 'default') game.runtime = 'nexus-cachyos';
+        }
+        this.state.runtimeFamilyMigration = 1;
+        // Persist only when the one-time CachyOS choice was actually adopted.
+        // A Standard or first-run profile keeps its existing state file unchanged
+        // until the normal settings/game save that follows migration.
+        await this.save();
+      }
+      else this.state.runtimeFamilyMigration = 1;
+    } catch (error) {
+      console.warn('Runtime family migration could not be saved', error);
     }
   }
 
