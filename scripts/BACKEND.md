@@ -148,7 +148,7 @@ node scripts/build-backend.mjs --work ./backend-build --output ./backend-release
 
 The wrapper verifies the source pin before delegating to the backend's own builder. See [backend build instructions](https://github.com/domsvoboda/nexus-backend/blob/main/docs/BUILD.md) for dependencies, offline builds and package validation.
 
-The launcher checks stable releases in `domsvoboda/nexus-backend` and retains support for existing compatible packages in `domsvoboda/xodus-nexus`. The source-build version is separate from the minimum installable version, so creating the fork does not require replacing an installed backend or publishing a release. Every package still requires matching checksums, architecture, source archives and command capabilities.
+The launcher checks stable releases in `domsvoboda/nexus-backend` and retains support for existing compatible packages in `domsvoboda/nexus-launcher`. The source-build version is separate from the minimum installable version, so creating the fork does not require replacing an installed backend or publishing a release. Every package still requires matching checksums, architecture, source archives and command capabilities.
 
 ## Electron sign-in host (backend 0.2.3, launcher 0.3.2)
 

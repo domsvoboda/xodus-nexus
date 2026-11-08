@@ -6,6 +6,11 @@
   "description": "Xbox-inspired Microsoft Store game launcher for Linux",
   "license": "MIT",
   "author": "Xodus Nexus contributors",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/domsvoboda/nexus-launcher.git"
+  },
+  "homepage": "https://github.com/domsvoboda/nexus-launcher#readme",
   "type": "module",
   "main": "dist-electron/main/index.js",
   "scripts": {

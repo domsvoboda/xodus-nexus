@@ -1,11 +1,11 @@
 name: Feature request
-description: Suggest an improvement to Xodus Nexus. Logs and hardware details are not required.
+description: Suggest an improvement to Nexus Launcher. Logs and hardware details are not required.
 title: "[Feature] "
 body:
   - type: markdown
     attributes:
       value: |
-        Suggest an improvement to **Xodus Nexus**, an independent, unofficial project, not upstream Xodus.
+        Suggest an improvement to **Nexus Launcher**, an independent, unofficial project, not upstream Xodus.
         Search existing requests first. For broken functionality or a game that does not work, use a bug form instead.
         Do not include private account information.
   - type: textarea

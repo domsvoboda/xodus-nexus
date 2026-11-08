@@ -5,11 +5,11 @@ body:
   - type: markdown
     attributes:
       value: |
-        This tracker is for **Xodus Nexus**, an independent, unofficial project, not upstream Xodus.
+        This tracker is for **Nexus Launcher**, an independent, unofficial project, not upstream Xodus.
         Report **one game per issue**. For installation or ownership errors, use **Launcher, account or download problem**.
 
         Reproduce the failure, then attach both:
-        - **Backend log:** Settings → Xodus backend → Open backend diagnostic log → Copy log. Save as `backend.txt`.
+        - **Backend log:** Settings → Nexus backend → Open backend diagnostic log → Copy log. Save as `backend.txt`.
         - **Game log:** open the game page, expand **Launch failed** or **Game exited**, then choose **Open diagnostic log**.
           Copy the text and save as `game.txt`. For a crash, temporarily enable **Settings → Advanced → Game logging →
           Verbose game logs**, click **Save diagnostics**, reproduce once, then turn verbose logging off again.
@@ -46,14 +46,14 @@ body:
     id: backend-version
     attributes:
       label: Nexus backend version
-      description: Settings → Xodus backend. This is updated separately from the launcher.
+      description: Settings → Nexus backend. This is updated separately from the launcher.
       placeholder: 0.2.8
     validations:
       required: true
   - type: input
     id: runtime-version
     attributes:
-      label: Nexus runtime version
+      label: Nexus Runtime version
       description: Copy the active runtime name/version from Settings, not "latest". Describe any custom runtime below.
       placeholder: Exact active runtime name/version
     validations:

@@ -1,6 +1,6 @@
 # Shared runtime clean build
 
-Nexus runtime builds on [Xodus Proton](https://github.com/xodus-gaming/Proton)
+Nexus Runtime builds on [Xodus Proton](https://github.com/xodus-gaming/Proton)
 and Xodus's [Wine](https://github.com/xodus-gaming/wine) /
 [XGameRuntime](https://github.com/xodus-gaming/xgameruntime), with additional
 Nexus compatibility patches. It is not an independent Wine implementation.

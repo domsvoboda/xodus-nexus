@@ -100,7 +100,7 @@ export function planSteamShortcut(original: Buffer | undefined, launch: SteamLau
     string('ShortcutPath', ''), string('LaunchOptions', launch.options), integer('IsHidden', 0), integer('AllowDesktopConfig', 1),
     integer('AllowOverlay', 1), integer('OpenVR', 0), integer('Devkit', 0), string('DevkitGameID', ''),
     integer('DevkitOverrideAppID', 0), integer('LastPlayTime', 0), string('FlatpakAppID', ''),
-    Buffer.from('\0tags\0\x01' + '0\0Xodus Nexus\0\x08\x08')]);
+    Buffer.from('\0tags\0\x01' + '0\0Nexus Launcher\0\x08\x08')]);
   const updated = Buffer.concat([bytes.subarray(0, -2), block, bytes.subarray(-2)]);
   parse(updated);
   return { bytes: updated, appid, added: true };
