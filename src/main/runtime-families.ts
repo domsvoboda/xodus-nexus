@@ -4,6 +4,15 @@ import path from 'node:path';
 import {gameRuntimeSelection,runtimeFamilies,runtimeFamilyLabels,type RuntimeFamily,type InstalledRuntimeFamily,runtimeBuildApproval,sameRuntimeBuild,type RuntimeBuildApproval} from '../shared/runtime-selection.js';
 const repositories:Record<RuntimeFamily,string>={nexus:'domsvoboda/nexus-runtime','nexus-cachyos':'domsvoboda/nexus-runtime-cachyos'};
 const digest=(bytes:Buffer)=>createHash('sha256').update(bytes).digest('hex');
+const NEXUS_CI_COMPAT_SOURCE = 'efa482d163cbd299602bce12317d863a1fda384c';
+// Exact three regular license files present in the fully validated Standard CI
+// archive but absent from its generated manifest. They are accepted only for
+// this exact family, source commit and schema; any other extra remains an error.
+const NEXUS_CI_COMPAT_LICENSE:Readonly<Record<string,string>>=Object.freeze({
+  'files/share/doc/nexus-runtime/GCC-runtime-copyright':'20390f8a6f3b1e4d7cb45dd8652dabb259bbef688cbad839bcdb0b9ba7252f79',
+  'files/share/doc/nexus-runtime/MinGW-runtime-copyright':'50e5bb66d222c7d4692c2d13670ddcd3664779358e389a026b69a0e0e18e7be5',
+  'files/share/doc/nexus-runtime/libxml2-COPYING':'c5c63674f8a83c4d2e385d96d1c670a03cb871ba2927755467017317878574bd',
+});
 async function fileDigest(file:string) {
   const hash=createHash('sha256');for await(const bytes of createReadStream(file))hash.update(bytes);return hash.digest('hex');
 }
@@ -63,6 +72,7 @@ export async function verifyRuntimeFamilyPayload(root:string,pointer:RuntimeFami
     if(digest(bytes)!==pointer.manifestSha256)throw Error('Runtime manifest checksum mismatch');
     const manifest=JSON.parse(bytes.toString('utf8'));
     if(manifest.schema!==1||manifest.family!==id||manifest.sourceRepository!==repositories[id]||manifest.sourceCommit!==pointer.sourceCommit||manifest.buildId!==pointer.buildId||manifest.arch!==arch||manifest.prefixSchema!==1||!manifest.files||Array.isArray(manifest.files)||typeof manifest.files!=='object')throw Error('Runtime manifest identity mismatch');
+    const compatLicense=id==='nexus'&&pointer.schema===1&&pointer.sourceCommit===NEXUS_CI_COMPAT_SOURCE?NEXUS_CI_COMPAT_LICENSE:{};
     const loader=arch==='arm64'?'files/bin-arm64/wine':'files/bin/wine';
     const server=arch==='arm64'?'files/bin-arm64/wineserver':'files/bin/wineserver';
     // Installer manifests must cover the Proton entry point and complete payload.
@@ -91,7 +101,15 @@ export async function verifyRuntimeFamilyPayload(root:string,pointer:RuntimeFami
       if(item.isDirectory())await walk(file);else if(name!=='nexus-family.json')inventory.push(name);
     }};
     await walk(root);
-    if(inventory.sort().join('\n')!==[...Object.keys(manifest.files),...Object.keys(symlinks)].sort().join('\n'))throw Error('Runtime payload inventory is incomplete');
+    const expectedInventory=[...Object.keys(manifest.files),...Object.keys(symlinks),...Object.keys(compatLicense)];
+    if(new Set(inventory).size!==inventory.length||inventory.sort().join('\n')!==[...new Set(expectedInventory)].sort().join('\n'))throw Error('Runtime payload inventory is incomplete');
+    for(const [name,expected] of Object.entries(compatLicense)) {
+      if(name in manifest.files||name in symlinks)continue;
+      const file=path.join(root,name),stat=await fs.lstat(file);
+      if(!stat.isFile()||stat.isSymbolicLink())throw Error('Compatibility runtime license must be a regular file');
+      const target=await fs.realpath(file);
+      if(!within(root,target)||!(await fs.stat(target)).isFile()||await fileDigest(target)!==expected)throw Error('Compatibility runtime license checksum mismatch');
+    }
     const metadata=JSON.parse(await fs.readFile(path.join(root,'XODUS_NEXUS_PATCH.json'),'utf8'));
     if(metadata.schema!==1||!hash(metadata.sourceLockSha256)||!metadata.sourceGraph||typeof metadata.sourceGraph!=='object'||metadata.sourceGraph.proton!==pointer.sourceCommit||metadata.sourceLockSha256!==manifest.sourceLockSha256)throw Error('Runtime source graph is not bound');
     if(!(await fs.stat(path.join(root,'files/share/default_pfx'))).isDirectory())throw Error('Runtime default prefix missing');
