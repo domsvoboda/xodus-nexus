@@ -5,7 +5,7 @@ import type { BackendCapabilities, BackendStatus } from '../shared/types.js';
 import { parseBackendHelp } from '../shared/utils.js';
 import { run } from './process.js';
 import { backendLock, compareVersions } from './backend-package.js';
-import { discoverBackend, installBackend, backendHttpStatus, type BackendArtifact, BackendInstallError, type BackendUpdateStage } from './backend-releases.js';
+import { discoverBackend, installBackend, prepareLocalBackend, backendHttpStatus, type BackendArtifact, BackendInstallError, type BackendUpdateStage } from './backend-releases.js';
 import { backendDiagnostic } from './backend-diagnostics.js';
 import type { PreparedComponentUpdate } from './component-updates.js';
 import { BackendPrerequisiteError, backendPrerequisiteFailure } from './backend-prerequisites.js';
@@ -15,7 +15,7 @@ const EMPTY_CAPABILITIES: BackendCapabilities = {
   commands: [], account: false, login: false, logout: false, download: false, streaming: false, run: false,
 };
 
-interface ManagedPointer { commit: string; binaryPath: string; builtAt: string; linuxRunPatch?: string; recipeSha256?: string; version?: string; delivery?: 'release' | 'local' }
+interface ManagedPointer { commit: string; binaryPath: string; builtAt: string; linuxRunPatch?: string; recipeSha256?: string; version?: string; delivery?: 'release' | 'local'; localBuild?: true; diagnosticOnly?: true; promotable?: false }
 type BackendMutation = 'update';
 export type BackendMutationTarget = Readonly<Pick<ManagedPointer, 'commit' | 'binaryPath' | 'version' | 'delivery' | 'linuxRunPatch' | 'recipeSha256'>>;
 /** Publication of current.json is a commit boundary, not a durability claim. */
@@ -191,8 +191,12 @@ export class BackendManager {
       const pointer = await this.readPointer();
       this.status.releaseAvailable = true;
       this.status.releaseVersion = this.artifact.manifest.version;
-      this.status.updateAvailable = !this.status.available || pointer?.delivery !== 'release' ||
-        !pointer?.version || compareVersions(pointer.version, this.artifact.manifest.version) < 0;
+      const remote = this.artifact.manifest.version;
+      const comparison = pointer?.version ? compareVersions(pointer.version, remote) : -1;
+      // A local build is offered the exact official same version, but never an
+      // automatic downgrade to an older published release.
+      this.status.updateAvailable = !this.status.available || !pointer?.version || comparison < 0
+        || (pointer?.delivery === 'local' && pointer.version === remote);
       this.status.blockReason = this.status.available ? undefined : this.probeFailure;
     } catch (error) {
       this.artifact = undefined;
@@ -278,6 +282,17 @@ export class BackendManager {
       }
   }
 
+  async importLocal(directory: unknown, onStatus: () => void): Promise<BackendStatus> {
+    if (typeof directory !== 'string' || !path.isAbsolute(directory)) throw Error('Choose an absolute local backend build directory.');
+    let prepared: Awaited<ReturnType<typeof prepareLocalBackend>> | undefined;
+    try {
+      prepared = await prepareLocalBackend(directory, this.managedRoot);
+      await this.performUpdate(onStatus, prepared.artifact);
+      return this.current;
+    }
+    finally { if (prepared) await prepared.cleanup(); }
+  }
+
   async update(onStatus: () => void): Promise<void> { return this.performUpdate(onStatus); }
 
   private async performUpdate(onStatus: () => void, selected?: BackendArtifact, expectedCurrent?: () => Promise<boolean>): Promise<void> {
@@ -325,7 +340,8 @@ export class BackendManager {
       if (expectedCurrent && !await expectedCurrent()) throw Error('The installed backend changed before activation. Check again.');
       const manifest = artifact.manifest;
       const pointer: ManagedPointer = { commit: manifest.commit, binaryPath, builtAt: new Date().toISOString(),
-        linuxRunPatch: manifest.compatibility, recipeSha256: manifest.recipeSha256, version: manifest.version, delivery: 'release' };
+        linuxRunPatch: manifest.compatibility, recipeSha256: manifest.recipeSha256, version: manifest.version, delivery: artifact.delivery ?? 'release',
+        ...(artifact.delivery === 'local' ? { localBuild: true as const, diagnosticOnly: true as const, promotable: false as const } : {}) };
       target = { commit: pointer.commit, binaryPath, version: pointer.version, delivery: pointer.delivery, linuxRunPatch: pointer.linuxRunPatch, recipeSha256: pointer.recipeSha256 };
       const temporary = `${this.pointerFile}.${randomUUID()}.tmp`;
       stage = 'update-commit';
@@ -341,7 +357,7 @@ export class BackendManager {
       }
       Object.assign(this.status, { available: false, capabilities: EMPTY_CAPABILITIES, source: 'managed', binaryPath, commit: manifest.commit,
         linuxRunPatch: manifest.compatibility, recipeSha256: manifest.recipeSha256,
-        version: manifest.version, delivery: 'release', phase: 'Backend activated; checking availability.' });
+        version: manifest.version, delivery: artifact.delivery ?? 'release', phase: 'Backend activated; checking availability.' });
       stage = 'update-confirm';
       backendDiagnostic({ operation: 'update', event: 'diagnostic', stage: 'update-confirm' });
       const refreshed = await this.refresh();
@@ -349,11 +365,18 @@ export class BackendManager {
         throw new Error('The selected backend could not be confirmed after activation.');
       }
       reconciled = true;
-      // A concurrent read-only check may have discovered a newer release.
-      const cached = this.artifact?.manifest;
-      const latest = cached && compareVersions(cached.version, manifest.version) >= 0 ? cached : manifest;
-      Object.assign(this.status, { releaseAvailable: Boolean(latest), releaseVersion: latest?.version,
-        updateAvailable: Boolean(latest && compareVersions(manifest.version, latest.version) < 0), phase: 'Backend is ready.' });
+      if (artifact.delivery === 'local') {
+        // The local build is not a published release. A later explicit check
+        // may offer the exact official same version, never an older downgrade.
+        Object.assign(this.status, { releaseAvailable: false, releaseVersion: undefined, updateAvailable: false, phase: 'Backend is ready.' });
+      }
+      else {
+        // A concurrent read-only check may have discovered a newer release.
+        const cached = this.artifact?.manifest;
+        const latest = cached && compareVersions(cached.version, manifest.version) >= 0 ? cached : manifest;
+        Object.assign(this.status, { releaseAvailable: Boolean(latest), releaseVersion: latest?.version,
+          updateAvailable: Boolean(latest && compareVersions(manifest.version, latest.version) < 0), phase: 'Backend is ready.' });
+      }
       backendDiagnostic({ operation: 'update', event: 'diagnostic', stage: 'update-ready' });
     } catch (error) {
       const failureStage = error instanceof BackendInstallError ? error.stage : stage;

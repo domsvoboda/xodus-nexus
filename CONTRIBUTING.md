@@ -35,7 +35,7 @@ Stable publication requires explicit maintainer approval
 for the exact tested artifact, with no rebuild after validation. The approval
 record is [release-validation.json](.github/release-validation.json).
 
-Detailed guides are prepared for the [wiki](https://github.com/domsvoboda/xodus-nexus/wiki)
+Detailed guides are prepared for the [wiki](https://github.com/domsvoboda/nexus-launcher/wiki)
 (currently pending). Runtime reconstruction instructions and source/license
 locks remain alongside the [build scripts](scripts/SHARED_RUNTIME.md).
 

@@ -10,7 +10,7 @@ case "${1:-}" in
     cat <<'EOF'
 Usage: uninstall.sh [--dry-run]
 
-Close Nexus and its games before uninstalling. No sudo is needed.
+Close Nexus Launcher and its games before uninstalling. No sudo is needed.
 Removes the installer-managed AppImage, its updater backups, icon, command
 symlink and application-menu entry. All user data and system packages are kept.
 For a custom installation, use the same XODUS_NEXUS_PREFIX and XDG_DATA_HOME
@@ -44,7 +44,7 @@ if [[ -e "$nexus_lock" || -L "$nexus_lock" ]]; then
   nexus_pid=''
   IFS= read -r nexus_pid < "$nexus_lock" || true
   [[ "$nexus_pid" =~ ^[1-9][0-9]*$ ]] || die 'Invalid launcher update lock.'
-  if kill -0 "$nexus_pid" 2>/dev/null; then die 'A launcher update is active. Close Nexus and retry.'; fi
+  if kill -0 "$nexus_pid" 2>/dev/null; then die 'A launcher update is active. Close Nexus Launcher and retry.'; fi
 fi
 
 nexus_removed=0

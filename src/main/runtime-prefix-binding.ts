@@ -2,6 +2,7 @@ import {promises as fs} from 'node:fs';
 import path from 'node:path';
 import {gameRuntimeSelection,legacyRuntimePrefixOrigin,runtimeFamilies,runtimePrefixIdentity,type GameRuntimeSelection,type RuntimeFamily,type RuntimePrefixIdentity} from '../shared/runtime-selection.js';
 import {resolveRuntimeFamily,type ResolvedRuntimeFamily} from './runtime-families.js';
+import {legacyCachyosState} from './legacy-runtime-state.js';
 export interface GameRuntimeContext {
   readonly selection:GameRuntimeSelection;
   /** Durable prefix location captured before any selection change. */
@@ -142,14 +143,46 @@ export async function resolveGameRuntime(options:{runtimeRoot:string;dataRoot:st
   const paths=runtimePrefixPaths(options.dataRoot,options.gameId,identity);
   const frozenIdentity=Object.freeze({...identity}) as Readonly<RuntimePrefixIdentity>;
   if(selection==='default') {
-    if(!options.defaultWine)throw Error('Select a default Wine / Proton runtime in Settings.');
+    // Standard is the default family for an unconfigured game. A verified
+    // Standard receipt wins. The legacy global runtime is a migration fallback
+    // only while no managed family is installed at all, so an installed
+    // CachyOS family can never become the hidden default.
+    const familyInstalled=async(id:RuntimeFamily)=>{try{return (await fs.lstat(path.join(options.runtimeRoot,'variants',id,'current.json'))).isFile();}catch(error){if((error as NodeJS.ErrnoException).code==='ENOENT')return false;throw error;}};
+    if(await familyInstalled('nexus')) {
+      const managed=await resolveRuntimeFamily(options.runtimeRoot,'nexus',options.arch);
+      return Object.freeze({selection,identity:frozenIdentity,gameId:options.gameId,winePath:managed.winePath,dataRoot:options.dataRoot,managed,...paths});
+    }
+    if(await familyInstalled('nexus-cachyos'))throw Error('Install the Standard runtime in Settings. A CachyOS installation is not the default runtime.');
+    // The verified legacy CachyOS runner remains valid for an explicit migrated
+    // per-game choice, but it must never become the hidden default for a new or
+    // unconfigured game after the one-time migration. That needs Standard.
+    const legacyCachy=await legacyCachyosState(options.runtimeRoot,options.defaultWine??'');
+    if(legacyCachy)throw Error('Install the Standard runtime in Settings. The existing CachyOS runtime is not the default; choose CachyOS per game or install Standard.');
+    if(!options.defaultWine)throw Error('Install the Standard runtime in Settings.');
     const canonical=async(file:string)=>fs.realpath(file).catch(error=>{if(error.code==='ENOENT')return path.resolve(file);throw error;});
     const managed=path.join(options.runtimeRoot,'variants');
     const inside=(root:string,file:string)=>{const relative=path.relative(root,file);return Boolean(relative)&&!relative.startsWith('..'+path.sep)&&relative!=='..'&&!path.isAbsolute(relative);};
     if(inside(managed,options.defaultWine)||inside(await canonical(managed),await canonical(options.defaultWine)))throw Error('Choose a managed runtime family for this game; a family runner cannot be the default Wine / Proton runtime.');
     return Object.freeze({selection,identity:frozenIdentity,gameId:options.gameId,winePath:options.defaultWine,dataRoot:options.dataRoot,...paths});
   }
-  const managed=await resolveRuntimeFamily(options.runtimeRoot,selection,options.arch);
+  let managed: Readonly<ResolvedRuntimeFamily>;
+  try {
+    managed=await resolveRuntimeFamily(options.runtimeRoot,selection,options.arch);
+  } catch(error) {
+    // A migrated explicit CachyOS choice may predate managed CachyOS. Use the
+    // existing strict legacy global CachyOS runner only when no managed CachyOS
+    // receipt exists. It is never reported as a managed installation, and a
+    // missing CachyOS selection never falls back to Standard.
+    if(selection==='nexus-cachyos') {
+      const receipt=path.join(options.runtimeRoot,'variants',selection,'current.json');
+      const installed=await fs.lstat(receipt).then(stat=>stat.isFile(),()=>false);
+      if(!installed) {
+        const legacy=await legacyCachyosState(options.runtimeRoot,options.defaultWine??'');
+        if(legacy)return Object.freeze({selection,identity:frozenIdentity,gameId:options.gameId,winePath:legacy.winePath,dataRoot:options.dataRoot,...paths});
+      }
+    }
+    throw error;
+  }
   return Object.freeze({selection,identity:frozenIdentity,gameId:options.gameId,winePath:managed.winePath,dataRoot:options.dataRoot,managed,...paths});
 }
 

@@ -1,5 +1,6 @@
 import {useEffect,useRef,useState} from 'react';
 import type {AppSnapshot,Game} from '../shared/types';
+import {activeRuntimeIsCachyos} from '../shared/runtime-display';
 /** Visible-game readiness follows the verified installed family current. Pending
  * and errors never borrow another build's availability. */
 export function useGameRuntimeReady(game:Game|undefined,data:AppSnapshot):boolean {
@@ -20,6 +21,16 @@ export function useGameRuntimeReady(game:Game|undefined,data:AppSnapshot):boolea
     return()=>{active=false;epoch.current++;};
   },[scope,version,managed]);
   if(!game)return false;
-  if(!managed)return Boolean(data.settings.winePath||data.runtime.winePath);
+  if(!managed) {
+    const families=data.runtime.managedFamilies??[];
+    // Prefer an installed managed Standard. If any other managed family exists
+    // (CachyOS only), a default game is not ready, even when a legacy Standard
+    // or custom Wine path is still present; the backend resolver requires
+    // Standard in that combined state.
+    if(families.some(item=>item.id==='nexus'&&Boolean(item.installed)))return true;
+    if(families.some(item=>Boolean(item.installed)))return false;
+    const legacyCachy=activeRuntimeIsCachyos(data.runtime)||/nexus-runtime-cachyos-/.test(data.settings.winePath);
+    return Boolean(!legacyCachy&&(data.settings.winePath||data.runtime.winePath));
+  }
   return result?.scope===scope&&result.version===version&&result.ready===true;
 }

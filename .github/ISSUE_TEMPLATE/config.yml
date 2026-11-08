@@ -1,5 +1,5 @@
 blank_issues_enabled: false
 contact_links:
   - name: Setup guide and troubleshooting
-    url: https://github.com/domsvoboda/xodus-nexus/wiki/Getting-started
+    url: https://github.com/domsvoboda/nexus-launcher/wiki/Getting-started
     about: Check installation instructions and requirements before reporting a problem.

@@ -30,8 +30,8 @@ function installPasskeyCancellation(strings: Record<string, string> = {}): void 
       button:hover{background:#454d57}button:focus-visible{outline:2px solid #9acb87;outline-offset:3px}
       button.browser{background:#357e2c;border-color:#4d9345}button:disabled{opacity:.6;cursor:wait}.error{color:#f1b3a9;margin-top:8px}
       @media(max-width:460px){.panel{align-items:stretch;flex-direction:column;gap:12px}button{width:100%}}
-    </style><section class="panel" role="region" aria-label="Xodus Nexus passkey help">
-      <div class="copy"><div class="brand">XODUS NEXUS</div><h2>Passkey taking too long?</h2>
+    </style><section class="panel" role="region" aria-label="Nexus Launcher passkey help">
+      <div class="copy"><div class="brand">NEXUS LAUNCHER</div><h2>Passkey taking too long?</h2>
       <p>If your account uses a passkey or security key, continue in Google Chrome. Or cancel this request to choose another method.</p><p class="error" role="status" hidden></p></div>
       <div class="actions"><button type="button" class="browser" data-browser>Continue in browser</button><button type="button" data-cancel>Cancel passkey request</button></div></section>`;
     // Translations are assigned as text, never inserted into the remote page as HTML.

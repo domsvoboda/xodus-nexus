@@ -142,7 +142,7 @@ export async function startXodusService(
 ): Promise<XodusServiceSession> {
   const binary = path.join(path.dirname(backendBinary), 'xodus-service');
   try { await fs.access(binary, constants.X_OK); }
-  catch { throw new Error('This Xodus backend has no xodus-service. Rebuild the managed backend to use Xbox cloud saves.'); }
+  catch { throw new Error('This Nexus backend has no xodus-service. Rebuild the managed backend to use Xbox cloud saves.'); }
 
   const sessionRoot = path.join(userData, 'service-sessions');
   await fs.mkdir(sessionRoot, { recursive: true, mode: 0o700 });

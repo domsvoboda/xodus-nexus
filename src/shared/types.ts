@@ -106,7 +106,7 @@ export interface RuntimeStatus {
   artifactExpiresAt?: string;
   artifactAvailable: boolean;
   // Prebuilt runtime with the Nexus xgameruntime patches, published on the
-  // Xodus Nexus GitHub releases. Preferred over the official snapshot.
+  // Nexus Launcher GitHub releases. Preferred over the official snapshot.
   nexusAvailable?: boolean;
   nexusName?: string;
   nexusVersion?: string;
@@ -642,11 +642,13 @@ export interface LauncherApi {
   refreshBackend(): Promise<BackendStatus>;
   checkBackendUpdate(): Promise<BackendStatus>;
   updateBackend(): Promise<void>;
+  importBackend(directory:string): Promise<BackendStatus>;
   refreshRuntime(): Promise<RuntimeStatus>;
   getRuntimeFamilies(): Promise<InstalledRuntimeFamily[]>;
   checkRuntimeUpdate(): Promise<RuntimeStatus>;
   checkManagedRuntime(family:RuntimeFamily,options:ManagedRuntimeOptions):Promise<ManagedFamilyStatus>;
   installManagedRuntime(family:RuntimeFamily,expectedCandidateSha256:string,options:ManagedRuntimeOptions):Promise<ManagedFamilyInstallResult>;
+  importManagedRuntime(family:RuntimeFamily,directory:string,options:ManagedRuntimeOptions):Promise<ManagedFamilyInstallResult>;
   checkNexusRuntime(): Promise<RuntimeStatus>;
   installRuntime(): Promise<void>;
   installNexusRuntime(): Promise<void>;

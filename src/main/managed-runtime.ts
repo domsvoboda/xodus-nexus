@@ -1,10 +1,10 @@
-import { promises as fs } from 'node:fs';
+import { createReadStream, promises as fs } from 'node:fs';
 import { createHash, randomUUID } from 'node:crypto';
 import path from 'node:path';
 import { isDeepStrictEqual } from 'node:util';
 import type { ManagedFamilyStatus, ManagedFamilyInstallResult, ManagedRuntimeOptions } from '../shared/types.js';
 import { runtimeFamilies, type RuntimeFamily } from '../shared/runtime-selection.js';
-import { parseManagedFamilyRelease, verifyManagedFamilyCandidate, type VerifiedManagedFamilyRelease } from './runtime-family-release.js';
+import { parseManagedFamilyRelease, verifyLocalManagedFamilyCandidate, verifyManagedFamilyCandidate, type VerifiedManagedFamilyRelease } from './runtime-family-release.js';
 import { resolveRuntimeFamily, retainRuntimeFamilyBuild, verifyRuntimeFamilyPayload, type RuntimeFamilyReceipt } from './runtime-families.js';
 import { materializeRuntimeArchive } from './runtime-family-archive.js';
 import { runtimePayloadMatches } from './runtime-payload-identity.js';
@@ -36,6 +36,10 @@ interface Target {
     input: unknown;
     bytes: Buffer;
     policy: ManagedRuntimeOptions;
+    /** A verified local build-output archive. Never used for published installs. */
+    localArchive?: string;
+    /** Set only by importLocal, the trusted local validation entrypoint. */
+    local?: boolean;
 }
 interface Context {
     root: () => string;
@@ -391,6 +395,89 @@ export class ManagedRuntimeManager {
         if (bytes !== asset.size || h256.digest('hex') !== record.sha256 || h512.digest('hex') !== line[1])
             throw Error('Runtime archive checksum mismatch');
     }
+    private async hashFile(file: string, algorithm: 'sha256' | 'sha512' = 'sha256'): Promise<string> {
+        const hash = createHash(algorithm);
+        for await (const chunk of createReadStream(file)) hash.update(chunk);
+        return hash.digest('hex');
+    }
+    /** Import a local runtime build-output directory (candidate.json, binary,
+     * corresponding source and checksums). This uses the same candidate,
+     * payload and pointer verification as a published install; only the bytes
+     * come from an explicit user-selected directory. */
+    async importLocal(selection: unknown, directory: unknown, value: unknown): Promise<ManagedFamilyInstallResult> {
+        const id = familyId(selection);
+        let snapshot: string | undefined;
+        try {
+            if (typeof directory !== 'string' || !path.isAbsolute(directory)) throw Error('Choose an absolute local runtime build directory.');
+            const root = this.context.root();
+            const candidateFile = path.join(directory, 'candidate.json');
+            const candidateStat = await fs.lstat(candidateFile);
+            if (!candidateStat.isFile() || candidateStat.isSymbolicLink() || candidateStat.size <= 0 || candidateStat.size > 2 * 1024 * 1024) throw Error('Runtime candidate.json must be a regular bounded file.');
+            const candidateBytes = await fs.readFile(candidateFile);
+            let candidate: Record<string, unknown>;
+            try { candidate = JSON.parse(candidateBytes.toString('utf8')) as Record<string, unknown>; }
+            catch { throw Error('Runtime candidate.json is not valid JSON.'); }
+            if (!object(candidate) || candidate.schema !== 1 || candidate.kind !== 'runtime' || candidate.repository !== repositories[id] || candidate.ref !== 'refs/heads/main') throw Error('Runtime candidate.json does not belong to this family and main source.');
+            if (typeof candidate.commit !== 'string' || !/^[a-f0-9]{40}$/.test(candidate.commit) || !Array.isArray(candidate.files) || candidate.files.length !== 4) throw Error('Runtime candidate.json has an invalid source or file inventory.');
+            const records = candidate.files.map(item => object(item) ? item : undefined);
+            if (records.some(item => !item || typeof item.name !== 'string' || !/^[A-Za-z0-9][A-Za-z0-9._-]{0,199}$/.test(item.name) || typeof item.size !== 'number' || !Number.isSafeInteger(item.size) || item.size <= 0 || typeof item.sha256 !== 'string' || !/^[a-f0-9]{64}$/.test(item.sha256))) throw Error('Runtime candidate.json has an invalid file inventory.');
+            const names = new Set(records.map(item => String(item!.name)));
+            const binary = records.find(item => /^nexus-runtime(?:-cachyos)?-[A-Za-z0-9._-]*-g[a-f0-9]{8,40}-x86_64\.tar\.xz$/.test(String(item!.name)))!;
+            const hint = String(binary.name).match(/-g([a-f0-9]{8,40})-x86_64\.tar\.xz$/)![1];
+            const base = String(binary.name).slice(0, -'-x86_64.tar.xz'.length);
+            const expected = [base + '-x86_64.sha512sum', base + '-source.tar.xz', base + '-source.sha512sum'];
+            if (!expected.every(name => names.has(name))) throw Error('Runtime candidate.json does not bind the exact archive and checksum asset set.');
+            const prefix = id === 'nexus' ? 'runtime-' : 'runtime-cachyos-';
+            const tag = prefix + 'local-g' + hint;
+            const assets = [
+                { name: 'candidate.json', size: candidateBytes.length, browser_download_url: `https://github.com/${repositories[id]}/releases/download/${tag}/candidate.json` },
+                ...records.map(item => ({ name: String(item!.name), size: Number(item!.size), browser_download_url: `https://github.com/${repositories[id]}/releases/download/${tag}/${String(item!.name)}` })),
+            ];
+            const versions = this.context.versions();
+            const selected = Object.freeze({
+                draft: false, prerelease: false, tag_name: tag, target_commitish: String(candidate.commit),
+                published_at: new Date().toISOString(), assets,
+            });
+            const policy = options(value);
+            const release = parseManagedFamilyRelease(id, selected, { ...policy, arch: this.context.arch ?? process.arch, launcherVersion: versions.launcher, backendVersion: versions.backend });
+            const verified = verifyLocalManagedFamilyCandidate(candidateBytes, release);
+            // Copy the complete local inventory into a private staging snapshot,
+            // then verify the exact copied bytes. Hashing the user's original
+            // directory before a later copy would leave a TOCTOU window while a
+            // builder is still writing its output.
+            await fs.mkdir(root, { recursive: true, mode: 0o700 });
+            snapshot = await fs.mkdtemp(path.join(root, '.import-'));
+            await fs.chmod(snapshot, 0o700);
+            const copiedCandidate = path.join(snapshot, 'candidate.json');
+            await fs.writeFile(copiedCandidate, candidateBytes, { flag: 'wx', mode: 0o600 });
+            if (await this.hashFile(copiedCandidate) !== verified.candidateSha256) throw Error('Copied candidate.json differs from the verified candidate.');
+            for (const record of verified.files) {
+                const source = path.join(directory, record.name), copied = path.join(snapshot, record.name);
+                const sourceStat = await fs.lstat(source);
+                if (!sourceStat.isFile() || sourceStat.isSymbolicLink()) throw Error('Local runtime asset must be a regular non-symlink file: ' + record.name);
+                await fs.copyFile(source, copied);
+                const stat = await fs.lstat(copied);
+                if (!stat.isFile() || stat.isSymbolicLink() || stat.size !== record.size || await this.hashFile(copied, 'sha256') !== record.sha256) throw Error('Copied local runtime asset changed or failed verification: ' + record.name);
+            }
+            for (const checksumName of [base + '-x86_64.sha512sum', base + '-source.sha512sum']) {
+                const text = await fs.readFile(path.join(snapshot, checksumName), 'utf8');
+                const match = /^([a-f0-9]{128})[ \t]+\*?([^\r\n]+)\r?\n?$/.exec(text);
+                const asset = checksumName.endsWith('-source.sha512sum') ? base + '-source.tar.xz' : base + '-x86_64.tar.xz';
+                if (!match || match[2] !== asset) throw Error('Copied local runtime checksum does not name the expected archive.');
+                if (await this.hashFile(path.join(snapshot, asset), 'sha512') !== match[1]) throw Error('Copied local runtime archive failed SHA-512 verification.');
+            }
+            const target: Target = { root, release: verified, input: selected, bytes: candidateBytes, policy, localArchive: path.join(snapshot, base + '-x86_64.tar.xz'), local: true };
+            this.targets.set(id, target);
+            this.issuedTargets.set(verified, target);
+            return await this.install(id, verified.candidateSha256, value);
+        }
+        catch (error) {
+            return { family: id, success: false, committed: false, durability: 'not-committed', error: (error as Error).message };
+        }
+        finally {
+            if (snapshot) await fs.rm(snapshot, { recursive: true, force: true }).catch(() => undefined);
+        }
+    }
     async install(selection: unknown, expected: unknown, value: unknown, prepared?:Readonly<VerifiedManagedFamilyRelease>): Promise<ManagedFamilyInstallResult> {
         const id = familyId(selection), state = this.states.get(id)!, lease = this.context.reserve();
         let staging: string | undefined, committed = false, buildId: string | undefined, durability: ManagedFamilyInstallResult['durability'] = 'not-committed';
@@ -415,9 +502,10 @@ export class ManagedRuntimeManager {
             if (!selected || selected.release.family !== id || selected.root !== lease.root || typeof expected !== 'string' || selected.release.candidateSha256 !== expected)
                 throw Error('Check this runtime release again before installing');
             const policy = await this.policy(id, lease.root, value), versions = this.context.versions();
-            const release = verifyManagedFamilyCandidate(selected.bytes, parseManagedFamilyRelease(id, selected.input, {
+            const parsed = parseManagedFamilyRelease(id, selected.input, {
                 ...policy, arch: this.context.arch ?? process.arch, launcherVersion: versions.launcher, backendVersion: versions.backend
-            }));
+            });
+            const release = selected.local ? verifyLocalManagedFamilyCandidate(selected.bytes, parsed) : verifyManagedFamilyCandidate(selected.bytes, parsed);
             const target = {
                 ...selected, release
             };
@@ -440,9 +528,17 @@ export class ManagedRuntimeManager {
             }
             staging = await this.directory(lease.root, 'variants', id, '.staging-' + randomUUID());
             const archive = path.join(staging, release.assets.binary.name);
-            state.phase = 'Downloading and verifying runtime';
+            state.phase = selected.localArchive ? 'Verifying local runtime archive' : 'Downloading and verifying runtime';
             this.context.notify();
-            await this.archive(target, archive);
+            if (selected.localArchive) {
+                const record = release.files.find(item => item.name === release.assets.binary.name)!;
+                const stat = await fs.lstat(selected.localArchive);
+                if (!stat.isFile() || stat.isSymbolicLink() || stat.size !== record.size || await this.hashFile(selected.localArchive) !== record.sha256) throw Error('The local runtime archive changed after it was selected.');
+                await fs.copyFile(selected.localArchive, archive);
+                const copied = await fs.lstat(archive);
+                if (!copied.isFile() || copied.isSymbolicLink() || copied.size !== record.size || await this.hashFile(archive) !== record.sha256) throw Error('The copied local runtime archive failed final verification.');
+            }
+            else await this.archive(target, archive);
             const extracted = path.join(staging, 'payload');
             await fs.mkdir(extracted, {
                 mode: 0o700
@@ -496,7 +592,8 @@ export class ManagedRuntimeManager {
             };
             await this.immutable(path.join(receipts, receipt.buildId + '.json'), JSON.stringify(canonical) + '\n');
             const proof = {
-                ...canonical, tag: release.tag, prerelease: release.prerelease, candidateSha256: release.candidateSha256, files: release.files
+                ...canonical, tag: release.tag, prerelease: release.prerelease, candidateSha256: release.candidateSha256, files: release.files,
+                ...(release.local ? { local: true, diagnosticOnly: true, promotable: false, ...(release.localBuildId ? { localBuildId: release.localBuildId } : {}) } : {})
             };
             await this.immutable(path.join(provenance, receipt.buildId + '.' + release.candidateSha256 + '.json'), JSON.stringify(proof) + '\n');
             const actual = await this.pointer(directory);

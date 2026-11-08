@@ -60,7 +60,8 @@ async function payload(root: string, letter: string, family = 'nexus-cachyos') {
     const archiveName = name + '-x86_64.tar.xz', archiveFile = path.join(root, archiveName);
     await execute('tar', ['-cJf', archiveFile, '-C', path.dirname(directory), name]);
     const archive = await fs.readFile(archiveFile), checksumName = name + '-x86_64.sha512sum', checksum = Buffer.from(createHash('sha512').update(archive).digest('hex') + '  ' + archiveName + '\n'), sourceName = name + '-source.tar.xz', sourceSum = name + '-source.sha512sum';
-    const assets = new Map<string, Buffer>([[archiveName, archive], [checksumName, checksum], [sourceName, Buffer.from('not downloaded source')], [sourceSum, Buffer.from('not downloaded source sum')]]);
+    const sourceBytes = Buffer.from('synthetic corresponding source'), sourceChecksum = Buffer.from(createHash('sha512').update(sourceBytes).digest('hex') + '  ' + sourceName + '\n');
+    const assets = new Map<string, Buffer>([[archiveName, archive], [checksumName, checksum], [sourceName, sourceBytes], [sourceSum, sourceChecksum]]);
     const candidate = {
         schema: 1, kind: 'runtime', repository, commit, ref: 'refs/heads/main', runId: '123', files: [...assets].map(([name, bytes]) => ({
             name, sha256: hash(bytes), size: bytes.length
@@ -78,6 +79,15 @@ async function payload(root: string, letter: string, family = 'nexus-cachyos') {
     return {
         buildId, commit, archiveName, archiveFile, assets, release, bytes, candidate, directory
     };
+}
+/** Genuine local build output: no CI runId, explicit local non-promotable flags. */
+async function localPayload(root: string, letter: string, family = 'nexus-cachyos') {
+    const remote = await payload(root, letter, family);
+    const candidate = { ...remote.candidate, localBuild: true, diagnosticOnly: true, promotable: false } as Record<string, unknown>;
+    delete candidate.runId;
+    const bytes = Buffer.from(JSON.stringify(candidate));
+    remote.assets.set('candidate.json', bytes);
+    return { ...remote, candidate, bytes };
 }
 async function fixture(family = 'nexus-cachyos') {
     const root = await fs.mkdtemp(path.join(os.tmpdir(), 'managed-install-'));
@@ -358,4 +368,60 @@ it('installs an exact issued target after a later check selects another release,
  vi.mocked(f.fetcher).mockImplementation(async(input,init)=>{const name=String(input).split('/').pop()!;const bytes=old.assets.get(name);return bytes?new Response(bytes):original(input,init);});
  const forged=await f.manager.installPreparedManagedRuntime('nexus-cachyos',{...prepared},policy);expect(forged.committed).toBe(false);expect(forged.success).toBe(false);
  const result=await f.manager.installPreparedManagedRuntime('nexus-cachyos',prepared,policy);expect(result.success).toBe(true);const installed=f.manager.current.managedFamilies!.find(row=>row.id==='nexus-cachyos')!.installed!;expect(installed.sourceCommit).toBe(selectedCommit);expect(installed.displayWinePath).toBe((await resolveRuntimeFamily(f.runtimeRoot,'nexus-cachyos','x64')).winePath);expect(latest.commit).not.toBe(selectedCommit);await f.preserved();
+});
+
+it('imports a verified local build output through the same family contract without a network release', async () => {
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), 'managed-local-import-'));
+    roots.push(root);
+    const runtimeRoot = path.join(root, 'runtime'); await fs.mkdir(runtimeRoot, { recursive: true });
+    const remote = await localPayload(root, 'a');
+    const directory = path.join(root, 'local-build'); await fs.mkdir(directory);
+    for (const [name, bytes] of remote.assets) await fs.writeFile(path.join(directory, name), bytes);
+    const fetcher = vi.fn(async () => { throw Error('Local import must not use the network'); }) as unknown as typeof fetch;
+    const manager = new RuntimeManager(runtimeRoot, () => {}, () => false, fetcher, 'x64', () => ({ launcher: '0.5.0', backend: '0.2.14' }));
+    const result = await manager.importManagedRuntime('nexus-cachyos', directory, policy);
+    expect(result).toMatchObject({ family: 'nexus-cachyos', success: true, committed: true, durability: 'confirmed' });
+    const installed = await resolveRuntimeFamily(runtimeRoot, 'nexus-cachyos', 'x64');
+    expect(installed.buildId).toBe(remote.buildId);
+    const pointer = JSON.parse(await fs.readFile(path.join(runtimeRoot, 'variants/nexus-cachyos/current.json'), 'utf8'));
+    expect(pointer.releaseTag).toMatch(/^runtime-cachyos-local-g[a-f0-9]{8}$/);
+    expect(pointer.prerelease).toBe(false);
+    expect(fetcher).not.toHaveBeenCalled();
+});
+
+it('rejects a local inventory byte change between the candidate snapshot and copied staging', async () => {
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), 'managed-local-tamper-'));
+    roots.push(root);
+    const runtimeRoot = path.join(root, 'runtime'); await fs.mkdir(runtimeRoot, { recursive: true });
+    const remote = await localPayload(root, 'a');
+    const directory = path.join(root, 'local-build'); await fs.mkdir(directory);
+    for (const [name, bytes] of remote.assets) await fs.writeFile(path.join(directory, name), bytes);
+    const original = fs.copyFile.bind(fs);
+    vi.spyOn(fs, 'copyFile').mockImplementation(async (source, destination, mode) => {
+        await original(source, destination, mode as never);
+        if (String(destination).endsWith(remote.archiveName)) await fs.writeFile(destination, Buffer.from('changed after copy'));
+    });
+    const fetcher = vi.fn(async () => { throw Error('Local import must not use the network'); }) as unknown as typeof fetch;
+    const manager = new RuntimeManager(runtimeRoot, () => {}, () => false, fetcher, 'x64', () => ({ launcher: '0.5.0', backend: '0.2.14' }));
+    const result = await manager.importManagedRuntime('nexus-cachyos', directory, policy);
+    expect(result).toMatchObject({ family: 'nexus-cachyos', success: false, committed: false });
+    await expect(fs.access(path.join(runtimeRoot, 'variants/nexus-cachyos/current.json'))).rejects.toThrow();
+    await expect(resolveRuntimeFamily(runtimeRoot, 'nexus-cachyos', 'x64')).rejects.toThrow();
+});
+
+it('rejects a symlinked local inventory input and leaves no active receipt', async () => {
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), 'managed-local-symlink-'));
+    roots.push(root);
+    const runtimeRoot = path.join(root, 'runtime'); await fs.mkdir(runtimeRoot, { recursive: true });
+    const remote = await localPayload(root, 'a');
+    const directory = path.join(root, 'local-build'); await fs.mkdir(directory);
+    for (const [name, bytes] of remote.assets) await fs.writeFile(path.join(directory, name), bytes);
+    const archive = path.join(directory, remote.archiveName), real = path.join(root, 'real-archive');
+    await fs.rename(archive, real); await fs.symlink(real, archive);
+    const fetcher = vi.fn(async () => { throw Error('Local import must not use the network'); }) as unknown as typeof fetch;
+    const manager = new RuntimeManager(runtimeRoot, () => {}, () => false, fetcher, 'x64', () => ({ launcher: '0.5.0', backend: '0.2.14' }));
+    const result = await manager.importManagedRuntime('nexus-cachyos', directory, policy);
+    expect(result).toMatchObject({ family: 'nexus-cachyos', success: false, committed: false });
+    await expect(fs.access(path.join(runtimeRoot, 'variants/nexus-cachyos/current.json'))).rejects.toThrow();
+    await expect(resolveRuntimeFamily(runtimeRoot, 'nexus-cachyos', 'x64')).rejects.toThrow();
 });

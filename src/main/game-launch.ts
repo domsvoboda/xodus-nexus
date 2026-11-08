@@ -16,7 +16,7 @@ export function gameLaunchArguments(
   offline = false,
 ): string[] {
   if (backendPatch !== LINUX_RUN_PATCH) {
-    throw new Error('Play requires the current managed Xodus backend. Update the backend in Settings.');
+    throw new Error('Play requires the current managed Nexus backend. Update the backend in Settings.');
   }
   if (!game.executable?.trim()) throw new Error('The package manifest has no launch executable.');
   const args = ['run', game.path, wine, '--exe', game.executable, '--materialize-chain'];

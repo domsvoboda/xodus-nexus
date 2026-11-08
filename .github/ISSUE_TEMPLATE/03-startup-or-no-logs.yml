@@ -6,9 +6,9 @@ body:
     attributes:
       value: |
         This is the exception route when a normal bug report cannot include logs, not a shortcut around collecting them.
-        **Xodus Nexus is an independent, unofficial project, not upstream Xodus.**
+        **Nexus Launcher is an independent, unofficial project, not upstream Xodus.**
 
-        If Nexus opens, try **Settings → Xodus backend → Open backend diagnostic log** first.
+        If Nexus opens, try **Settings → Nexus backend → Open backend diagnostic log** first.
         Download logs are under **Install Queue → Show log** (the terminal icon).
         Game logs are on the game page under the launch result → **Open diagnostic log**.
         If you can obtain these, use the corresponding normal bug form instead.
@@ -34,7 +34,7 @@ body:
   - type: input
     id: runtime-version
     attributes:
-      label: Nexus runtime version
+      label: Nexus Runtime version
       description: Copy the active runtime from Settings. If not installed or inaccessible, explicitly say so.
     validations:
       required: true
