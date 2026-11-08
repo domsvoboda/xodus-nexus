@@ -1134,6 +1134,7 @@
   "settings.guide_off": "Off",
   "settings.guide_enable": "Enable in-game overlay",
   "settings.guide_enable_help": "Open friends and chats while playing. Requires Python 3, PyGObject, GTK 3 and WebKitGTK 4.1. Desktop shortcut permissions may be needed; fullscreen support depends on your desktop.",
+  "settings.guide_enable_help_short": "Open friends and chats while playing. Desktop shortcut permissions may be needed; fullscreen support depends on your desktop.",
   "settings.guide_controls": "Overlay controls",
   "settings.guide_shortcut": "Keyboard shortcut",
   "settings.guide_side": "Shelf position",
