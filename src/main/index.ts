@@ -612,7 +612,7 @@ async function refreshAccount(emit = true, afterAuth = false): Promise<AuthStatu
               player: player || undefined,
               note: runtime?.current.name?.includes('-xgamesave-pr28-')
                 ? 'Credentials are stored by Xodus. The experimental PR #28 runtime can try in-game Xbox sign-in and two-way cloud save sync; this account status alone does not verify either.'
-                : 'Credentials are stored by Xodus in the system keychain. This does not mean in-game Xbox platform sign-in is implemented.',
+                : 'Credentials are stored by Xodus in the system keychain.',
             };
           } else if (account.stored === false) {
             next = { stored: false, username: undefined, player: player || undefined, note: 'No Microsoft Store account is stored by Xodus.' };

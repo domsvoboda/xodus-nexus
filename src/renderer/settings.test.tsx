@@ -185,3 +185,9 @@ it('separates the multiple-account toggle from the sign-in action row', () => {
   expect(html).toContain('class="button-row account-management-row"');
   expect(html).toContain('Hide account management');
 });
+it('keeps the interface language selector without the removed generic language warning', () => {
+  const html = renderToStaticMarkup(<SettingsPage data={demoSnapshot()} toast={() => {}} />);
+  expect(html).toContain('Interface language');
+  expect(html).toContain('Save language');
+  expect(html).not.toContain('Launcher language only. Game language and Store region are set separately.');
+});

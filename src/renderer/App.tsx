@@ -311,8 +311,6 @@ export function HomePage({ data, go, action, openGame, returnFocusKey, toast }: 
       : <div className="empty-strip"><Gamepad2 /><div><strong>{ui("ui.no_completed_installations_yet_c0d583a")}</strong><span>{ui("ui.your_library_is_built_only_from_real_local_manif_1513d78")}</span></div><button className="secondary" onClick={() => go('library')}>{ui("ui.view_library_108eb25")}</button></div>}
 
     <HomeGamePassSection {...gamePass} open={openGamePass}/>
-
-    <div className="support-bar"><CircleAlert /><div><strong>{ui("ui.compatibility_status_65cfaa2")}</strong><span>{ui("ui.package_ownership_and_installation_do_not_guaran_af576d1")}</span></div></div>
   </main>;
 }
 
@@ -1180,7 +1178,7 @@ export function SettingsPage({ data, toast }: { data: AppSnapshot; toast: (value
         <option value="system">{ui('settings.system_language')}</option>
         {interfaceLanguages.map(language => <option key={language} value={language}>{new Intl.DisplayNames([language], { type: 'language' }).of(language) ?? language}</option>)}
       </select></label>
-      <div className="save-row"><span>{ui('settings.language_help')}</span><button className="primary" disabled={Boolean(busy)} onClick={() => invoke('save-language', () => window.launcher.updateSettings({ interfaceLanguage: form.interfaceLanguage ?? 'system' }), ui('settings.language_saved'))}>{ui('settings.save_language')}</button></div>
+      <div className="save-row"><button className="primary" disabled={Boolean(busy)} onClick={() => invoke('save-language', () => window.launcher.updateSettings({ interfaceLanguage: form.interfaceLanguage ?? 'system' }), ui('settings.language_saved'))}>{ui('settings.save_language')}</button></div>
     </section>
 
     <section className="settings-card compact tray-settings">
