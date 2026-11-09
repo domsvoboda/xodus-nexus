@@ -2,7 +2,7 @@ import { afterAll, beforeAll, expect, it, vi } from 'vitest';
 import { promises as fs } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { randomUUID } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
 import { demoSnapshot } from '../shared/demo-data.js';
 import { StateStore } from './store.js';
 import { GameContent } from './game-content.js';
@@ -166,6 +166,35 @@ vi.mock('./game-process.js', () => ({ spawnGameProcess: async (_command:string,_
 const ipc = (name: string, ...args: any[]) => h.handlers.get(name)!(undefined, ...args);
 const snapshot = () => ipc('get-snapshot');
 const install = (letter: string, destination = path.join(h.root, `download-${letter}`)) => ipc('start-install', { productId: `9${letter.repeat(11)}`, title: `Sample ${letter}`, destination });
+const family = 'nexus-cachyos';
+const familyBuild = 'b'.repeat(64);
+const familyCommit = 'a'.repeat(40);
+async function installFamilyFixture(id: 'nexus' | 'nexus-cachyos' = family, repository = 'domsvoboda/nexus-runtime-cachyos', commit = familyCommit, build = familyBuild) {
+  const release = path.join(h.root, 'runtime/variants', id, 'releases', build);
+  const files: Record<string,string> = {};
+  const payload = ['proton','files/bin/wine','files/bin/wineserver','files/bin/wine.nexus-original',
+    ...['PlayFabGameSave.dll','gaming-services-version.exe','package-registration.exe'].map(name => 'files/share/xodus-nexus/compat/' + name),
+    ...['x86_64','i386'].flatMap(cpu => ['xgameruntime.dll','winhttp.dll','libnghttp2.dll'].map(name => `files/lib/wine/${cpu}-windows/${name}`))];
+  for (const name of payload) {
+    const file = path.join(release, name); await fs.mkdir(path.dirname(file), { recursive: true });
+    await fs.writeFile(file, 'synthetic inert runtime fixture', { mode: 0o755 });
+    files[name] = createHash('sha256').update('synthetic inert runtime fixture').digest('hex');
+  }
+  await fs.mkdir(path.join(release, 'files/share/default_pfx'), { recursive: true });
+  const metadata = JSON.stringify({ schema:1, sourceLockSha256:'c'.repeat(64), sourceGraph:{ proton:commit } });
+  await fs.writeFile(path.join(release, 'XODUS_NEXUS_PATCH.json'), metadata);
+  files['XODUS_NEXUS_PATCH.json'] = createHash('sha256').update(metadata).digest('hex');
+  const manifest = JSON.stringify({ schema:1, family:id, buildId:build, sourceRepository:repository,
+    sourceCommit:commit, arch:'x64', prefixSchema:1, sourceLockSha256:'c'.repeat(64), files });
+  await fs.writeFile(path.join(release, 'nexus-family.json'), manifest);
+  await fs.writeFile(path.join(h.root, 'runtime/variants', id, 'current.json'), JSON.stringify({
+    schema:1, family:id, buildId:build, sourceRepository:repository,
+    sourceCommit:commit, manifestSha256: createHash('sha256').update(manifest).digest('hex') }));
+}
+async function setDefaultRuntime() {
+  const game = snapshot().games.find((entry:any) => entry.id === 'sample');
+  if (game.runtime !== 'default') await ipc('update-game', 'sample', { runtime:'default' });
+}
 
 it('saves interface language without probing account, restarting components or altering game language and market', async () => {
   const before = await snapshot();
@@ -252,6 +281,8 @@ beforeAll(async () => {
   const data = demoSnapshot(); h.backend = { ...data.backend, capabilities: { ...data.backend.capabilities, packageSelection: true, streamingUpdateRecovery: true }, binaryPath: path.join(h.root, 'synthetic-cli'), linuxRunPatch: 'test-patch' }; h.runtime = data.runtime;
   const store = new StateStore(path.join(h.root, 'userData'));
   await store.setSettings({ firstRunCompleted: true, market: 'US', runtimeRoot: path.join(h.root, 'runtime'), winePath: h.wine });
+  await installFamilyFixture('nexus', 'domsvoboda/nexus-runtime', 'd'.repeat(40), 'e'.repeat(64));
+  await installFamilyFixture();
   h.savedPausedId=randomUUID();
   const partial={id:h.savedPausedId,kind:'install' as const,productId:'9TTTTTTTTTTT',title:'Paused fixture',
     selectedContentId:'11111111-1111-4111-8111-111111111111',selectionMarket:'US',destination:path.join(h.root,'resumable-partial'),
@@ -611,6 +642,80 @@ it('saves and launches locale overrides without catalog or exhaustive manifest l
     if (oldWine === undefined) delete process.env.WINEUSERLOCALE; else process.env.WINEUSERLOCALE = oldWine;
     h.blockDisplay.mockClear(); h.releaseDisplay.mockClear();
   }
+});
+
+it('allows a per-game runtime family setting change during an unrelated download without touching the prefix or saves', async () => {
+  await setDefaultRuntime();
+  const gamePath = path.join(h.root, 'installed-game');
+  const prefixPath = path.join(h.root, 'compatdata', 'sample');
+  await fs.mkdir(prefixPath, { recursive: true });
+  await fs.writeFile(path.join(prefixPath, 'save.dat'), 'synthetic existing save bytes');
+  const configBefore = await fs.readFile(path.join(gamePath, 'MicrosoftGame.config'));
+  const downloadsBefore = h.downloads.length;
+  const id = await install('A');
+  await vi.waitFor(() => expect(h.downloads.length).toBe(downloadsBefore + 1));
+  const before = snapshot().games.find((entry:any) => entry.id === 'sample');
+  const updated = await ipc('update-game', 'sample', { runtime:family });
+  expect(updated.runtime).toBe(family);
+  expect(updated.path).toBe(gamePath);
+  expect(updated.runtimePrefixIdentity).toEqual({ layout:'game' });
+  expect(await fs.readFile(path.join(gamePath, 'MicrosoftGame.config'))).toEqual(configBefore);
+  expect(await fs.readFile(path.join(prefixPath, 'save.dat'), 'utf8')).toBe('synthetic existing save bytes');
+  expect(snapshot().downloads.find((entry:any) => entry.id === id)?.status).toBe('running');
+  h.downloads.at(-1)!.progress(false, 'complete');
+  h.downloads.at(-1)!.finish(0);
+  await vi.waitFor(() => { const task=snapshot().downloads.find((entry:any) => entry.id === id); expect(task?.status, task?.error).toBe('complete'); });
+  expect(snapshot().games.find((entry:any) => entry.id === 'sample')!.runtime).toBe(family);
+  expect(before.runtime).toBe('default');
+  await setDefaultRuntime();
+  h.downloads.splice(downloadsBefore);
+  h.notifications.splice(0);
+});
+
+it('allows a per-game runtime family setting change while a target game update is active', async () => {
+  const gamePath = path.join(h.root, 'installed-game');
+  const prefixPath = path.join(h.root, 'compatdata', 'sample');
+  const configBefore = await fs.readFile(path.join(gamePath, 'MicrosoftGame.config'));
+  const saveBefore = await fs.readFile(path.join(prefixPath, 'save.dat'), 'utf8');
+  const downloadsBefore = h.downloads.length;
+  const updateId = await ipc('update-installed-game', 'sample');
+  await vi.waitFor(() => expect(h.downloads.length).toBe(downloadsBefore + 1));
+  expect(snapshot().downloads.find((entry:any) => entry.id === updateId)?.status).toBe('running');
+  const updated = await ipc('update-game', 'sample', { runtime:family });
+  expect(updated.runtime).toBe(family);
+  expect(updated.path).toBe(gamePath);
+  expect(snapshot().downloads.find((entry:any) => entry.id === updateId)?.status).toBe('running');
+  expect(await fs.readFile(path.join(gamePath, 'MicrosoftGame.config'))).toEqual(configBefore);
+  expect(await fs.readFile(path.join(prefixPath, 'save.dat'), 'utf8')).toBe(saveBefore);
+  h.downloads.at(-1)!.finish(130);
+  await vi.waitFor(() => expect(snapshot().downloads.find((entry:any) => entry.id === updateId)?.status).toBe('cancelled'));
+  await setDefaultRuntime();
+  h.downloads.splice(downloadsBefore);
+  h.notifications.splice(0);
+});
+
+it('still rejects a runtime family setting change while the target game is running', async () => {
+  await setDefaultRuntime();
+  await ipc('launch-game', 'sample');
+  await vi.waitFor(() => expect(snapshot().gameOperation?.status).toBe('running'));
+  await expect(ipc('update-game', 'sample', { runtime:family })).rejects.toThrow('Close this game before changing its runtime');
+  expect(snapshot().games.find((entry:any) => entry.id === 'sample')!.runtime).toBe('default');
+  h.game!.finish();
+  await vi.waitFor(() => expect(snapshot().gameOperation?.status).toBe('complete'));
+});
+
+it('keeps actual managed runtime installation blocked while a download is active', async () => {
+  await setDefaultRuntime();
+  const downloadsBefore = h.downloads.length;
+  const id = await install('B');
+  await vi.waitFor(() => expect(h.downloads.length).toBe(downloadsBefore + 1));
+  await expect(Promise.resolve().then(() => ipc('runtime-family-install', family, familyBuild, { allowCachyos:true, allowPrerelease:false }))).rejects.toThrow();
+  expect(snapshot().runtime.updating).toBe(false);
+  h.downloads.at(-1)!.progress(false, 'complete');
+  h.downloads.at(-1)!.finish(0);
+  await vi.waitFor(() => expect(snapshot().downloads.find((entry:any) => entry.id === id)?.status).toBe('complete'));
+  h.downloads.splice(downloadsBefore);
+  h.notifications.splice(0);
 });
 
 it('launches with the player identity cache while keeping Store licensing bound to the Store account', async () => {

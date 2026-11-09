@@ -172,6 +172,7 @@ but have not been verified and may encounter compatibility issues.
 | Age of Empires III: Definitive Edition | Yes | Unreleased runtime: works. Online play unverified. |
 | Age of Empires: Definitive Edition | Partial | Unreleased runtime: menu and sign-in work; Multiplayer and LAN menus enabled. Gameplay unverified. |
 | Age of Empires IV | Startup verified | Unreleased runtime: starts successfully; online play unverified. |
+| Batman: Arkham Knight | Yes | Works with the Standard runtime. |
 | Gears of War: E-Day | Yes | Playable online; Xbox playing status works. |
 | Deep Rock Galactic | Yes | Playable online. |
 | Minecraft Dungeons | Yes | Playable online with launcher 0.3.5; [ownership failures](https://github.com/domsvoboda/nexus-launcher/issues/80) also reported on other setups. |
