@@ -87,6 +87,10 @@ describe('activity guards', () => {
     expect(() => assertActivityCompatible(['game'], [], { ...game, kind: 'prerequisite' }, 0, 'install')).toThrow();
     expect(() => assertActivityCompatible(['game'], [], { ...game, kind: 'prerequisite' }, 0, 'remove')).toThrow();
   });
+  it('profile admission permits only known downloads and still rejects foreign operations', () => {
+    expect(() => assertActivityCompatible(['download'], downloads, undefined, 3, 'launch')).not.toThrow();
+    expect(() => assertActivityCompatible(['download', 'foreign'], downloads, undefined, 3, 'launch')).toThrow('Another Xodus operation is active');
+  });
 });
 
 describe('installation destination locks', () => {

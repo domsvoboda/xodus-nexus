@@ -495,12 +495,12 @@ function requireBackend(command: keyof typeof backend.current.capabilities): str
   return status.binaryPath;
 }
 
-function ensureIdle(mode?: 'install' | 'launch' | 'remove', ownRuntimeReservation?: RuntimeSettingsReservation, owner?: ComponentUpdateOwner): void {
+function ensureIdle(mode?: 'install' | 'launch' | 'remove', ownRuntimeReservation?: RuntimeSettingsReservation, owner?: ComponentUpdateOwner, profileSettingOnly = false): void {
     componentUpdateAdmission.assertAllowed(owner);
-    ensureActivityIdle(mode, ownRuntimeReservation);
+    ensureActivityIdle(mode, ownRuntimeReservation, profileSettingOnly);
 }
 
-function ensureActivityIdle(mode?: 'install' | 'launch' | 'remove', ownRuntimeReservation?: RuntimeSettingsReservation): void {
+function ensureActivityIdle(mode?: 'install' | 'launch' | 'remove', ownRuntimeReservation?: RuntimeSettingsReservation, profileSettingOnly = false): void {
     if (ownRuntimeReservation)
         runtime.assertSettingsReservation(ownRuntimeReservation);
     if (offlinePermissionChanging)
@@ -525,7 +525,19 @@ function ensureActivityIdle(mode?: 'install' | 'launch' | 'remove', ownRuntimeRe
         throw new Error('A game update check is in progress.');
     if (gameRemovalInProgress)
         throw new Error('A game is being removed. Wait for it to finish.');
-    assertActivityCompatible(operations.keys(), store.downloads, gameOperation, installQueue.size, mode);
+    // A per-game runtime-family change is settings-only: it verifies and
+    // persists the game record; it does not mutate a runtime payload, prefix or
+    // global pointer. Allow it during downloads/updates, but never while a game
+    // is preparing, running, stopping or finalizing its launch/save/session.
+    if (profileSettingOnly && gameOperation && ['preparing', 'running', 'stopping'].includes(gameOperation.status))
+        throw new Error('Close this game before changing its runtime.');
+    // 'launch' is the narrow profile-setting mode: it permits queue work and only
+    // operations whose IDs are known downloads, while rejecting any unknown
+    // operation and any active game. Normal callers retain their original mode.
+    assertActivityCompatible(operations.keys(), store.downloads,
+        profileSettingOnly ? undefined : gameOperation,
+        profileSettingOnly ? 0 : installQueue.size,
+        profileSettingOnly ? 'launch' : mode);
     if (backend.current.updating)
         throw new Error('The backend is being updated.');
     if ((runtime.current.updating || runtime.busy) && !ownRuntimeReservation)
@@ -2192,8 +2204,13 @@ function registerIpc(): void {
       game=await guardedRuntimeSettings({current:snapshot,request:patch,
         paths:{runtimeRoot:store.settings.runtimeRoot,dataRoot:path.dirname(store.settings.runtimeRoot)},changing,
         reserve:()=>{
-          const owner=componentUpdateAdmission.reserve();
-          return {admit:()=>ensureIdle(undefined,undefined,owner),release:()=>componentUpdateAdmission.release(owner)};
+          // A per-game runtime-family change is a profile setting, not a
+          // runtime/component payload mutation. The reservation itself performs
+          // only the narrow setting guard (downloads/updates allowed), then holds
+          // normal component-update ownership so launches/component updates stay
+          // excluded across async verification and the persisted write.
+          const owner=componentUpdateAdmission.reserve(()=>ensureActivityIdle(undefined,undefined,true));
+          return {admit:()=>ensureIdle(undefined,undefined,owner,true),release:()=>componentUpdateAdmission.release(owner)};
         },
         read:()=>store.games.find(entry=>entry.id===id),
         persist:(runtime)=>store.patchGame(id,{...allowed,...runtime})});

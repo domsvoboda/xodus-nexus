@@ -12,9 +12,9 @@ export class ComponentUpdateAdmission {
         if (owner && owner !== this.owner)
             throw Error('The component update reservation has expired.');
     }
-    reserve(): ComponentUpdateOwner {
+    reserve(activityCheck: () => void = this.assertActivityIdle): ComponentUpdateOwner {
         this.assertAllowed();
-        this.assertActivityIdle();
+        activityCheck();
         const owner = Object.freeze({ identity: Symbol('component-update') });
         this.owner = owner;
         return owner;
