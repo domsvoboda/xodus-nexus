@@ -35,11 +35,8 @@ Xodus Nexus is now **Nexus Launcher**. This release introduces managed Standard 
 
 ## DLC and licensing
 
-- Distinguish downloadable game packages from license-only offers.
+- Fix content bundles being reported as license-only offers.
 - Fix source and destination path mapping for add-on content, including SRC layout metadata.
-- Improve installed-content discovery, related-package handling and installation notifications.
-- Prevent stale package and license results from surviving Store-account context changes.
-- Reduce unnecessary checks of unrelated installation chunks and unchanged content.
 
 ## Game launching and runtime compatibility
 
@@ -53,10 +50,8 @@ Xodus Nexus is now **Nexus Launcher**. This release introduces managed Standard 
 ## Cloud saves
 
 - Fix initialization through the legacy GameSave interface when a game relies on the configuration ID declared in its manifest.
-- Preserve pending PlayFab uploads through game shutdown.
 - Improve recoverable local save transactions and interrupted-operation handling.
-- Protect local saves when cloud listings, metadata or local indexes are incomplete.
-- Improve conflict handling and preserve backups when applying a selected resolution.
+- Preserve local save data when an index cannot be read, and reject malformed indexes before changing data.
 - Prevent older operations from overwriting newer save state.
 - Report failed writes and deletions instead of treating them as successful synchronization.
 
