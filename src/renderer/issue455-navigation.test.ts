@@ -34,3 +34,8 @@ it('leaves a nested grid for a higher page action before reaching global search'
  get('nested').focus();h.press(12);expect(document.activeElement).toBe(get('spotlight'));
  h.press(12);expect(document.activeElement).toBe(get('search'));
 });
+it('rings the whole search box rather than the bare input inside it',()=>{
+ h.press(3);expect(document.activeElement).toBe(get('search'));
+ const box=document.querySelector('.search-box')!;
+ expect(box.hasAttribute('data-gamepad-focus')).toBe(true);expect(get('search').hasAttribute('data-gamepad-focus')).toBe(false);
+});
