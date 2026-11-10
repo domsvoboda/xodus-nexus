@@ -2445,10 +2445,18 @@ function registerIpc(): void {
     }
   });
   ipcMain.handle('choose-directory', async (_event, defaultPath?: string) => {
+    assertNativeDialogs();
     const result = await dialog.showOpenDialog(mainWindow!, { properties: ['openDirectory', 'createDirectory'], defaultPath });
     return result.canceled ? null : result.filePaths[0];
   });
+  // Native file dialogs open as separate top-level windows that gamescope neither
+  // raises nor routes input to, so Gaming Mode would leave the user in a dead window.
+  const assertNativeDialogs = () => {
+    if (process.env.XDG_CURRENT_DESKTOP?.split(':').some(value => value.toLowerCase() === 'gamescope'))
+      throw Error('The file picker is unavailable in Gaming Mode. Type the path in the field, or switch to Desktop Mode, where this is easier to configure.');
+  };
   ipcMain.handle('choose-file', async (_event, defaultPath?: string) => {
+    assertNativeDialogs();
     const result = await dialog.showOpenDialog(mainWindow!, { properties: ['openFile'], defaultPath });
     return result.canceled ? null : result.filePaths[0];
   });
