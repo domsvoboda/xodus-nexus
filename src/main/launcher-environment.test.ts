@@ -2,7 +2,7 @@ import { afterEach, describe, expect, it } from 'vitest';
 import { mkdtempSync, rmSync } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { externalLauncherEnvironment, launcherSteamImeActive } from './launcher-environment.js';
+import {externalLauncherEnvironment, launcherSteamImeActive, nativeDialogsAvailable} from './launcher-environment.js';
 import { configureLauncherFonts } from './launcher-fonts.js';
 import { spawnTracked } from './process.js';
 import { prepareGameWrapper } from './game-wrapper.js';
@@ -90,5 +90,14 @@ describe('launcher-only Steam input fallback', () => {
       expect(result.code).toBe(0);
       expect(result.output).toBe('ibus');
     } finally { await wrapper.cleanup(); }
+  });
+});
+
+describe('native file dialogs', () => {
+  it('are refused under gamescope and allowed on desktops', () => {
+    expect(nativeDialogsAvailable({ XDG_CURRENT_DESKTOP: 'gamescope' })).toBe(false);
+    expect(nativeDialogsAvailable({ XDG_CURRENT_DESKTOP: 'KDE:gamescope' })).toBe(false);
+    expect(nativeDialogsAvailable({ XDG_CURRENT_DESKTOP: 'KDE' })).toBe(true);
+    expect(nativeDialogsAvailable({})).toBe(true);
   });
 });
