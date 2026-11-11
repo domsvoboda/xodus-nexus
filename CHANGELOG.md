@@ -2,6 +2,7 @@
 
 ## Unreleased
 
+- Update Electron to 45.3.0, including the mitigation for compromised eMudhra intermediate certificates.
 - Stop background update checks, keep game actions responsive, and queue updates while another game downloads.
 
 - Optionally keep Nexus and downloads running in the desktop system tray, with shortcuts to Home, Library, Store and Settings.
