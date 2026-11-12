@@ -136,7 +136,8 @@ export function installGamepadNavigation(win: Window, options: Options): () => v
   const page = () => doc.querySelector<HTMLElement>('.page-scroll')?.dataset.gamepadPage;
   let previousPage = page();
   const key = (element: HTMLElement) => element.dataset.gamepadKey ?? (element.dataset.gamepadDetailTarget ? `game:${element.dataset.gamepadDetailTarget}` : element.id || undefined);
-  const focusBox = (element: HTMLElement) => element.closest<HTMLElement>('[data-gamepad-card],.check-field') ?? element;
+  // The global search pill is one control to the user; ring the box, not the bare input inside it.
+  const focusBox = (element: HTMLElement) => element.closest<HTMLElement>('[data-gamepad-card],.check-field,.search-box') ?? element;
   const remember = (element: HTMLElement): FocusMemory => ({ element, key: key(element), page: page(), region: element.closest<HTMLElement>(regions) ?? undefined, rect: focusBox(element).getBoundingClientRect() });
   const resolve = (memory: FocusMemory | undefined, root: HTMLElement | Document): HTMLElement | undefined => {
     if (!memory || memory.page !== page()) return;
