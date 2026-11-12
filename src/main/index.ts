@@ -5,6 +5,7 @@ import {gameRuntimeReadiness} from './game-runtime-readiness.js';
 import {guardedRuntimeSettings,type RuntimeSettingsRequest} from './runtime-settings.js';
 import {gameRuntimeSelection} from '../shared/runtime-selection.js';
 import {resolveGameRuntime,bindRuntimePrefix,gameRuntimeParameters} from './runtime-prefix-binding.js';
+import {resolveRuntimeFamily} from './runtime-families.js';
 import {desktopTrayAvailable} from './launcher-tray-desktop.js';
 import {LauncherTray} from './launcher-tray.js';
 import {SteamKeyboard} from './steam-keyboard.js';
@@ -726,8 +727,22 @@ async function offlineLicenseCache(root = offlineDataRoot()): Promise<string | u
 }
 let designationCheck: Promise<void> | undefined;
 let offlinePermissionChanging = false;
+/** Managed family installs never write the legacy <runtimeRoot>/current.json
+ * pointer, so runtime.current.winePath stays undefined on a clean install even
+ * though games launch through the family receipts. Resolve the default family
+ * the same way resolveGameRuntime does before concluding no runtime exists. */
+async function defaultFamilyWinePath(): Promise<string | undefined> {
+  for (const id of ['nexus', 'nexus-cachyos']) {
+    try {
+      return (await resolveRuntimeFamily(store.settings.runtimeRoot, id)).winePath;
+    } catch {
+      // Not installed or not verified: try the next family.
+    }
+  }
+  return undefined;
+}
 async function offlineLaunchSupported(): Promise<boolean> {
-  const wine = selectedWinePath(store.settings.winePath, store.settings.runtimeRoot, runtime.current.winePath);
+  const wine = selectedWinePath(store.settings.winePath, store.settings.runtimeRoot, runtime.current.winePath) ?? await defaultFamilyWinePath();
   return Boolean(backend.current.capabilities.licenseCache && backend.current.capabilities.offlineLaunch && wine && await offlineIdentityRuntime(wine));
 }
 function assertOfflineScope(account: string | undefined, binary: string, root: string): void {
