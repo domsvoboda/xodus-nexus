@@ -69,8 +69,11 @@ export function shortcutInstanceRequest(data: unknown, currentProfile: string): 
 interface Locations { userData: string; desktop: string; applications: string; launcher?: string; icon: string }
 export async function shortcutLauncherPath(appImage:string,argv0?:string):Promise<string>{
   const resolved=await fs.realpath(appImage);
-  const stable=path.join(path.dirname(appImage),'Xodus-Nexus.AppImage');
-  try{if((await fs.lstat(stable)).isSymbolicLink()&&await fs.realpath(stable)===resolved)return stable;}catch{}
+  // Prefer the canonical stable link, then the legacy one used by older installs.
+  for(const name of ['Nexus-Launcher.AppImage','Xodus-Nexus.AppImage']){
+    const stable=path.join(path.dirname(appImage),name);
+    try{if((await fs.lstat(stable)).isSymbolicLink()&&await fs.realpath(stable)===resolved)return stable;}catch{}
+  }
   if(argv0&&path.isAbsolute(argv0)&&!/[\0\r\n]/.test(argv0)){
     try{if(await fs.realpath(argv0)===resolved)return argv0;}catch{}
   }

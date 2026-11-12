@@ -43,7 +43,7 @@ language? Request it in a [GitHub issue](https://github.com/domsvoboda/nexus-lau
 
 ## Install
 
-Download the latest Linux AppImage from [Releases](https://github.com/domsvoboda/nexus-launcher/releases), make it executable and open it. Stable releases currently ship for x86_64. Experimental ARM64 support requires matching native launcher, backend and runtime builds, compatible graphics drivers and FEX for x86 Windows games.
+Download the latest Linux AppImage from [Releases](https://github.com/domsvoboda/nexus-launcher/releases), make it executable and open it. Release assets are named `Nexus-Launcher-<version>-<arch>.AppImage` with a matching `.sha512sum` sidecar. Existing `Xodus-Nexus-...` release assets remain available for existing installations. Launcher versions before 0.5 only recognize the older asset names for in-app updates; use the installer or download the latest AppImage once, then later versions update in place. Stable releases currently ship for x86_64. Experimental ARM64 support requires matching native launcher, backend and runtime builds, compatible graphics drivers and FEX for x86 Windows games.
 
 The current x86_64 runtime requires glibc 2.38 or newer (for example Ubuntu 24.04 or a current SteamOS, Fedora or Arch installation). Ubuntu 22.04 does not meet this requirement.
 
@@ -71,7 +71,7 @@ Close Nexus Launcher and its games, then remove the application-menu installatio
 curl -fsSL https://raw.githubusercontent.com/domsvoboda/nexus-launcher/main/scripts/uninstall.sh | bash
 ```
 
-Games, saves, settings, downloaded runtimes, wallet credentials and system packages are kept.
+Games, saves, settings, downloaded runtimes, wallet credentials and system packages are kept. Installations made with older `Xodus-Nexus-...` asset names are removed by the same script.
 For a custom installation, use the same `XODUS_NEXUS_PREFIX` and `XDG_DATA_HOME` as during installation.
 To preview the files, download the script and run `bash uninstall.sh --dry-run`.
 If you only downloaded an AppImage manually, delete that AppImage instead.

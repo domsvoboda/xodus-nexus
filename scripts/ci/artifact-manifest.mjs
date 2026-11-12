@@ -30,10 +30,21 @@ function validateArchitectureSet(kind, binaries) {
     return;
   }
   // Keep previously recorded single-image manifests verifiable. New named
-  // multi-architecture builds must be one version with no duplicate targets.
+  // multi-architecture builds must be one family and version with no duplicate
+  // targets. Nexus-Launcher is canonical; Xodus-Nexus stays accepted for old
+  // candidates and already published releases.
   if (kind === 'launcher' && binaries.length === 1 && binaries[0] === 'Xodus-Nexus.AppImage') return;
-  const pattern = kind === 'launcher' ? /^(Xodus-Nexus-\d+\.\d+\.\d+)-(x86_64|arm64)\.AppImage$/
-    : /^(xodus-nexus-backend-\d+\.\d+\.\d+-linux)-(x86_64|aarch64)\.tar\.xz$/;
+  if (kind === 'launcher') {
+    const pattern = /^(Nexus-Launcher|Xodus-Nexus)-(\d+\.\d+\.\d+)-(x86_64|arm64)\.AppImage$/;
+    const entries = binaries.map(name => pattern.exec(name));
+    if (!entries.length || entries.some(value => !value) || entries.length > 2 ||
+        new Set(entries.map(value => value[1])).size !== 1 ||
+        new Set(entries.map(value => value[2])).size !== 1 ||
+        new Set(entries.map(value => value[3])).size !== entries.length)
+      throw Error('Candidate architectures must identify one family and version without duplicate or unknown targets');
+    return;
+  }
+  const pattern = /^(xodus-nexus-backend-\d+\.\d+\.\d+-linux)-(x86_64|aarch64)\.tar\.xz$/;
   const entries = binaries.map(name => pattern.exec(name));
   if (!entries.length || entries.some(value => !value) || entries.length > 2 ||
       new Set(entries.map(value => value[1])).size !== 1 || new Set(entries.map(value => value[2])).size !== entries.length)

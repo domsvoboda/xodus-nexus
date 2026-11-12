@@ -101,8 +101,29 @@ else
 fi
 
 # ------------------------------------------------------------------ AppImage
+[[ ! -L "$APP_DIR" ]] || die "The application directory is a symlink: $APP_DIR"
 mkdir -p "$APP_DIR" "$BIN_DIR" "$DESKTOP_DIR"
-target="$APP_DIR/Xodus-Nexus.AppImage"
+
+canonical_target="$APP_DIR/Nexus-Launcher.AppImage"
+legacy_target="$APP_DIR/Xodus-Nexus.AppImage"
+prepare_target() {
+  local file="$1"
+  if [[ -L "$file" ]]; then die "Refusing to replace a symlinked launcher: $file"; fi
+  if [[ -e "$file" ]]; then
+    [[ -f "$file" ]] || die "Launcher path is not a regular file: $file"
+    [[ "$(stat -c '%u' -- "$file")" == "$EUID" ]] || die "Launcher is owned by another user: $file"
+  fi
+}
+if [[ -e "$canonical_target" || -L "$canonical_target" ]]; then
+  prepare_target "$canonical_target"
+  target="$canonical_target"
+elif [[ -e "$legacy_target" || -L "$legacy_target" ]]; then
+  prepare_target "$legacy_target"
+  target="$legacy_target"
+  log "Updating the existing Xodus-Nexus installation in place."
+else
+  target="$canonical_target"
+fi
 
 if [[ -n "$LOCAL_APPIMAGE" ]]; then
   [[ -f "$LOCAL_APPIMAGE" ]] || die "XODUS_NEXUS_APPIMAGE points to a missing file: $LOCAL_APPIMAGE"
@@ -112,9 +133,14 @@ else
   log "Finding the latest release…"
   release_json="$(curl -fsSL --max-time 30 "https://api.github.com/repos/$REPO/releases/latest" \
     || die "Could not reach GitHub. Check your connection, or download the AppImage manually from https://github.com/$REPO/releases")"
-  download_url="$(printf '%s\n' "$release_json" \
-    | grep -o "\"browser_download_url\": *\"[^\"]*-$APPIMAGE_ARCH\.AppImage\"" \
-    | head -n1 | sed 's/.*"\(https[^"]*\)".*/\1/')"
+  find_asset() {
+    local family="$1"
+    printf '%s\n' "$release_json" \
+      | grep -o "\"browser_download_url\": *\"[^\"]*/$family-[^\"]*-$APPIMAGE_ARCH\.AppImage\"" \
+      | head -n1 | sed 's/.*"\(https[^"]*\)".*/\1/' || true
+  }
+  download_url="$(find_asset Nexus-Launcher)"
+  [[ -n "$download_url" ]] || download_url="$(find_asset Xodus-Nexus)"
   [[ -n "$download_url" ]] || die "No AppImage found in the latest release. Publish a release first (npm run dist), or set XODUS_NEXUS_APPIMAGE=<file>."
   log "Downloading $(basename "$download_url")…"
   curl -fSL --retry 3 --max-time 600 -o "$target.part" "$download_url"
@@ -128,9 +154,28 @@ curl -fsSL --max-time 30 -o "$APP_DIR/icon.png" \
   "https://raw.githubusercontent.com/$REPO/main/assets/icon.png" \
   || warn "Could not download the icon; the desktop entry will use a generic icon."
 
-ln -sf "$target" "$BIN_DIR/xodus-nexus"
+link_command() {
+  local link="$BIN_DIR/xodus-nexus"
+  if [[ -L "$link" ]]; then
+    local current
+    current="$(readlink -f -- "$link" 2>/dev/null || true)"
+    case "$current" in
+      "$APP_DIR"/*) ln -sfn "$target" "$link" ;;
+      *) warn "Not replacing $link because it points outside $APP_DIR." ;;
+    esac
+  elif [[ -e "$link" ]]; then
+    warn "Not replacing $link because it is not a symlink created by this installer."
+  else
+    ln -sfn "$target" "$link"
+  fi
+}
+link_command
 
-cat > "$DESKTOP_DIR/xodus-nexus.desktop" <<EOF
+desktop_entry="$DESKTOP_DIR/xodus-nexus.desktop"
+if [[ -L "$desktop_entry" || -d "$desktop_entry" ]]; then
+  warn "Not replacing the desktop entry at $desktop_entry."
+else
+  cat > "$desktop_entry" <<EOF
 [Desktop Entry]
 Type=Application
 Name=Nexus Launcher
@@ -141,6 +186,7 @@ Terminal=false
 Categories=Game;
 StartupWMClass=xodus-nexus
 EOF
+fi
 command -v update-desktop-database >/dev/null && update-desktop-database "$DESKTOP_DIR" || true
 
 case ":$PATH:" in
