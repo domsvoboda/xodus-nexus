@@ -727,23 +727,22 @@ async function offlineLicenseCache(root = offlineDataRoot()): Promise<string | u
 }
 let designationCheck: Promise<void> | undefined;
 let offlinePermissionChanging = false;
-/** Managed family installs never write the legacy <runtimeRoot>/current.json
- * pointer, so runtime.current.winePath stays undefined on a clean install even
- * though games launch through the family receipts. Resolve the default family
- * the same way resolveGameRuntime does before concluding no runtime exists. */
-async function defaultFamilyWinePath(): Promise<string | undefined> {
-  for (const id of ['nexus', 'nexus-cachyos']) {
+/** Global device-designation capability, not default-game readiness. A verified
+ * managed family can legitimately back explicit per-game choices, so probe an
+ * unconfigured installation without changing any game or default selection. */
+async function offlineLaunchSupported(): Promise<boolean> {
+  if (!backend.current.capabilities.licenseCache || !backend.current.capabilities.offlineLaunch) return false;
+  const selected = selectedWinePath(store.settings.winePath, store.settings.runtimeRoot, runtime.current.winePath);
+  if (selected) return offlineIdentityRuntime(selected);
+  for (const id of ['nexus', 'nexus-cachyos'] as const) {
     try {
-      return (await resolveRuntimeFamily(store.settings.runtimeRoot, id)).winePath;
+      const candidate = await resolveRuntimeFamily(store.settings.runtimeRoot, id);
+      if (await offlineIdentityRuntime(candidate.winePath)) return true;
     } catch {
-      // Not installed or not verified: try the next family.
+      // A missing or corrupt family never authorizes this capability.
     }
   }
-  return undefined;
-}
-async function offlineLaunchSupported(): Promise<boolean> {
-  const wine = selectedWinePath(store.settings.winePath, store.settings.runtimeRoot, runtime.current.winePath) ?? await defaultFamilyWinePath();
-  return Boolean(backend.current.capabilities.licenseCache && backend.current.capabilities.offlineLaunch && wine && await offlineIdentityRuntime(wine));
+  return false;
 }
 function assertOfflineScope(account: string | undefined, binary: string, root: string): void {
   if (shutdownStarted || authState.running || authState.stored !== true || !account || authState.username !== account || backend.current.binaryPath !== binary || offlineDataRoot() !== root)
