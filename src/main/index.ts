@@ -2458,15 +2458,15 @@ function registerIpc(): void {
       if (reservation) { reservation.release(); emitSnapshot(); }
     }
   });
+  const assertNativeDialogs = () => {
+    if (!nativeDialogsAvailable())
+      throw Error('The file picker is unavailable in Gaming Mode. Type the path in the field, or switch to Desktop Mode, where this is easier to configure.');
+  };
   ipcMain.handle('choose-directory', async (_event, defaultPath?: string) => {
     assertNativeDialogs();
     const result = await dialog.showOpenDialog(mainWindow!, { properties: ['openDirectory', 'createDirectory'], defaultPath });
     return result.canceled ? null : result.filePaths[0];
   });
-  const assertNativeDialogs = () => {
-    if (!nativeDialogsAvailable())
-      throw Error('The file picker is unavailable in Gaming Mode. Type the path in the field, or switch to Desktop Mode, where this is easier to configure.');
-  };
   ipcMain.handle('choose-file', async (_event, defaultPath?: string) => {
     assertNativeDialogs();
     const result = await dialog.showOpenDialog(mainWindow!, { properties: ['openFile'], defaultPath });
