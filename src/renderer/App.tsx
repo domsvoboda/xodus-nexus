@@ -1150,15 +1150,20 @@ export function SettingsPage({ data, toast }: { data: AppSnapshot; toast: (value
     finally { setBusy(undefined); }
   }
   async function importBackendArchive() {
-    const directory = await window.launcher.chooseDirectory();
+    let directory: string | null;
+    try { directory = await window.launcher.chooseDirectory(); }
+    catch (error) { toast({ kind: 'error', message: errorMessage(error) }); return; }
     if (!directory) return;
     await invoke('backend-import', () => window.launcher.importBackend(directory), ui('backend.local_installed'));
   }
 
   async function pick(kind: 'install' | 'runtime' | 'wine') {
-    const selected = kind === 'wine'
-      ? await window.launcher.chooseFile(form.winePath)
-      : await window.launcher.chooseDirectory(kind === 'install' ? form.installRoot : form.runtimeRoot);
+    let selected: string | null;
+    try {
+      selected = kind === 'wine'
+        ? await window.launcher.chooseFile(form.winePath)
+        : await window.launcher.chooseDirectory(kind === 'install' ? form.installRoot : form.runtimeRoot);
+    } catch (error) { toast({ kind: 'error', message: errorMessage(error) }); return; }
     if (selected) setForm((current) => ({ ...current, [kind === 'install' ? "installRoot" : kind === 'runtime' ? "runtimeRoot" : "winePath"]: selected }));
   }
 

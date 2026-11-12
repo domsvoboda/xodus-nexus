@@ -98,7 +98,7 @@ import { fallbackAuthViewFactory } from './auth-fallback.js';
 import { contentParentForChoice, InstallPlans, installSelection, readInstallPlan } from './install-plan.js';
 import { availableInstallBytes } from './install-storage.js';
 import { adoptLauncherFonts } from './launcher-fonts.js';
-import { externalLauncherEnvironment } from './launcher-environment.js';
+import {externalLauncherEnvironment, nativeDialogsAvailable} from './launcher-environment.js';
 import { openDesktopTarget } from './desktop-open.js';
 import { addSteamShortcut, steamAccounts, steamRunning } from './steam-shortcuts.js';
 import { gameSteamPortrait, nexusSteamArtwork } from './steam-artwork.js';
@@ -2460,10 +2460,16 @@ function registerIpc(): void {
     }
   });
   ipcMain.handle('choose-directory', async (_event, defaultPath?: string) => {
+    assertNativeDialogs();
     const result = await dialog.showOpenDialog(mainWindow!, { properties: ['openDirectory', 'createDirectory'], defaultPath });
     return result.canceled ? null : result.filePaths[0];
   });
+  const assertNativeDialogs = () => {
+    if (!nativeDialogsAvailable())
+      throw Error('The file picker is unavailable in Gaming Mode. Type the path in the field, or switch to Desktop Mode, where this is easier to configure.');
+  };
   ipcMain.handle('choose-file', async (_event, defaultPath?: string) => {
+    assertNativeDialogs();
     const result = await dialog.showOpenDialog(mainWindow!, { properties: ['openFile'], defaultPath });
     return result.canceled ? null : result.filePaths[0];
   });
