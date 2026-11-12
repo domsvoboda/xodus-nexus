@@ -9,7 +9,7 @@ import {approvedRuntimeSettings,guardedRuntimeSettings,type RuntimeSettingsReque
 import type {Game} from '../shared/types';
 import {prepareProtonRunner} from './proton';
 import {createHash} from 'node:crypto';
-import {resolveRuntimeFamily,resolveRuntimeFamilyBuild,retainRuntimeFamilyBuild,installedRuntimeFamilies,runtimeFamilyVerificationStats} from './runtime-families';
+import {verifyRuntimeFamilyPayload,resolveRuntimeFamily,resolveRuntimeFamilyBuild,retainRuntimeFamilyBuild,installedRuntimeFamilies,runtimeFamilyVerificationStats} from './runtime-families';
 import {resolveGameRuntime,bindRuntimePrefix,captureGamePrefixIdentity,gameRuntimeParameters} from './runtime-prefix-binding';
 import {gameRuntimeAvailable,gameRuntimeSelection,runtimePrefixIdentity} from '../shared/runtime-selection';
 let root:string,release:string;
@@ -41,6 +41,28 @@ async function secondFamily(id:'nexus'|'nexus-cachyos'='nexus') {
   const bytes=JSON.stringify(manifest);await fs.writeFile(manifestFile,bytes);
   await fs.writeFile(path.join(directory,'current.json'),JSON.stringify({schema:1,family:id,buildId,sourceRepository:repository,sourceCommit,manifestSha256:hash(bytes)}));
   return path.join(directory,'releases',buildId,'files/bin/wine');
+}
+/** Addresses a directory through a true ancestor-directory symlink: every
+ * symlinked component is a parent, while the leaf itself is a real directory. */
+async function ancestorAlias(directory:string) {
+  const alias=path.join(directory,'ancestor-alias');
+  await fs.symlink(path.dirname(directory),alias);
+  return path.join(alias,path.basename(directory));
+}
+/** Adds one valid internal directory symlink and the exact default-template Z
+ * mapping to a family payload, then reseals its managed pointer. */
+async function addInventoriedSymlinks(id:'nexus'|'nexus-cachyos') {
+  const directory=path.join(root,'variants',id),payload=path.join(directory,'releases',buildId);
+  await fs.symlink('share',path.join(payload,'files/shared-link'));
+  const mapping='files/share/default_pfx/dosdevices/z:';
+  await fs.mkdir(path.dirname(path.join(payload,mapping)),{recursive:true});
+  await fs.symlink('/',path.join(payload,mapping));
+  const manifestFile=path.join(payload,'nexus-family.json'),manifest=JSON.parse(await fs.readFile(manifestFile,'utf8'));
+  manifest.symlinks={'files/shared-link':'share',[mapping]:'/'};
+  const bytes=JSON.stringify(manifest);await fs.writeFile(manifestFile,bytes);
+  const pointerFile=path.join(directory,'current.json'),pointer=JSON.parse(await fs.readFile(pointerFile,'utf8'));
+  pointer.manifestSha256=hash(bytes);await fs.writeFile(pointerFile,JSON.stringify(pointer));
+  return {payload,manifest,manifestFile,pointer,pointerFile};
 }
 /** Pre-0.5 family-wide experimental prefix with its exact legacy marker. */
 async function legacyFamilyPrefix(gameId:string,id:'nexus'|'nexus-cachyos'=family) {
@@ -509,6 +531,62 @@ it('rejects the same absolute target at another path and an escaped intermediate
  await fs.unlink(path.join(release,link));const outside=path.join(root,'outside');await fs.mkdir(outside);await fs.symlink('/',path.join(outside,'z:'));
  await fs.symlink(outside,path.join(release,'files/share/default_pfx/dosdevices'));
  await reseal(manifest=>{manifest.symlinks={'files/share/default_pfx/dosdevices/z:':'/'};});await expect(resolveRuntimeFamily(root,family,'x64')).rejects.toThrow();
+});
+it('verifies both families through a true ancestor-directory alias and returns canonical payload paths',async()=>{
+ await fixture();const standardWine=await secondFamily('nexus');
+ const aliasedRoot=await ancestorAlias(root),pointers:Record<string,string>={},wines:Record<string,string>={};
+ for(const id of ['nexus-cachyos','nexus'] as const) {const added=await addInventoriedSymlinks(id);pointers[id]=JSON.stringify(added.pointer);wines[id]=await fs.realpath(path.join(added.payload,'files/bin/wine'));}
+ const listing=await fs.readdir(root);
+ for(const id of ['nexus-cachyos','nexus'] as const) {
+   const payload=path.join(aliasedRoot,'variants',id,'releases',buildId),pointer=JSON.parse(pointers[id]);
+   // The payload leaf is a real directory; only its ancestor is a symlink.
+   expect((await fs.lstat(payload)).isDirectory()).toBe(true);
+   const throughAlias=await verifyRuntimeFamilyPayload(payload,pointer,'x64');
+   const resolved=await resolveRuntimeFamily(aliasedRoot,id,'x64');
+   expect(throughAlias.root).toBe(await fs.realpath(path.join(root,'variants',id,'releases',buildId)));
+   expect(throughAlias.winePath).toBe(wines[id]);
+   expect(throughAlias.winePath).toBe(path.join(throughAlias.root,'files/bin/wine'));
+   expect(throughAlias).toEqual(resolved);
+   expect(throughAlias.buildId).toBe(buildId);expect(throughAlias.sourceCommit).toBe(sourceCommit);expect(throughAlias.manifestSha256).toBe(pointer.manifestSha256);
+   expect((await fs.stat(throughAlias.winePath)).ino).toBe((await fs.stat(wines[id])).ino);
+   expect(await fs.readFile(path.join(root,'variants',id,'current.json'),'utf8')).toBe(pointers[id]);
+ }
+ // Verification resolves the user's alias but never migrates or rewrites it.
+ expect(await fs.readdir(await fs.realpath(root))).toEqual(listing);
+ expect(await fs.readlink(path.join(root,'ancestor-alias'))).toBe(path.dirname(root));
+ expect((await fs.lstat(aliasedRoot)).isDirectory()).toBe(true);
+ expect(wines.nexus).toBe(await fs.realpath(standardWine));
+});
+it('keeps payload byte, containment, inventory and direct-root guards through an ancestor alias',async()=>{
+ await fixture();const aliasedRoot=await ancestorAlias(root),payload=path.join(aliasedRoot,'variants',family,'releases',buildId),loader=path.join(release,'files/bin/wine');
+ const pointer=async()=>JSON.parse(await fs.readFile(path.join(root,'variants',family,'current.json'),'utf8'));
+ // A real changed byte is still rejected through the alias.
+ await fs.writeFile(loader,'altered byte');
+ await expect(verifyRuntimeFamilyPayload(payload,await pointer(),'x64')).rejects.toThrow('Runtime payload checksum mismatch');
+ await fs.writeFile(loader,'synthetic inert fixture',{mode:0o755});
+ expect((await verifyRuntimeFamilyPayload(payload,await pointer(),'x64')).root).toBe(await fs.realpath(release));
+ // An escaped parent directory with byte-identical files is still rejected.
+ const compat=path.join(release,'files/share/xodus-nexus/compat'),outside=path.join(root,'outside-compat');
+ await fs.rename(compat,outside);await fs.symlink(outside,compat);
+ await expect(verifyRuntimeFamilyPayload(payload,await pointer(),'x64')).rejects.toThrow('Runtime payload checksum mismatch');
+ await fs.unlink(compat);await fs.rename(outside,compat);
+ // An inventoried link to a byte-identical tree outside the payload is rejected.
+ const added=await addInventoriedSymlinks(family),manifestBytes=await fs.readFile(added.manifestFile,'utf8'),pointerBytes=JSON.stringify(added.pointer);
+ await fs.cp(path.join(release,'files/share'),path.join(root,'outside-share'),{recursive:true});
+ const manifest=JSON.parse(manifestBytes);manifest.symlinks['files/outside-link']='../../../../../outside-share';
+ const bytes=JSON.stringify(manifest);await fs.writeFile(added.manifestFile,bytes);
+ await fs.writeFile(added.pointerFile,JSON.stringify({...added.pointer,manifestSha256:hash(bytes)}));
+ await fs.symlink('../../../../../outside-share',path.join(release,'files/outside-link'));
+ await expect(verifyRuntimeFamilyPayload(payload,await pointer(),'x64')).rejects.toThrow('Runtime symlink leaves verified payload');
+ await fs.unlink(path.join(release,'files/outside-link'));await fs.writeFile(added.manifestFile,manifestBytes);await fs.writeFile(added.pointerFile,pointerBytes);
+ // Unlisted extras and an incomplete inventory remain errors through the alias.
+ await fs.writeFile(path.join(release,'unlisted'),'extra');
+ await expect(verifyRuntimeFamilyPayload(payload,await pointer(),'x64')).rejects.toThrow('incomplete');
+ await fs.unlink(path.join(release,'unlisted'));await fs.unlink(path.join(release,'files/bin/wine.nexus-original'));
+ await expect(verifyRuntimeFamilyPayload(payload,await pointer(),'x64')).rejects.toThrow();
+ // The payload root itself may never be reached through a leaf symlink.
+ const link=path.join(root,'payload-root-link');await fs.symlink(await fs.realpath(release),link);
+ await expect(verifyRuntimeFamilyPayload(link,await pointer(),'x64')).rejects.toThrow('Runtime root must be a real directory');
 });
 it('performs one full hash pass for concurrent and repeated unchanged requests, then invalidates changed files',async()=>{
  await fixture();const baseline=runtimeFamilyVerificationStats();
