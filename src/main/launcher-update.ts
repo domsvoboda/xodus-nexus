@@ -13,7 +13,9 @@ interface Release { tag_name: string; draft?: boolean; prerelease?: boolean; ass
 export interface LauncherCandidate { version: string; image: Asset; checksum: Asset; releaseUrl: string }
 
 const REPOSITORIES=['domsvoboda/nexus-launcher','domsvoboda/xodus-nexus'] as const;
-const ARTIFACT_FAMILIES=['Xodus-Nexus','Nexus-Launcher'] as const;
+// Canonical public asset family first. The legacy family keeps old v0.4/v0.5
+// releases updateable; a release must still provide one coherent family.
+const ARTIFACT_FAMILIES=['Nexus-Launcher','Xodus-Nexus'] as const;
 export function launcherCandidate(releases: Release[], current: string, arch: NexusArch = currentArch()): LauncherCandidate | undefined {
   const stable = releases.filter(r => !r.draft && !r.prerelease && typeof r.tag_name === 'string' && /^v\d+\.\d+\.\d+$/.test(r.tag_name));
   stable.sort((a, b) => isNewerVersion(a.tag_name, b.tag_name) ? -1 : isNewerVersion(b.tag_name, a.tag_name) ? 1 : 0);

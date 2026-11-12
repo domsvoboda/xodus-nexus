@@ -57,7 +57,7 @@
   "build": {
     "appId": "org.xodusgaming.nexus",
     "productName": "Nexus Launcher",
-    "artifactName": "Xodus-Nexus-${version}-${arch}.${ext}",
+    "artifactName": "Nexus-Launcher-${version}-${arch}.${ext}",
     "directories": {
       "output": "release"
     },

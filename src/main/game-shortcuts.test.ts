@@ -294,3 +294,19 @@ it('follows the stable launcher symlink after an update instead of pinning its r
     expect(await shortcutLauncherPath(f.locations.launcher,updated)).toBe(f.locations.launcher);
   }finally{await fs.rm(f.root,{recursive:true,force:true});}
 });
+
+it('prefers the canonical stable launcher link and still follows the legacy link',async()=>{
+  const f=await fixture();
+  try{
+    const legacy=path.join(f.root,'Xodus-Nexus.AppImage');await fs.symlink(f.locations.launcher,legacy);
+    expect(await shortcutLauncherPath(f.locations.launcher)).toBe(legacy);
+    const canonical=path.join(f.root,'Nexus-Launcher.AppImage');await fs.symlink(f.locations.launcher,canonical);
+    expect(await shortcutLauncherPath(f.locations.launcher)).toBe(canonical);
+    const shortcuts=new GameShortcuts({...f.locations,launcher:canonical});await shortcuts.initialize();
+    const helper=path.join(f.locations.userData,'shortcuts/launch-game');
+    expect((await execute('/bin/sh',[helper,id])).stdout).toContain('--launch-game '+id);
+    const updated=path.join(f.root,'updated');await fs.writeFile(updated,'#!/bin/sh\nprintf updated\n',{mode:0o700});
+    await fs.unlink(canonical);await fs.symlink(updated,canonical);
+    expect(await shortcutLauncherPath(f.locations.launcher)).toBe(legacy);
+  }finally{await fs.rm(f.root,{recursive:true,force:true});}
+});

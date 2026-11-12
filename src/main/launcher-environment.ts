@@ -14,3 +14,9 @@ export function externalLauncherEnvironment(source: NodeJS.ProcessEnv = process.
   delete environment.XODUS_NEXUS_STEAM_IME;
   return environment;
 }
+
+/** Native file dialogs are separate top-level windows that gamescope neither
+ * raises nor routes input to, so Gaming Mode must not open them. */
+export function nativeDialogsAvailable(environment: NodeJS.ProcessEnv = process.env): boolean {
+  return !environment.XDG_CURRENT_DESKTOP?.split(':').some(value => value.toLowerCase() === 'gamescope');
+}

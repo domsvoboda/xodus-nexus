@@ -218,6 +218,31 @@ it('fails safely for same-build payload corruption without replacing or deleting
     expect(await fs.readFile(a.winePath, 'utf8')).toBe('preserve corrupt evidence');
     await f.preserved();
 });
+it('installs through a true ancestor-directory alias and preserves sentinel state on failed verification', async () => {
+    const f = await fixture();
+    const alias = path.join(f.root, 'installed-alias');
+    await fs.symlink(f.root, alias);
+    const aliasedRoot = path.join(alias, 'runtime');
+    f.manager.setRoot(aliasedRoot);
+    // Staging at 561 and the final destination at 589 are both validated through
+    // an alias whose leaf directories remain real.
+    expect(await f.install()).toMatchObject({ success: true });
+    const installed = await resolveRuntimeFamily(aliasedRoot, 'nexus-cachyos', 'x64');
+    const canonical = await fs.realpath(path.join(f.root, 'runtime/variants/nexus-cachyos/releases', f.remote.buildId));
+    expect(installed.root).toBe(canonical);
+    expect(installed.winePath).toBe(path.join(canonical, 'files/bin/wine'));
+    expect(f.manager.current.managedFamilies!.find(row => row.id === 'nexus-cachyos')!.installed!.displayWinePath).toBe(installed.winePath);
+    await f.preserved();
+    // A later same-build install still refuses the preserved destination without
+    // touching the nonempty save, legacy pointer or its symlink.
+    await fs.writeFile(installed.winePath, 'preserve corrupt evidence');
+    const failed = await f.install();
+    expect(failed.success).toBe(false);
+    expect(failed.committed).toBe(false);
+    expect(failed.error).toContain('preserved');
+    expect(await fs.readFile(installed.winePath, 'utf8')).toBe('preserve corrupt evidence');
+    await f.preserved();
+});
 it('can recover to distinct verified B while preserving invalid old pointer as untrusted evidence', async () => {
     const f = await fixture();
     await f.install();

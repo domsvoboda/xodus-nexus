@@ -19,9 +19,9 @@ function release(version = '0.2.3', arch: NexusArch = currentArch(), repo='domsv
     { name: `${name}.sha512sum`, size: 200, browser_download_url: `https://github.com/${repo}/releases/download/v${version}/${name}.sha512sum` },
   ] };
 }
-async function fixture(bad = '', arch: NexusArch = currentArch(),repo='domsvoboda/xodus-nexus',family='Xodus-Nexus') {
+async function fixture(bad = '', arch: NexusArch = currentArch(),repo='domsvoboda/xodus-nexus',family='Xodus-Nexus',targetName='Launcher.AppImage') {
   const root = await fs.mkdtemp(path.join(os.tmpdir(), 'nexus-update-test-')); roots.push(root);
-  const target = path.join(root, 'Launcher.AppImage'); await fs.writeFile(target, image(1,arch), { mode: 0o700 });
+  const target = path.join(root, targetName); await fs.writeFile(target, image(1,arch), { mode: 0o700 });
   const next = bad === 'format' ? Buffer.alloc(100) : image(2,bad==='architecture'?(arch==='x64'?'arm64':'x64'):arch);
   const r = release('0.2.3',arch,repo,family);
   const fetcher = (async (url: string | URL | Request) => {
@@ -141,4 +141,38 @@ it('rejects cross-repository/tag/family/checksum links, traversal and downgraded
 it('installs verified renamed-repository bytes in the existing AppImage path without moving state',async()=>{
  const {root,target,updater}=await fixture('',currentArch(),'domsvoboda/nexus-launcher','Nexus-Launcher');
  await fs.writeFile(root+'/launcher-state.json','old state');await updater.install();expect(await fs.readFile(target)).toEqual(image(2));expect(await fs.readFile(root+'/launcher-state.json','utf8')).toBe('old state');
+});
+
+it.each(['x64','arm64'] as const)('accepts the canonical Nexus-Launcher %s asset',arch=>{
+ const r=release('0.5.1',arch,'domsvoboda/nexus-launcher','Nexus-Launcher');
+ const candidate=launcherCandidate([r],'0.5.0',arch);
+ expect(candidate?.image.name).toBe(`Nexus-Launcher-0.5.1-${APPIMAGE_ARCH_SUFFIX[arch]}.AppImage`);
+ expect(candidate?.checksum.name).toBe(`Nexus-Launcher-0.5.1-${APPIMAGE_ARCH_SUFFIX[arch]}.AppImage.sha512sum`);
+ expect(candidate?.releaseUrl).toBe('https://github.com/domsvoboda/nexus-launcher/releases/tag/v0.5.1');
+});
+
+it('accepts the exact legacy v0.5.0 asset names for existing installations',()=>{
+ const r=release('0.5.0','x64','domsvoboda/xodus-nexus','Xodus-Nexus');
+ const candidate=launcherCandidate([r],'0.4.3','x64');
+ expect(candidate?.image.name).toBe('Xodus-Nexus-0.5.0-x86_64.AppImage');
+ expect(candidate?.releaseUrl).toBe('https://github.com/domsvoboda/xodus-nexus/releases/tag/v0.5.0');
+});
+
+it('prefers the canonical family when one release carries both families',()=>{
+ const legacy=release('0.5.1','x64','domsvoboda/nexus-launcher','Xodus-Nexus');
+ const canonical=release('0.5.1','x64','domsvoboda/nexus-launcher','Nexus-Launcher');
+ const candidate=launcherCandidate([{tag_name:'v0.5.1',assets:[...legacy.assets,...canonical.assets]}],'0.5.0','x64');
+ expect(candidate?.image.name).toBe('Nexus-Launcher-0.5.1-x86_64.AppImage');
+});
+
+it.each([
+ ['Xodus-Nexus.AppImage','Nexus-Launcher'],
+ ['Nexus-Launcher.AppImage','Xodus-Nexus'],
+] as const)('updates the existing %s installed path without moving state',async(targetName,family)=>{
+ const {root,target,updater}=await fixture('',currentArch(),'domsvoboda/nexus-launcher',family,targetName);
+ await fs.writeFile(root+'/launcher-state.json','old state');
+ await updater.install();
+ expect(await fs.readFile(target)).toEqual(image(2));
+ expect(await fs.readFile(root+'/launcher-state.json','utf8')).toBe('old state');
+ expect(path.basename(target)).toBe(targetName);
 });
