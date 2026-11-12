@@ -81,11 +81,31 @@ test('launcher candidates bind every AppImage architecture', async () => {
   } finally { await fs.rm(root, { recursive: true, force: true }); }
 });
 
-test('a candidate cannot mix component versions or invent an AppImage architecture', async () => {
+test('canonical Nexus-Launcher candidates bind both architectures and checksums', async () => {
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), 'launcher-canonical-test-'));
+  try {
+    for (const arch of ['x86_64', 'arm64']) {
+      await fs.writeFile(path.join(root, `Nexus-Launcher-0.5.1-${arch}.AppImage`), `synthetic ${arch}`);
+    }
+    const manifest = await writeManifest('launcher', root, context);
+    assert.equal(manifest.files.length, 4);
+    assert.ok(manifest.files.some(file => file.name === 'Nexus-Launcher-0.5.1-x86_64.AppImage.sha512sum'));
+    assert.ok(manifest.files.some(file => file.name === 'Nexus-Launcher-0.5.1-arm64.AppImage.sha512sum'));
+    assert.equal((await verifyManifest(root, { kind: 'launcher' })).files.length, 4);
+    await fs.writeFile(path.join(root, 'Nexus-Launcher-0.5.1-arm64.AppImage'), 'tampered');
+    await assert.rejects(verifyManifest(root), /checksum mismatch/);
+  } finally { await fs.rm(root, { recursive: true, force: true }); }
+});
+
+test('a candidate cannot mix component versions, families or invent an AppImage architecture', async () => {
   for (const names of [
     ['Xodus-Nexus-0.4.0-x86_64.AppImage','Xodus-Nexus-0.4.1-arm64.AppImage'],
+    ['Nexus-Launcher-0.5.1-x86_64.AppImage','Nexus-Launcher-0.5.2-arm64.AppImage'],
+    ['Nexus-Launcher-0.5.1-x86_64.AppImage','Xodus-Nexus-0.5.1-arm64.AppImage'],
     ['Xodus-Nexus-0.4.0-riscv64.AppImage'],
+    ['Nexus-Launcher-0.5.1-riscv64.AppImage'],
     ['Xodus-Nexus.AppImage','Xodus-Nexus-0.4.0-arm64.AppImage'],
+    ['Nexus-Launcher.AppImage'],
   ]) {
     const root=await fs.mkdtemp(path.join(os.tmpdir(),'candidate-arch-'));
     try {
@@ -93,4 +113,14 @@ test('a candidate cannot mix component versions or invent an AppImage architectu
       await assert.rejects(writeManifest('launcher',root,context),/architectures/);
     } finally {await fs.rm(root,{recursive:true,force:true});}
   }
+});
+
+test('canonical single-architecture launcher candidate is accepted', async () => {
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), 'launcher-single-arch-test-'));
+  try {
+    await fs.writeFile(path.join(root, 'Nexus-Launcher-0.5.1-x86_64.AppImage'), 'synthetic x86_64');
+    const manifest = await writeManifest('launcher', root, context);
+    assert.equal(manifest.files.length, 2);
+    assert.equal((await verifyManifest(root, { kind: 'launcher' })).files.length, 2);
+  } finally { await fs.rm(root, { recursive: true, force: true }); }
 });

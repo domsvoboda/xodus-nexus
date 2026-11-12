@@ -60,9 +60,13 @@ function contentPattern(pattern: string): RegExp {
   return new RegExp('^' + pattern.replace(/[.+^${}()|[\]\\]/g, '\\$&').replaceAll('*', '.*').replaceAll('?', '.') + '$', 'i');
 }
 type LayoutCoordinate = 'source' | 'destination';
+/** An absolute Windows drive or UNC SourcePath is build-host metadata. It is
+ * never opened, joined or stored as a package path; the group can then only be
+ * validated at its destination coordinate. */
+type LayoutSource = { usable: true; parts: string[] } | { usable: false };
 interface FileGroupLayout {
   group: XmlNode;
-  source: string[]; destination: string[]; prefix: string[]; pattern: string;
+  source: LayoutSource; destination: string[]; prefix: string[]; pattern: string;
 }
 /**
  * Package layout paths are relative to the package root. A single leading
@@ -76,13 +80,27 @@ function layoutParts(value: string, optional = false): string[] {
   if (parts.some(part => part === '..')) throw Error('Unsupported content layout path.');
   return parts;
 }
+function layoutSource(value: string): LayoutSource {
+  if (!value) throw Error('Unsupported content layout path.');
+  if (/[\x00-\x1f]/.test(value)) throw Error('Unsupported content layout path.');
+  if (/[*?]/.test(value)) throw Error('Unsupported content layout wildcard.');
+  // Only absolute Windows drives and UNC hosts are build metadata. A
+  // drive-relative D:path is neither a package path nor an absolute host path.
+  if (/^[A-Za-z]:[\\/]/.test(value) || /^[\\/]{2}[^\\/]/.test(value)) return { usable: false };
+  return { usable: true, parts: layoutParts(value) };
+}
 function layoutGroups(groups: XmlNode[]): FileGroupLayout[] {
   return groups.map(group => {
-    const source = layoutParts(group.attributes.SourcePath ?? '');
+    const source = layoutSource(group.attributes.SourcePath ?? '');
+    const destinationValue = group.attributes.DestinationPath;
     const include = layoutParts(group.attributes.Include ?? '');
-    const destination = layoutParts(group.attributes.DestinationPath ?? '', true);
+    const destination = layoutParts(destinationValue ?? '', true);
     const pattern = include.at(-1), prefix = include.slice(0, -1);
-    if (!pattern || /[*?]/.test(source.join('/')) || prefix.some(part => /[*?]/.test(part)) || destination.some(part => /[*?]/.test(part)))
+    // A relative source can keep the legacy implied-root destination. A build
+    // host source may only be used when the package proves its destination.
+    if (!source.usable && (destinationValue === undefined || destinationValue === ''))
+      throw Error('Host build source requires an explicit destination path.');
+    if (!pattern || prefix.some(part => /[*?]/.test(part)) || destination.some(part => /[*?]/.test(part)))
       throw Error('Unsupported content layout wildcard.');
     return { group, source, destination, prefix, pattern };
   });
@@ -97,8 +115,10 @@ function sameLayoutPath(expected: string[], actual: string[]): boolean {
   return expected.length === actual.length && expected.every((part, index) => part.toLowerCase() === actual[index].toLowerCase());
 }
 async function layoutPayload(directory: string, layout: FileGroupLayout, coordinate: LayoutCoordinate): Promise<'ok' | 'missing' | 'ambiguous' | 'unsafe'> {
+  const leading = coordinate === 'source' ? (layout.source.usable ? layout.source.parts : undefined) : layout.destination;
+  if (!leading) return 'missing';
   let folder = directory;
-  for (const part of [...(coordinate === 'source' ? layout.source : layout.destination), ...layout.prefix]) {
+  for (const part of [...leading, ...layout.prefix]) {
     const matches = (await fs.readdir(folder)).filter(name => name.toLowerCase() === part.toLowerCase());
     if (!matches.length) return 'missing';
     if (matches.length > 1) return 'ambiguous';
@@ -138,24 +158,26 @@ async function layoutFailure(directory: string, layouts: FileGroupLayout[], coor
  * The metadata declaration alone can be coordinate-neutral (a source path equal
  * to the deployed path), while the payload groups differ, so a neutral
  * declaration is settled by whole-layout evidence. Two fully valid but distinct
- * interpretations stay ambiguous and are rejected.
+ * interpretations stay ambiguous and are rejected. A build-host source is never
+ * evidence: such a group can only be satisfied by its destination coordinate.
  */
 async function layoutCoordinate(directory: string, layouts: FileGroupLayout[], configuration: ContentConfiguration): Promise<LayoutCoordinate> {
   const configName = 'MicrosoftGame.config';
   const physical = path.relative(directory, (configuration.source ?? configuration.root)!).split(path.sep).filter(Boolean);
+  const sourcePath = (group: FileGroupLayout, relative: string[]) => group.source.usable ? [...group.source.parts, ...relative] : undefined;
   const declarations = layouts.filter(group => {
     if (!contentPattern(group.pattern).test(configName)) return false;
-    const relative = [...group.prefix, configName];
-    return (sameLayoutPath([...group.source, ...relative], physical) || sameLayoutPath([...group.destination, ...relative], physical))
+    const relative = [...group.prefix, configName], source = sourcePath(group, relative);
+    return ((source !== undefined && sameLayoutPath(source, physical)) || sameLayoutPath([...group.destination, ...relative], physical))
       && !layoutExcluded(group, relative);
   });
   if (declarations.length !== 1) throw Error('MicrosoftGame.config must be unambiguously mapped by the content layout.');
   const declaration = declarations[0], relative = [...declaration.prefix, configName];
-  const sourcePath = [...declaration.source, ...relative], destinationPath = [...declaration.destination, ...relative];
-  const sourceCoordinate = sameLayoutPath(sourcePath, physical) && sameLayoutPath(destinationPath, [configName]);
+  const measuredSource = sourcePath(declaration, relative), destinationPath = [...declaration.destination, ...relative];
+  const sourceCoordinate = measuredSource !== undefined && sameLayoutPath(measuredSource, physical) && sameLayoutPath(destinationPath, [configName]);
   const destinationCoordinate = sameLayoutPath(destinationPath, physical);
   if (sourceCoordinate && destinationCoordinate) {
-    if (layouts.every(layout => sameLayoutPath(layout.source, layout.destination))) return 'source';
+    if (layouts.every(layout => layout.source.usable && sameLayoutPath(layout.source.parts, layout.destination))) return 'source';
     const sourceFailure = await layoutFailure(directory, layouts, 'source');
     const destinationFailure = await layoutFailure(directory, layouts, 'destination');
     if (!sourceFailure && !destinationFailure) throw Error('MicrosoftGame.config matches both layout coordinates.');

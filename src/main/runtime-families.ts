@@ -67,8 +67,12 @@ export async function verifyRuntimeFamilyPayload(root:string,pointer:RuntimeFami
   const id=pointer.family;
   if(!runtimeFamilies.includes(id)||pointer.schema!==1||pointer.sourceRepository!==repositories[id]||!commit(pointer.sourceCommit)||!hash(pointer.manifestSha256)||!hash(pointer.buildId))throw Error('Invalid managed runtime receipt');
   if(!(await fs.lstat(root)).isDirectory())throw Error('Runtime root must be a real directory');
-    if(!(await fs.lstat(path.join(root,'nexus-family.json'))).isFile())throw Error('Runtime manifest must be a regular file');
-    const bytes=await fs.readFile(path.join(root,'nexus-family.json'));
+  // Callers may supply a lexical staging or destination path whose ancestors
+  // contain symlinks (for example /home -> /var/home). The leaf guard above
+  // stays lexical, then every check and returned path uses one canonical base.
+  const base=await fs.realpath(root);
+    if(!(await fs.lstat(path.join(base,'nexus-family.json'))).isFile())throw Error('Runtime manifest must be a regular file');
+    const bytes=await fs.readFile(path.join(base,'nexus-family.json'));
     if(digest(bytes)!==pointer.manifestSha256)throw Error('Runtime manifest checksum mismatch');
     const manifest=JSON.parse(bytes.toString('utf8'));
     if(manifest.schema!==1||manifest.family!==id||manifest.sourceRepository!==repositories[id]||manifest.sourceCommit!==pointer.sourceCommit||manifest.buildId!==pointer.buildId||manifest.arch!==arch||manifest.prefixSchema!==1||!manifest.files||Array.isArray(manifest.files)||typeof manifest.files!=='object')throw Error('Runtime manifest identity mismatch');
@@ -83,42 +87,42 @@ export async function verifyRuntimeFamilyPayload(root:string,pointer:RuntimeFami
     for(const required of critical)if(!hash(manifest.files[required]))throw Error('Runtime launch file missing');
     for(const [name,expected] of Object.entries(manifest.files)) {
       if(!hash(expected)||!name||name.includes('\\')||name.split('/').some(part=>!part||part==='.'||part==='..')||path.isAbsolute(name))throw Error('Unsafe runtime manifest path');
-      if(!(await fs.lstat(path.join(root,name))).isFile())throw Error('Runtime file inventory must name regular files');
-      const target=await fs.realpath(path.join(root,name));
-      if(!within(root,target)||(await fs.stat(target)).isFile()!==true||await fileDigest(target)!==expected)throw Error('Runtime payload checksum mismatch');
+      if(!(await fs.lstat(path.join(base,name))).isFile())throw Error('Runtime file inventory must name regular files');
+      const target=await fs.realpath(path.join(base,name));
+      if(!within(base,target)||(await fs.stat(target)).isFile()!==true||await fileDigest(target)!==expected)throw Error('Runtime payload checksum mismatch');
     }
     const symlinks=manifest.symlinks??{};
     const templateMapping=(name:string,target:unknown)=>name==='files/share/default_pfx/dosdevices/z:'&&target==='/';
     if(!symlinks||Array.isArray(symlinks)||typeof symlinks!=='object')throw Error('Invalid runtime symlink inventory');
     for(const [name,target] of Object.entries(symlinks)) {
       if(typeof target!=='string'||!target||path.isAbsolute(target)&&!templateMapping(name,target)||!name||name.includes('\\')||name.split('/').some(part=>!part||part==='.'||part==='..')||path.isAbsolute(name)||name in manifest.files)throw Error('Unsafe runtime symlink path');
-      const file=path.join(root,name);
-      if(!(await fs.lstat(file)).isSymbolicLink()||await fs.readlink(file)!==target||!within(root,await fs.realpath(path.dirname(file)))||!templateMapping(name,target)&&!within(root,await fs.realpath(file)))throw Error('Runtime symlink leaves verified payload');
+      const file=path.join(base,name);
+      if(!(await fs.lstat(file)).isSymbolicLink()||await fs.readlink(file)!==target||!within(base,await fs.realpath(path.dirname(file)))||!templateMapping(name,target)&&!within(base,await fs.realpath(file)))throw Error('Runtime symlink leaves verified payload');
     }
     const inventory:string[]=[];
     const walk=async(directory:string)=>{for(const item of await fs.readdir(directory,{withFileTypes:true})){
-      const file=path.join(directory,item.name),name=path.relative(root,file).split(path.sep).join('/');
+      const file=path.join(directory,item.name),name=path.relative(base,file).split(path.sep).join('/');
       if(item.isDirectory())await walk(file);else if(name!=='nexus-family.json')inventory.push(name);
     }};
-    await walk(root);
+    await walk(base);
     const expectedInventory=[...Object.keys(manifest.files),...Object.keys(symlinks),...Object.keys(compatLicense)];
     if(new Set(inventory).size!==inventory.length||inventory.sort().join('\n')!==[...new Set(expectedInventory)].sort().join('\n'))throw Error('Runtime payload inventory is incomplete');
     for(const [name,expected] of Object.entries(compatLicense)) {
       if(name in manifest.files||name in symlinks)continue;
-      const file=path.join(root,name),stat=await fs.lstat(file);
+      const file=path.join(base,name),stat=await fs.lstat(file);
       if(!stat.isFile()||stat.isSymbolicLink())throw Error('Compatibility runtime license must be a regular file');
       const target=await fs.realpath(file);
-      if(!within(root,target)||!(await fs.stat(target)).isFile()||await fileDigest(target)!==expected)throw Error('Compatibility runtime license checksum mismatch');
+      if(!within(base,target)||!(await fs.stat(target)).isFile()||await fileDigest(target)!==expected)throw Error('Compatibility runtime license checksum mismatch');
     }
-    const metadata=JSON.parse(await fs.readFile(path.join(root,'XODUS_NEXUS_PATCH.json'),'utf8'));
+    const metadata=JSON.parse(await fs.readFile(path.join(base,'XODUS_NEXUS_PATCH.json'),'utf8'));
     if(metadata.schema!==1||!hash(metadata.sourceLockSha256)||!metadata.sourceGraph||typeof metadata.sourceGraph!=='object'||metadata.sourceGraph.proton!==pointer.sourceCommit||metadata.sourceLockSha256!==manifest.sourceLockSha256)throw Error('Runtime source graph is not bound');
-    if(!(await fs.stat(path.join(root,'files/share/default_pfx'))).isDirectory())throw Error('Runtime default prefix missing');
-    const winePath=path.join(root,loader);
-    for(const file of [winePath,path.join(root,'proton'),path.join(root,server)]) {
+    if(!(await fs.stat(path.join(base,'files/share/default_pfx'))).isDirectory())throw Error('Runtime default prefix missing');
+    const winePath=path.join(base,loader);
+    for(const file of [winePath,path.join(base,'proton'),path.join(base,server)]) {
       if(!(await fs.lstat(file)).isFile())throw Error('Runtime launcher cannot be a symlink');
       await fs.access(file,constants.X_OK);
     }
-    return Object.freeze({id,label:runtimeFamilyLabels[id],buildId:pointer.buildId,sourceCommit:pointer.sourceCommit,winePath,root,arch:arch as 'x64'|'arm64',prefixSchema:1,manifestSha256:pointer.manifestSha256});
+    return Object.freeze({id,label:runtimeFamilyLabels[id],buildId:pointer.buildId,sourceCommit:pointer.sourceCommit,winePath,root:base,arch:arch as 'x64'|'arm64',prefixSchema:1,manifestSha256:pointer.manifestSha256});
 }
 // A cache hit still checks identities and the complete inventory, but never
 // reads payload contents. Receipt/manifest/root changes, additions, removals,

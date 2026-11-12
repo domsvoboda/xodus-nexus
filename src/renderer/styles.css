@@ -32,6 +32,9 @@ html[data-gamepad-navigation] [data-gamepad-focus] {
 /* Inset the ring only on edge-to-edge scrolling panels so it cannot be clipped
    by their parent. Buttons and cards keep a padded ring outside their edge. */
 html[data-gamepad-navigation] [data-gamepad-scroll][data-gamepad-focus] { outline-offset: -7px; }
+/* The search pill keeps its own shape under the ring; the inner input shows none. */
+html[data-gamepad-navigation] .search-box[data-gamepad-focus] { border-radius: 19px; }
+html[data-gamepad-navigation] .search-box[data-gamepad-focus] input:focus { outline: none; box-shadow: none; }
 /* Show one ring on the whole card, including sidebar auto-select controls.
    Preserve ordinary keyboard focus outside controller mode. */
 html[data-gamepad-navigation] [data-gamepad-auto-select]:focus,

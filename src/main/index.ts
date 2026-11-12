@@ -5,6 +5,7 @@ import {gameRuntimeReadiness} from './game-runtime-readiness.js';
 import {guardedRuntimeSettings,type RuntimeSettingsRequest} from './runtime-settings.js';
 import {gameRuntimeSelection} from '../shared/runtime-selection.js';
 import {resolveGameRuntime,bindRuntimePrefix,gameRuntimeParameters} from './runtime-prefix-binding.js';
+import {resolveRuntimeFamily} from './runtime-families.js';
 import {desktopTrayAvailable} from './launcher-tray-desktop.js';
 import {LauncherTray} from './launcher-tray.js';
 import {SteamKeyboard} from './steam-keyboard.js';
@@ -97,7 +98,7 @@ import { fallbackAuthViewFactory } from './auth-fallback.js';
 import { contentParentForChoice, InstallPlans, installSelection, readInstallPlan } from './install-plan.js';
 import { availableInstallBytes } from './install-storage.js';
 import { adoptLauncherFonts } from './launcher-fonts.js';
-import { externalLauncherEnvironment } from './launcher-environment.js';
+import {externalLauncherEnvironment, nativeDialogsAvailable} from './launcher-environment.js';
 import { openDesktopTarget } from './desktop-open.js';
 import { addSteamShortcut, steamAccounts, steamRunning } from './steam-shortcuts.js';
 import { gameSteamPortrait, nexusSteamArtwork } from './steam-artwork.js';
@@ -726,9 +727,22 @@ async function offlineLicenseCache(root = offlineDataRoot()): Promise<string | u
 }
 let designationCheck: Promise<void> | undefined;
 let offlinePermissionChanging = false;
+/** Global device-designation capability, not default-game readiness. A verified
+ * managed family can legitimately back explicit per-game choices, so probe an
+ * unconfigured installation without changing any game or default selection. */
 async function offlineLaunchSupported(): Promise<boolean> {
-  const wine = selectedWinePath(store.settings.winePath, store.settings.runtimeRoot, runtime.current.winePath);
-  return Boolean(backend.current.capabilities.licenseCache && backend.current.capabilities.offlineLaunch && wine && await offlineIdentityRuntime(wine));
+  if (!backend.current.capabilities.licenseCache || !backend.current.capabilities.offlineLaunch) return false;
+  const selected = selectedWinePath(store.settings.winePath, store.settings.runtimeRoot, runtime.current.winePath);
+  if (selected) return offlineIdentityRuntime(selected);
+  for (const id of ['nexus', 'nexus-cachyos'] as const) {
+    try {
+      const candidate = await resolveRuntimeFamily(store.settings.runtimeRoot, id);
+      if (await offlineIdentityRuntime(candidate.winePath)) return true;
+    } catch {
+      // A missing or corrupt family never authorizes this capability.
+    }
+  }
+  return false;
 }
 function assertOfflineScope(account: string | undefined, binary: string, root: string): void {
   if (shutdownStarted || authState.running || authState.stored !== true || !account || authState.username !== account || backend.current.binaryPath !== binary || offlineDataRoot() !== root)
@@ -2444,11 +2458,17 @@ function registerIpc(): void {
       if (reservation) { reservation.release(); emitSnapshot(); }
     }
   });
+  const assertNativeDialogs = () => {
+    if (!nativeDialogsAvailable())
+      throw Error('The file picker is unavailable in Gaming Mode. Type the path in the field, or switch to Desktop Mode, where this is easier to configure.');
+  };
   ipcMain.handle('choose-directory', async (_event, defaultPath?: string) => {
+    assertNativeDialogs();
     const result = await dialog.showOpenDialog(mainWindow!, { properties: ['openDirectory', 'createDirectory'], defaultPath });
     return result.canceled ? null : result.filePaths[0];
   });
   ipcMain.handle('choose-file', async (_event, defaultPath?: string) => {
+    assertNativeDialogs();
     const result = await dialog.showOpenDialog(mainWindow!, { properties: ['openFile'], defaultPath });
     return result.canceled ? null : result.filePaths[0];
   });

@@ -7,17 +7,18 @@ import { spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 
 const script = fileURLToPath(new URL('../uninstall.sh', import.meta.url));
-async function fixture(t, custom = false) {
+async function fixture(t, custom = false, imageNames = ['Xodus-Nexus.AppImage']) {
   const root = await fs.mkdtemp(path.join(os.tmpdir(), 'nexus-uninstall-'));
   t.after(() => fs.rm(root, { recursive: true, force: true }));
   const prefix = custom ? path.join(root, 'prefix with spaces $literal') : path.join(root, '.local');
   const data = custom ? path.join(root, 'data with spaces') : path.join(root, '.local/share');
   const app = path.join(prefix, 'opt/xodus-nexus');
-  const image = path.join(app, 'Xodus-Nexus.AppImage');
+  const images = imageNames.map(name => path.join(app, name));
+  const image = images[0];
   const command = path.join(prefix, 'bin/xodus-nexus');
   const desktop = path.join(data, 'applications/xodus-nexus.desktop');
   for (const dir of [app, path.dirname(command), path.dirname(desktop), path.join(root, 'tools')]) await fs.mkdir(dir, { recursive: true });
-  await fs.writeFile(image, 'installed AppImage');
+  for (const file of images) await fs.writeFile(file, 'installed AppImage');
   await fs.writeFile(path.join(app, 'icon.png'), 'installed icon');
   await fs.symlink(image, command);
   await fs.writeFile(desktop, `[Desktop Entry]\nName=Xodus Nexus\nExec=${command} %U\nIcon=${app}/icon.png\n`);
@@ -32,7 +33,7 @@ async function fixture(t, custom = false) {
     return spawnSync('/bin/bash', [script, ...args], { env, encoding: 'utf8' });
   };
   const kept = async () => { for (const file of preserved) assert.equal(await fs.readFile(file, 'utf8'), 'keep'); };
-  return { root, prefix, data, app, image, command, desktop, run, kept };
+  return { root, prefix, data, app, image, images, command, desktop, run, kept };
 }
 async function absent(file) { await assert.rejects(fs.lstat(file), { code: 'ENOENT' }); }
 
@@ -97,4 +98,48 @@ test('renamed display labels keep installer identities and leave saved data inta
  const f=await fixture(t);const desktop=path.join(f.root,'.local/share/applications/xodus-nexus.desktop');
  await fs.writeFile(desktop,(await fs.readFile(desktop,'utf8')).replace('Name=Xodus Nexus','Name=Nexus Launcher'));
  const result=f.run();assert.equal(result.status,0,result.stderr);await absent(f.image);await absent(desktop);await f.kept();
+});
+
+test('removes both canonical and legacy installer images with their updater files', async t => {
+  const f = await fixture(t, false, ['Nexus-Launcher.AppImage', 'Xodus-Nexus.AppImage']);
+  const backups = f.images.map(image => `${image}.nexus-backup-01234567-89ab-cdef-0123-456789abcdef`);
+  for (const backup of backups) await fs.writeFile(backup, 'old AppImage');
+  for (const image of f.images) await fs.writeFile(`${image}.part`, 'partial download');
+  assert.equal(f.run().status, 0);
+  for (const file of [...f.images, ...backups, f.command, f.desktop, f.app]) await absent(file);
+  await f.kept();
+});
+
+test('an active canonical update lock prevents uninstall of either image', async t => {
+  const f = await fixture(t, false, ['Nexus-Launcher.AppImage', 'Xodus-Nexus.AppImage']);
+  await fs.writeFile(`${f.images[0]}.nexus-update.lock`, String(process.pid));
+  const active = f.run(); assert.equal(active.status, 1); assert.match(active.stderr, /update is active/);
+  for (const image of f.images) assert.equal(await fs.readFile(image, 'utf8'), 'installed AppImage');
+  await f.kept();
+});
+
+test('canonical image symlinks are unlinked without deleting their targets', async t => {
+  const f = await fixture(t, false, ['Nexus-Launcher.AppImage']);
+  const target = path.join(f.root, 'keep.AppImage'); await fs.writeFile(target, 'external file');
+  await fs.unlink(f.image); await fs.symlink(target, f.image);
+  assert.equal(f.run().status, 0); await absent(f.image);
+  assert.equal(await fs.readFile(target, 'utf8'), 'external file'); await f.kept();
+});
+
+test('keeps unrelated canonical lookalike files and does not purge saved data', async t => {
+  const f = await fixture(t, false, ['Nexus-Launcher.AppImage']);
+  const lookalike = `${f.image}.nexus-backup-not-an-updater-uuid`; await fs.writeFile(lookalike, 'keep lookalike');
+  const extra = path.join(f.app, 'game-save.dat'); await fs.writeFile(extra, 'keep extra');
+  assert.equal(f.run().status, 0);
+  assert.equal(await fs.readFile(lookalike, 'utf8'), 'keep lookalike');
+  assert.equal(await fs.readFile(extra, 'utf8'), 'keep extra'); await f.kept();
+});
+
+test('keeps a command symlink that points outside the installation', async t => {
+  const f = await fixture(t);
+  const external = path.join(f.root, 'other-command'); await fs.writeFile(external, 'other');
+  await fs.unlink(f.command); await fs.symlink(external, f.command);
+  assert.equal(f.run().status, 0);
+  assert.equal(await fs.readlink(f.command), external);
+  assert.equal(await fs.readFile(external, 'utf8'), 'other'); await f.kept();
 });

@@ -11,8 +11,9 @@ case "${1:-}" in
 Usage: uninstall.sh [--dry-run]
 
 Close Nexus Launcher and its games before uninstalling. No sudo is needed.
-Removes the installer-managed AppImage, its updater backups, icon, command
-symlink and application-menu entry. All user data and system packages are kept.
+Removes the installer-managed AppImage (including legacy Xodus-Nexus installs),
+its updater backups, icon, command symlink and application-menu entry. All user
+data and system packages are kept.
 For a custom installation, use the same XODUS_NEXUS_PREFIX and XDG_DATA_HOME
 values that were used with install.sh. --dry-run only lists matching files.
 EOF
@@ -31,21 +32,25 @@ nexus_data="${XDG_DATA_HOME:-$HOME/.local/share}"
 nexus_prefix="$(realpath -m -- "$nexus_prefix")"
 nexus_data="$(realpath -m -- "$nexus_data")"
 nexus_app="$nexus_prefix/opt/xodus-nexus"
-nexus_image="$nexus_app/Xodus-Nexus.AppImage"
+nexus_images=("$nexus_app/Nexus-Launcher.AppImage" "$nexus_app/Xodus-Nexus.AppImage")
 nexus_command="$nexus_prefix/bin/xodus-nexus"
 nexus_desktop_dir="$nexus_data/applications"
 nexus_desktop="$nexus_desktop_dir/xodus-nexus.desktop"
 [[ ! -L "$nexus_app" ]] || die "The application directory is a symlink: $nexus_app"
 
 # Do not race an in-app update, and never terminate a running process.
-nexus_lock="$nexus_image.nexus-update.lock"
-if [[ -e "$nexus_lock" || -L "$nexus_lock" ]]; then
-  [[ -f "$nexus_lock" && ! -L "$nexus_lock" && -O "$nexus_lock" ]] || die 'Unsafe launcher update lock.'
-  nexus_pid=''
-  IFS= read -r nexus_pid < "$nexus_lock" || true
-  [[ "$nexus_pid" =~ ^[1-9][0-9]*$ ]] || die 'Invalid launcher update lock.'
-  if kill -0 "$nexus_pid" 2>/dev/null; then die 'A launcher update is active. Close Nexus Launcher and retry.'; fi
-fi
+nexus_locks=()
+for nexus_image in "${nexus_images[@]}"; do
+  nexus_lock="$nexus_image.nexus-update.lock"
+  if [[ -e "$nexus_lock" || -L "$nexus_lock" ]]; then
+    [[ -f "$nexus_lock" && ! -L "$nexus_lock" && -O "$nexus_lock" ]] || die 'Unsafe launcher update lock.'
+    nexus_pid=''
+    IFS= read -r nexus_pid < "$nexus_lock" || true
+    [[ "$nexus_pid" =~ ^[1-9][0-9]*$ ]] || die 'Invalid launcher update lock.'
+    if kill -0 "$nexus_pid" 2>/dev/null; then die 'A launcher update is active. Close Nexus Launcher and retry.'; fi
+    nexus_locks+=("$nexus_lock")
+  fi
+done
 
 nexus_removed=0
 remove_file() {
@@ -63,7 +68,12 @@ remove_file() {
 }
 
 if [[ -L "$nexus_command" ]]; then
-  if [[ "$(realpath -m -- "$nexus_command")" == "$nexus_image" ]]; then remove_file "$nexus_command"
+  nexus_command_target="$(realpath -m -- "$nexus_command")"
+  nexus_command_owned=0
+  for nexus_image in "${nexus_images[@]}"; do
+    if [[ "$nexus_command_target" == "$nexus_image" ]]; then nexus_command_owned=1; break; fi
+  done
+  if [[ "$nexus_command_owned" -eq 1 ]]; then remove_file "$nexus_command"
   else warn "unrelated command link $nexus_command"; fi
 elif [[ -e "$nexus_command" ]]; then
   warn "command not created by the installer: $nexus_command"
@@ -78,17 +88,21 @@ elif [[ -e "$nexus_desktop" || -L "$nexus_desktop" ]]; then
   warn "application entry not created by the installer: $nexus_desktop"
 fi
 
-remove_file "$nexus_image"
-remove_file "$nexus_image.part"
-remove_file "$nexus_app/icon.png"
-remove_file "$nexus_lock"
 shopt -s nullglob
-for nexus_file in "$nexus_image".nexus-backup-* "$nexus_image".nexus-update-*; do
-  # Only the UUID filenames written by the updater belong to this installation.
-  if [[ "${nexus_file##*/}" =~ ^Xodus-Nexus\.AppImage\.nexus-(backup|update)-[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$ ]]; then
-    remove_file "$nexus_file"
-  fi
+for nexus_image in "${nexus_images[@]}"; do
+  remove_file "$nexus_image"
+  remove_file "$nexus_image.part"
+  for nexus_file in "$nexus_image".nexus-backup-* "$nexus_image".nexus-update-*; do
+    # Only the UUID filenames written by the updater belong to this installation.
+    if [[ "${nexus_file##*/}" =~ ^(Nexus-Launcher|Xodus-Nexus)\.AppImage\.nexus-(backup|update)-[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$ ]]; then
+      remove_file "$nexus_file"
+    fi
+  done
 done
+remove_file "$nexus_app/icon.png"
+if [[ ${#nexus_locks[@]} -gt 0 ]]; then
+  for nexus_lock in "${nexus_locks[@]}"; do remove_file "$nexus_lock"; done
+fi
 if [[ "$nexus_dry_run" -eq 0 ]]; then
   if [[ -d "$nexus_app" ]]; then rmdir -- "$nexus_app" 2>/dev/null || warn "additional files in $nexus_app"; fi
   if [[ -d "$nexus_desktop_dir" ]] && command -v update-desktop-database >/dev/null; then
